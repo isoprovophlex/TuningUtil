@@ -505,7 +505,7 @@ namespace MPL::SKSEMenuSettings
             auto text = ReadText(false);
             if (!text)
             {
-                logger::warn("Could not read SKSE menu settings {}", kSettingsPath.string());
+                logger::warn("[Tuning Menu] settings read failed | path={}", kSettingsPath.string());
                 return false;
             }
 
@@ -526,7 +526,7 @@ namespace MPL::SKSEMenuSettings
                 if (object == std::string::npos)
                 {
                     logger::warn(
-                        "Could not save the Tuning menu setting because {} is not a JSON object",
+                        "[Tuning Menu] setting save failed | {} is not a JSON object",
                         kSettingsPath.string());
                     return false;
                 }
@@ -548,7 +548,7 @@ namespace MPL::SKSEMenuSettings
             if (!file)
             {
                 logger::warn(
-                    "Could not save the Tuning menu setting {}",
+                    "[Tuning Menu] setting save failed | path={}",
                     kSettingsPath.string());
                 return false;
             }
@@ -573,7 +573,7 @@ namespace MPL::SKSEMenuSettings
                 const auto parsed = rfl::json::read<Settings, rfl::DefaultIfMissing>(*text);
                 if (!parsed)
                 {
-                    logger::warn("Could not load SKSE menu settings {}: {}", kSettingsPath.string(), parsed.error().what());
+                    logger::warn("[Tuning Menu] settings load failed | path={} | {}", kSettingsPath.string(), parsed.error().what());
                     loadedWriteTime = writeTime;
                     return;
                 }
@@ -581,7 +581,7 @@ namespace MPL::SKSEMenuSettings
             }
             else if (exists)
             {
-                logger::warn("Could not read SKSE menu settings {}", kSettingsPath.string());
+                logger::warn("[Tuning Menu] settings read failed | path={}", kSettingsPath.string());
                 loadedWriteTime = writeTime;
                 return;
             }
@@ -589,7 +589,7 @@ namespace MPL::SKSEMenuSettings
             const auto location = Lowercase(loaded.statusDisplay.location);
             if (location != "top" && location != "bottom" && location != "hidden")
             {
-                logger::warn("Invalid SKSE menu status location '{}'; using bottom", loaded.statusDisplay.location);
+                logger::warn("[Tuning Menu] status location={} invalid | fallback=bottom", loaded.statusDisplay.location);
                 loaded.statusDisplay.location = "bottom";
             }
             else
@@ -659,7 +659,7 @@ namespace MPL::SKSEMenuSettings
             if (loaded.settingsProfile.position != "top" && loaded.settingsProfile.position != "bottom")
             {
                 logger::warn(
-                    "Invalid SKSE menu Settings profile position '{}'; using bottom",
+                    "[Tuning Menu] Settings profile position={} invalid | fallback=bottom",
                     loaded.settingsProfile.position);
                 loaded.settingsProfile.position = "bottom";
             }
@@ -681,9 +681,9 @@ namespace MPL::SKSEMenuSettings
             settings = std::move(loaded);
             loadedWriteTime = writeTime;
             logger::info(
-                "Loaded SKSE menu presentation settings from {}{}",
+                "[Tuning Menu] presentation | source={} | file={}",
                 kSettingsPath.string(),
-                exists ? "" : " (compiled defaults; file not found)");
+                exists);
         }
 
         std::string ResolveMessage(

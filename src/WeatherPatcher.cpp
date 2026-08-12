@@ -1189,7 +1189,7 @@ namespace MPL::WeatherPatcher
             }
             if (resolving[a_field])
             {
-                logger::warn("Circular brightness gain link at {}", kBrightnessFieldNames[a_field]);
+            logger::warn("[Weather] brightness link | field={} | status=circular", kBrightnessFieldNames[a_field]);
                 return 1.0;
             }
 
@@ -1205,8 +1205,8 @@ namespace MPL::WeatherPatcher
                 gains[a_field] = ConstrainMasterGain(a_weatherSet, a_field, requested[a_field]);
                 if (std::abs(gains[a_field] - std::max(0.0, requested[a_field])) > 0.0001)
                 {
-                    DetailedLogging::Info(
-                        "Brightness master {} requested {:.4f}x, constrained to {:.4f}x by the shared profile floor/ceiling",
+        DetailedLogging::Info(
+            "[Weather] brightness | master={} | requested={:.4f}x | constrained={:.4f}x",
                         kBrightnessFieldNames[a_field],
                         requested[a_field],
                         gains[a_field]);
@@ -1784,7 +1784,7 @@ namespace MPL::WeatherPatcher
         std::ifstream file(a_fileName, std::ios::binary);
         if (!file)
         {
-            logger::warn("Could not open TuningUtil JSON file {}", a_fileName.string());
+            logger::warn("[Weather] JSON open failed | file={}", a_fileName.string());
             return std::nullopt;
         }
 
@@ -1793,7 +1793,7 @@ namespace MPL::WeatherPatcher
         if (text.starts_with(utf8Bom))
         {
             text.erase(0, utf8Bom.size());
-            logger::warn("Ignored UTF-8 byte order mark in {}", a_fileName.string());
+            logger::warn("[Weather] JSON | file={} | UTF-8 BOM ignored", a_fileName.string());
         }
         return text;
     }
@@ -2079,7 +2079,7 @@ namespace MPL::WeatherPatcher
             auto* weatherSet = FindWeatherSet(a_weatherSets, sourceFile);
             if (!weatherSet)
             {
-                logger::warn("TuningUtil profile {} targets {}, but no loaded weather records include that plugin", a_profileName, sourceFile);
+                logger::warn("[Weather] {} | plugin={} | targets=0", a_profileName, sourceFile);
                 continue;
             }
 
@@ -2251,8 +2251,8 @@ namespace MPL::WeatherPatcher
                 }
             }
             cache.initialized = true;
-            DetailedLogging::Info(
-                "Resolved loaded weather records for {} source plugin(s); cached FX classification for {} weather(s) and {} static weather(s)",
+        DetailedLogging::Info(
+            "[Weather] cache | plugins={} | FX={} | static={}",
                 cache.sourceWeatherSets.size(),
                 cache.fxClassifications.size(),
                 staticWeatherCount);
@@ -2285,8 +2285,8 @@ namespace MPL::WeatherPatcher
             if (a_excludeTargetPlugins)
             {
                 profileCache.weathers = BuildUnclaimedWeatherSet(a_dataHandler, sourceWeatherSets, a_targetPlugins);
-                DetailedLogging::Info(
-                    "Resolved catch-all TuningUtil profile {} to {} loaded weather(s), excluding weather records claimed by {} plugin(s)",
+            DetailedLogging::Info(
+                "[Weather] {} | scope=unclaimed | targets={} | claimedPlugins={}",
                     a_profileName,
                     profileCache.weathers.size(),
                     a_targetPlugins.size());
@@ -2294,8 +2294,8 @@ namespace MPL::WeatherPatcher
             else
             {
                 profileCache.weathers = BuildProfileWeatherSet(sourceWeatherSets, a_targetPlugins, a_profileName);
-                DetailedLogging::Info(
-                    "Resolved TuningUtil profile {} to {} loaded weather(s)",
+            DetailedLogging::Info(
+                "[Weather] {} | targets={}",
                     a_profileName,
                     profileCache.weathers.size());
             }
@@ -2339,7 +2339,7 @@ namespace MPL::WeatherPatcher
             if (!region)
             {
                 logger::warn(
-                    "Effect Lighting profile {} could not resolve point-light REGN {}; its WTHR records will not be excluded",
+                    "[Effect Lighting] {} | region={} unresolved | weatherExclusion=false",
                     a_profileName,
                     configured);
                 continue;
@@ -2404,18 +2404,18 @@ namespace MPL::WeatherPatcher
                 const auto formID = Config::LiteForm::FromString(configured).formID;
                 if (formID == 0)
                 {
-                    DetailedLogging::Info("Weather {} {} is not loaded; ignoring it", a_name, configured);
+                DetailedLogging::Info("[Weather] {} {} | status=unloaded", a_name, configured);
                     continue;
                 }
                 if (!RE::TESForm::LookupByID<RE::TESWeather>(formID))
                 {
-                    logger::warn("Weather {} {} does not resolve to a weather; ignoring it", a_name, configured);
+                    logger::warn("[Weather] {} {} | type=invalid", a_name, configured);
                     continue;
                 }
                 a_cached.formIDs.insert(formID);
             }
             DetailedLogging::Info(
-                "Cached {} resolved weather {}(s) for profile {}",
+                "[Weather] cache | count={} | type={} | profile={}",
                 a_cached.formIDs.size(),
                 a_name,
                 a_profileName);
@@ -2454,7 +2454,7 @@ namespace MPL::WeatherPatcher
         if (notIncluded > 0 || excluded > 0)
         {
             DetailedLogging::Info(
-                "TuningUtil profile {} omitted {} weather(s) outside its weather inclusion filter and excluded {} weather record(s)",
+                "[Weather] {} filter | omitted={} | excluded={}",
                 a_profileName,
                 notIncluded,
                 excluded);
@@ -2487,7 +2487,7 @@ namespace MPL::WeatherPatcher
                 .second)
         {
             DetailedLogging::Info(
-                "TuningUtil weather profile {} excluded {} FX weather record(s); FX weather tuning is Lighting-only",
+                "[Weather] {} | FX excluded={} | scope=Lighting",
                 a_profileName,
                 excluded);
         }
@@ -2511,7 +2511,7 @@ namespace MPL::WeatherPatcher
             if (formID == 0)
             {
                 DetailedLogging::Info(
-                    "Filtered weather rule {} for profile {} has an unloaded {} FormID {}; ignoring it",
+                    "[Weather] {}/{} | {}={} unloaded",
                     a_ruleID,
                     a_profileName,
                     a_filterName,
@@ -2521,7 +2521,7 @@ namespace MPL::WeatherPatcher
             if (!RE::TESForm::LookupByID<RE::TESWeather>(formID))
             {
                 logger::warn(
-                    "Filtered weather rule {} for profile {} has a {} FormID {} that is not a weather; ignoring it",
+                    "[Weather] {}/{} | {}={} type=invalid",
                     a_ruleID,
                     a_profileName,
                     a_filterName,
@@ -2643,8 +2643,8 @@ namespace MPL::WeatherPatcher
             a_settings.hueRanges);
         if (!changedVolumetricLighting.empty())
         {
-            DetailedLogging::Info(
-                "Applied volumetric-lighting intensity {:.4f}x and color saturation settings to {} unique VOLI record(s)",
+        DetailedLogging::Info(
+            "[Weather] VOLI | intensity={:.4f}x | targets={}",
                 std::max(0.0, a_settings.volumetricLightingIntensityMultiplier),
                 changedVolumetricLighting.size());
         }
@@ -3258,7 +3258,7 @@ namespace MPL::WeatherPatcher
         if (activeRules > 0)
         {
             DetailedLogging::Info(
-                "Applied {} active filtered slider rule(s) to {} weather and {} volumetric-lighting record(s)",
+                "[Weather] filtered sliders | rules={} | weather={} | VOLI={}",
                 activeRules,
                 patched,
                 volumetricPatched);
@@ -3414,13 +3414,13 @@ namespace MPL::WeatherPatcher
         for (const auto& profile : profiles)
         {
             DetailedLogging::Info(
-                "Effect Lighting filter for profile {} matched {} emittance weather record(s) and excluded {} point-light weather record(s)",
+                "[Effect Lighting] {} | matched={} | pointLightExcluded={}",
                 profile.name,
                 profileTargetCounts[profile.name],
                 profileWeatherExclusionCounts[profile.name]);
         }
-        DetailedLogging::Info(
-            "Applied {} effect-lighting profile stack(s) to {} emittance weather(s)",
+            DetailedLogging::Info(
+                "[Effect Lighting] apply | stacks={} | targets={}",
             weatherGroups.size(),
             patched);
         return patched;
@@ -3445,7 +3445,7 @@ namespace MPL::WeatherPatcher
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
-            logger::warn("TESDataHandler is unavailable; TuningUtil settings were not applied");
+            logger::warn("[Weather] apply failed | TESDataHandler unavailable");
             return;
         }
 
@@ -3454,7 +3454,7 @@ namespace MPL::WeatherPatcher
         GetDynamicBrightnessStatuses().clear();
         if (weatherSets.empty())
         {
-            logger::info("No weather records found");
+            logger::info("[Weather] targets=0");
             return;
         }
 
@@ -3473,7 +3473,7 @@ namespace MPL::WeatherPatcher
             }
             if (!settings->EnableProfile)
             {
-                DetailedLogging::Info("Skipping disabled TuningUtil weather profile {}", profileName);
+                DetailedLogging::Info("[Weather] {} | status=disabled", profileName);
                 continue;
             }
 
@@ -3595,7 +3595,7 @@ namespace MPL::WeatherPatcher
 
             ++configsApplied;
             DetailedLogging::Info(
-                "Applied {} stacked TuningUtil weather profile(s), ending with {}, to {} total weather(s)",
+                "[Weather] stack | profiles={} | last={} | targets={}",
                 stack.profiles.size(),
                 profileLabel,
                 profileWeathersApplied);
@@ -3620,7 +3620,7 @@ namespace MPL::WeatherPatcher
             WeatherRuntime::RefreshCurrentCellEmittance();
         }
         emittanceWeatherSettingsWereApplied = emittanceWeatherSettingsApplied;
-        logger::info("TuningUtil applied {} config(s) to {} weather record(s)", configsApplied, weathersApplied);
+        logger::info("[Weather] apply | configs={} | targets={}", configsApplied, weathersApplied);
     }
 
     void ApplyDataLoaded()
@@ -3661,13 +3661,13 @@ namespace MPL::WeatherPatcher
     {
         if (ProfileNameFromKey(a_profileName).empty())
         {
-            logger::warn("Rejected profile-weather request with an empty TuningUtil profile name");
+            logger::warn("[Weather] enumeration rejected | profile empty");
             return {};
         }
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
-            logger::warn("TESDataHandler is unavailable; selectable weathers for {} could not be enumerated", a_profileName);
+            logger::warn("[Weather] {} enumeration failed | TESDataHandler unavailable", a_profileName);
             return {};
         }
 
@@ -3725,10 +3725,10 @@ namespace MPL::WeatherPatcher
                 .second)
         {
             DetailedLogging::Info(
-                "Enumerated {} {} weather(s) for profile {}",
-                profileWeatherSet.size(),
+                "[Weather] {} enumeration | {}={}",
+                a_profileName,
                 a_applyWeatherFilter ? "selectable" : "filterable",
-                a_profileName);
+                profileWeatherSet.size());
         }
         return profileWeatherSet;
     }
@@ -3920,7 +3920,7 @@ namespace MPL::WeatherPatcher
         const auto profileName = ProfileNameFromKey(a_profileName);
         if (profileName.empty())
         {
-            logger::warn("Rejected TuningUtil preset category request with an empty profile name");
+            logger::warn("[Preset] category request rejected | profile empty");
             return {};
         }
 
@@ -3962,7 +3962,7 @@ namespace MPL::WeatherPatcher
         const auto category = NormalizePresetPathComponent(a_category, false, validationError);
         if (profileName.empty() || !category)
         {
-            logger::warn("Rejected TuningUtil preset request: {}", validationError);
+            logger::warn("[Preset] request rejected | {}", validationError);
             return presets;
         }
         auto& catalogs = GetPresetCatalogs();
@@ -3988,7 +3988,7 @@ namespace MPL::WeatherPatcher
         }
         std::ranges::sort(presets, [](const std::string& a_left, const std::string& a_right)
             { return LowercaseKey(a_left) < LowercaseKey(a_right); });
-        DetailedLogging::Info("Cached {} {} preset definition(s) for {}", presets.size(), *category, profileName);
+        DetailedLogging::Info("[Preset] cache | profile={} | category={} | presets={}", profileName, *category, presets.size());
         return catalogs.emplace(catalogKey, std::move(presets)).first->second;
     }
 
@@ -4026,7 +4026,7 @@ namespace MPL::WeatherPatcher
                 if (selected)
                 {
                     logger::warn(
-                        "TuningUtil profile {} has multiple auto-load presets in category {}; using {} and ignoring {}",
+                        "[Preset] {} auto-load | category={} | selected={} | ignored={}",
                         profileName,
                         category,
                         *selected,
@@ -4040,7 +4040,7 @@ namespace MPL::WeatherPatcher
                 const auto merged = settings ? JsonOverlay::Overlay(result.settings, *settings, a_error) : std::nullopt;
                 if (!merged)
                 {
-                    logger::warn("Could not load auto-load preset {}: {}", path.string(), a_error);
+                    logger::warn("[Preset] auto-load failed | file={} | {}", path.string(), a_error);
                     return nullptr;
                 }
                 result.settings = std::move(*merged);
@@ -4184,7 +4184,7 @@ namespace MPL::WeatherPatcher
 
         a_updated = updates.size();
         InvalidatePresetCache();
-        logger::info("Disabled auto-load for {} TuningUtil preset(s)", a_updated);
+        logger::info("[Preset] auto-load disabled={}", a_updated);
         return true;
     }
 
@@ -4263,7 +4263,7 @@ namespace MPL::WeatherPatcher
         const auto profileName = ProfileNameFromKey(a_profileName);
         InvalidatePresetCatalog(profileName, *category);
         GetActivePresetCaches().erase(LowercaseKey(profileName));
-        logger::info("Saved TuningUtil preset {} in category {} for {}", *presetName, *category, a_profileName);
+        logger::info("[Preset] {} | category={} | profile={} | status=saved", *presetName, *category, a_profileName);
         return true;
     }
 
@@ -4279,7 +4279,7 @@ namespace MPL::WeatherPatcher
         if (ProfileNameFromKey(a_profileName).empty() || !category || !presetName)
         {
             if (a_error.empty()) a_error = "The profile is unavailable.";
-            logger::warn("Rejected TuningUtil preset preview: {}", a_error);
+            logger::warn("[Preset] preview rejected | {}", a_error);
             return false;
         }
         const auto presets = GetPresets(a_profileName, *category);
@@ -4288,7 +4288,7 @@ namespace MPL::WeatherPatcher
         if (selected == presets.end())
         {
             a_error = "The preset file could not be found.";
-            logger::warn("TuningUtil preset was not found: {} / {} / {}", a_profileName, *category, *presetName);
+            logger::warn("[Preset] missing | profile={} | category={} | preset={}", a_profileName, *category, *presetName);
             return false;
         }
 
@@ -4336,11 +4336,11 @@ namespace MPL::WeatherPatcher
         GetPresetPreviewCaches().insert_or_assign(cacheKey, std::move(preview));
         if (deselect)
         {
-            DetailedLogging::Info("Previewing no TuningUtil preset in category {} for {}", *category, a_profileName);
+            DetailedLogging::Info("[Preset] preview | profile={} | category={} | preset=none", a_profileName, *category);
         }
         else
         {
-            DetailedLogging::Info("Previewing TuningUtil preset {} in category {} for {}", *selected, *category, a_profileName);
+            DetailedLogging::Info("[Preset] preview | profile={} | category={} | preset={}", a_profileName, *category, *selected);
         }
         return true;
     }
@@ -4352,7 +4352,7 @@ namespace MPL::WeatherPatcher
         const auto preview = GetPresetPreviewCaches().find(cacheKey);
         if (preview == GetPresetPreviewCaches().end() || preview->second.changedCategories.empty())
         {
-            DetailedLogging::Info("Preset selections for {} are already saved", a_profileName);
+            DetailedLogging::Info("[Preset] selections | profile={} | status=unchanged", a_profileName);
             return true;
         }
 
@@ -4425,7 +4425,7 @@ namespace MPL::WeatherPatcher
             return false;
         }
 
-        logger::info("Saved {} TuningUtil preset selection(s) for {}", preview->second.changedCategories.size(), a_profileName);
+        logger::info("[Preset] selections | profile={} | saved={}", a_profileName, preview->second.changedCategories.size());
         GetPresetPreviewCaches().erase(preview);
         return true;
     }
@@ -4532,13 +4532,12 @@ namespace MPL::WeatherPatcher
             std::filesystem::remove_all(removal.staged, cleanupError);
             if (cleanupError)
             {
-                logger::warn("Could not delete staged preset data {}: {}", removal.staged.string(), cleanupError.message());
+                logger::warn("[Preset] staged delete failed | path={} | {}", removal.staged.string(), cleanupError.message());
             }
         }
         logger::info(
-            "Removed {} TuningUtil preset categor{} and {} individual preset(s) for {}",
+            "[Preset] remove | categories={} | presets={} | profile={}",
             a_categories.size(),
-            a_categories.size() == 1 ? "y" : "ies",
             a_presets.size(),
             profileName);
         return true;

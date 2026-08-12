@@ -34,7 +34,7 @@ namespace MPL::WeatherPatcher
                 if (states[a_index] == LinkState::kFailed) return false;
                 if (states[a_index] == LinkState::kVisiting)
                 {
-                    logger::warn("Circular TuningUtil shared link in {} at {}", a_category, a_fields[a_index].key);
+                    logger::warn("[TuningUtil] shared link | category={} | field={} | status=circular", a_category, a_fields[a_index].key);
                     states[a_index] = LinkState::kFailed;
                     return false;
                 }
@@ -52,7 +52,7 @@ namespace MPL::WeatherPatcher
                 if (target == a_fields.end())
                 {
                     logger::warn(
-                        "Invalid TuningUtil shared link {}.{} -> {}; links must use an exact key from the same graph",
+                        "[TuningUtil] shared link | {}.{} -> {} | status=invalid",
                         a_category,
                         a_fields[a_index].key,
                         targetKey);

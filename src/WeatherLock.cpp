@@ -63,7 +63,7 @@ namespace MPL::WeatherLock
             if (a_weather != locked)
             {
                 logger::debug(
-                    "Blocked Sky::SetWeather request for {:08X}; locked weather is {:08X}",
+                    "[Weather Lock] SetWeather blocked | requested={:08X} | locked={:08X}",
                     a_weather ? a_weather->GetFormID() : 0,
                     locked->GetFormID());
                 if (a_sky->currentWeather == locked && a_sky->overrideWeather == locked)
@@ -92,7 +92,7 @@ namespace MPL::WeatherLock
             if (a_weather != locked)
             {
                 logger::debug(
-                    "Blocked Sky::ForceWeather request for {:08X}; locked weather is {:08X}",
+                    "[Weather Lock] ForceWeather blocked | requested={:08X} | locked={:08X}",
                     a_weather ? a_weather->GetFormID() : 0,
                     locked->GetFormID());
                 if (a_sky->currentWeather == locked && a_sky->overrideWeather == locked)
@@ -137,12 +137,12 @@ namespace MPL::WeatherLock
         const auto setWeatherHooks = InstallCallSiteHooks(setWeatherSites, SetWeatherThunk);
         const auto forceWeatherHooks = InstallCallSiteHooks(forceWeatherSites, ForceWeatherThunk);
         logger::info(
-            "Installed weather-lock guards at {} Sky::SetWeather and {} Sky::ForceWeather engine call site(s)",
+            "[Weather Lock] hooks | SetWeather={} | ForceWeather={}",
             setWeatherHooks,
             forceWeatherHooks);
         if (setWeatherHooks == 0)
         {
-            logger::warn("Weather lock did not find any direct Sky::SetWeather engine call sites");
+            logger::warn("[Weather Lock] SetWeather hooks=0");
         }
     }
 
@@ -166,7 +166,7 @@ namespace MPL::WeatherLock
         const auto formID = sky->overrideWeather->GetFormID();
         sky->ReleaseWeatherOverride();
         DetailedLogging::Info(
-            "Weather lock released weather override {:08X}",
+            "[Weather Lock] override released | weather={:08X}",
             formID);
     }
 
@@ -178,9 +178,9 @@ namespace MPL::WeatherLock
         }
         auto* weather = GetSelectedWeather();
         logger::info(
-            "Weather lock {}{}",
-            a_enabled ? "enabled" : "disabled",
-            weather ? std::format(" for {:08X}", weather->GetFormID()) : " with no selected weather");
+            "[Weather Lock] enabled={} | weather={:08X}",
+            a_enabled,
+            weather ? weather->GetFormID() : 0);
     }
 
     bool IsEnabled()
@@ -207,16 +207,16 @@ namespace MPL::WeatherLock
         sky->flags.reset(RE::Sky::Flags::kReleaseWeatherOverride);
         if (stateChanged)
         {
-            DetailedLogging::Info(
-                "Weather lock repaired sky state for {:08X}: current={:08X}, override={:08X}, releasePending={}",
+        DetailedLogging::Info(
+            "[Weather Lock] repair | target={:08X} | current={:08X} | override={:08X} | releasePending={}",
                 locked->GetFormID(),
                 sky->currentWeather ? sky->currentWeather->GetFormID() : 0,
                 sky->overrideWeather ? sky->overrideWeather->GetFormID() : 0,
                 releasePending);
             const auto result =
                 WeatherRuntime::SetWeatherInstant(locked, true);
-            DetailedLogging::Info(
-                "Weather lock reapplied weather {:08X}; status={}, processed {} native cell emittance light-map entry/entries",
+        DetailedLogging::Info(
+            "[Weather Lock] reapply | weather={:08X} | status={} | lights={}",
                 locked->GetFormID(),
                 static_cast<std::uint32_t>(result.status),
                 result.lightCount);

@@ -134,8 +134,7 @@ namespace MPL::CSTonemapping
                             setting->GetFloat()));
             }
             logger::info(
-                "CS Tonemapping coordinated {} forced Image "
-                "Space target(s); filmic settings forced: {}",
+                "[CS Tonemapping] targets={} | filmicForced={}",
                 a_state.forcedTargets.size(),
                 forceFilmic);
         }
@@ -146,9 +145,7 @@ namespace MPL::CSTonemapping
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
-            logger::warn(
-                "TESDataHandler is unavailable; CS Tonemapping "
-                "was not initialized");
+            logger::warn("[CS Tonemapping] init failed | TESDataHandler unavailable");
             return;
         }
 

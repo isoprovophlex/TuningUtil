@@ -212,7 +212,7 @@ namespace MPL::ImageSpacePatcher
             const RE::BSReadLockGuard guard{ lock };
             if (!forms)
             {
-                logger::warn("The loaded form map is unavailable; interior Image Spaces could not be classified");
+                logger::warn("[Image Space] classification failed | loaded form map unavailable");
                 return cache.imageSpaces;
             }
 
@@ -234,7 +234,7 @@ namespace MPL::ImageSpacePatcher
             }
 
             logger::info(
-                "Classified {} unique interior Image Space record(s) from {} reference(s) across {} loaded interior cell(s)",
+                "[Image Space] interior classification | records={} | references={} | cells={}",
                 cache.imageSpaces.size(),
                 imageSpaceReferences,
                 interiorCells);
@@ -248,7 +248,7 @@ namespace MPL::ImageSpacePatcher
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
-            logger::warn("TESDataHandler is unavailable; Image Space settings were not applied");
+            logger::warn("[Image Space] apply failed | TESDataHandler unavailable");
             return;
         }
 
@@ -289,7 +289,7 @@ namespace MPL::ImageSpacePatcher
                 interiorSettings[imageSpace] = category;
             }
             DetailedLogging::Info(
-                "{} stacked Interior Image Space profile(s) target {} cell-referenced Image Space record(s)",
+                "[Image Space] interior | profiles={} | targets={}",
                 activeLightingProfiles.size(),
                 intImageSpaces.size());
         }
@@ -371,10 +371,10 @@ namespace MPL::ImageSpacePatcher
         for (const auto& profile : activeWeatherProfiles)
         {
             DetailedLogging::Info(
-                "Exterior Image Space profile {} targets {} {}non-interior Image Space record(s)",
+                "[Image Space] exterior | profile={} | targets={} | scope={}",
                 profile.profileName,
                 profileTargetCounts[profile.profileName],
-                profile.catchAll ? "unclaimed " : "plugin-scoped ");
+                profile.catchAll ? "unclaimed" : "plugin");
         }
 
         const auto applySettings = [&](const SettingsMap& a_settings)
@@ -395,7 +395,7 @@ namespace MPL::ImageSpacePatcher
         CSTonemapping::SetForcedTargets(explicitWhiteTargets);
 
         logger::info(
-            "Image Space categories classified {} interior and {} exterior target(s); coordinated {} forced CS Tonemapping target(s)",
+            "[Image Space] apply | interior={} | exterior={} | forcedTonemapping={}",
             intImageSpaces.size(),
             exteriorSettings.size(),
             explicitWhiteTargets.size());

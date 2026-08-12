@@ -1029,7 +1029,7 @@ namespace MPL::TuningMenu
                     }
                 }
             }
-            logger::debug("Temporarily disabled SKSE Menu Framework freeze/blur effects for a Luma profile");
+            logger::debug("[Tuning Menu] effects | freeze=false | blur=false | temporary=true");
         }
 
         void RestoreFrameworkEffects()
@@ -1057,7 +1057,7 @@ namespace MPL::TuningMenu
 
             menuEffectOverride.active = false;
             menuEffectOverride.blurContributionRemoved = false;
-            logger::debug("Restored SKSE Menu Framework freeze/blur effects after leaving a Luma profile");
+            logger::debug("[Tuning Menu] effects | status=restored");
         }
 
         void ReleaseFrameworkEffectsAfterClose()
@@ -1757,7 +1757,7 @@ namespace MPL::TuningMenu
             std::ifstream file(a_path, std::ios::binary);
             if (!file)
             {
-                logger::warn("Could not open SKSE profile menu definition {}", a_path.string());
+                logger::warn("[Tuning Menu] definition open failed | path={}", a_path.string());
                 return std::nullopt;
             }
 
@@ -1771,7 +1771,7 @@ namespace MPL::TuningMenu
             auto parsed = rfl::json::read<MenuDefinition, rfl::DefaultIfMissing>(text);
             if (!parsed)
             {
-                logger::warn("Failed to load SKSE profile menu definition {}: {}", a_path.string(), parsed.error().what());
+                logger::warn("[Tuning Menu] definition load failed | path={} | {}", a_path.string(), parsed.error().what());
                 return std::nullopt;
             }
 
@@ -1779,7 +1779,7 @@ namespace MPL::TuningMenu
             if (definition.schemaVersion != 1)
             {
                 logger::warn(
-                    "Ignored SKSE profile menu definition {} because schemaVersion must be 1",
+                    "[Tuning Menu] definition ignored | path={} | schemaVersion != 1",
                     a_path.string());
                 return std::nullopt;
             }
@@ -1858,7 +1858,7 @@ namespace MPL::TuningMenu
                     if (!TuningUtil::IsProfilePluginFiltered(file.path.parent_path()))
                     {
                         logger::warn(
-                            "Ignored SKSE profile menu definition {} because its folder has no profileSettings.json profile",
+                            "[Tuning Menu] definition ignored | path={} | profileSettings missing",
                             file.path.string());
                     }
                     continue;
@@ -1894,7 +1894,7 @@ namespace MPL::TuningMenu
             activeProfilePages.clear();
 
             logger::info(
-                "Loaded {} optional SKSE profile menu definition(s) for settings-defined profiles from {}",
+                "[Tuning Menu] definitions={} | root={}",
                 profileMenus.size(),
                 kProfileRoot.string());
             if (filteredRulesChanged)
@@ -2250,7 +2250,7 @@ namespace MPL::TuningMenu
             std::string presetError;
             if (!WeatherPatcher::DisableAllAutoLoadPresets(disabledPresets, presetError))
             {
-                logger::warn("Could not disable TuningUtil preset auto-load: {}", presetError);
+                logger::warn("[Tuning Menu] preset auto-load disable failed | {}", presetError);
                 success = false;
             }
             std::error_code rootError;
@@ -2276,7 +2276,7 @@ namespace MPL::TuningMenu
                         }
                         else if (removeError)
                         {
-                            logger::warn("Could not delete {}: {}", path.string(), removeError.message());
+                            logger::warn("[Tuning Menu] delete failed | path={} | {}", path.string(), removeError.message());
                             success = false;
                         }
                     }
@@ -2284,7 +2284,7 @@ namespace MPL::TuningMenu
                 if (iteratorError)
                 {
                     logger::warn(
-                        "Could not enumerate generated TuningUtil user settings in {}: {}",
+                        "[Tuning Menu] user settings enumeration failed | path={} | {}",
                         kQuickSelectRoot.string(),
                         iteratorError.message());
                     success = false;
@@ -2292,7 +2292,7 @@ namespace MPL::TuningMenu
             }
             else if (rootError)
             {
-                logger::warn("Could not access {}: {}", kQuickSelectRoot.string(), rootError.message());
+                logger::warn("[Tuning Menu] access failed | path={} | {}", kQuickSelectRoot.string(), rootError.message());
                 success = false;
             }
 
@@ -2302,7 +2302,7 @@ namespace MPL::TuningMenu
             TuningUtil::InvalidateDiscoveryCaches();
             TuningUtil::ApplySettings();
             logger::info(
-                "Deleted {} generated TuningUtil user settings file(s) and disabled {} auto-load preset(s)",
+                "[Tuning Menu] reset | userFiles={} | autoLoadPresets={}",
                 deletedFiles,
                 disabledPresets);
             return success;
@@ -2327,7 +2327,7 @@ namespace MPL::TuningMenu
             std::filesystem::create_directories(path.parent_path(), error);
             if (error)
             {
-                logger::warn("Could not create Quick Select list directory {}: {}", path.parent_path().string(), error.message());
+                logger::warn("[Tuning Menu] Quick Select directory create failed | path={} | {}", path.parent_path().string(), error.message());
                 return false;
             }
 
@@ -2335,7 +2335,7 @@ namespace MPL::TuningMenu
             file << rfl::json::write(list, rfl::json::pretty) << '\n';
             if (!file)
             {
-                logger::warn("Could not save Quick Select list {}", path.string());
+                logger::warn("[Tuning Menu] Quick Select save failed | path={}", path.string());
                 return false;
             }
             return true;
@@ -2363,7 +2363,7 @@ namespace MPL::TuningMenu
             const auto parsed = rfl::json::read<QuickSelectList, rfl::DefaultIfMissing>(text);
             if (!parsed)
             {
-                logger::warn("Could not load Quick Select list {}: {}", path.string(), parsed.error().what());
+                logger::warn("[Tuning Menu] Quick Select load failed | path={} | {}", path.string(), parsed.error().what());
                 return quickWeatherSelections.emplace(a_profileName, std::move(selections)).first->second;
             }
 
@@ -4980,7 +4980,7 @@ namespace MPL::TuningMenu
                 }
                 else
                 {
-                    if (!error.empty()) logger::warn("Could not save preset selection for {}: {}", profile, error);
+                    if (!error.empty()) logger::warn("[Tuning Menu] preset selection save failed | profile={} | {}", profile, error);
                     statusMessage = StatusText("presetSelectionSaveFailure");
                 }
             }
@@ -5028,7 +5028,7 @@ namespace MPL::TuningMenu
             }
             else
             {
-                if (!error.empty()) logger::warn("Could not save preset changes for {}: {}", profile, error);
+                if (!error.empty()) logger::warn("[Tuning Menu] preset changes save failed | profile={} | {}", profile, error);
                 statusMessage = StatusText("presetControlSaveFailure");
             }
         }
@@ -5081,7 +5081,7 @@ namespace MPL::TuningMenu
                 std::ifstream file(path, std::ios::binary);
                 if (!file)
                 {
-                    logger::warn("Could not compare active preset {} because {} is unreadable", preset.name, path.string());
+                    logger::warn("[Tuning Menu] preset comparison failed | preset={} | path={} unreadable", preset.name, path.string());
                     continue;
                 }
 
@@ -5096,7 +5096,7 @@ namespace MPL::TuningMenu
                                             std::nullopt;
                 if (!equivalent)
                 {
-                    logger::warn("Could not compare active preset {} in {}: {}", preset.name, path.string(), error);
+                    logger::warn("[Tuning Menu] preset comparison failed | preset={} | path={} | {}", preset.name, path.string(), error);
                     continue;
                 }
                 if (!*equivalent)
@@ -5200,7 +5200,7 @@ namespace MPL::TuningMenu
                             }
                             else
                             {
-                                if (!error.empty()) logger::warn("Could not preview preset {} / {} for {}: {}", category, preset, profile, error);
+                                if (!error.empty()) logger::warn("[Tuning Menu] preset preview failed | profile={} | category={} | preset={} | {}", profile, category, preset, error);
                                 statusMessage = StatusText("presetLoadFailure");
                             }
                         }
@@ -5284,7 +5284,7 @@ namespace MPL::TuningMenu
                     }
                     else
                     {
-                        if (!error.empty()) logger::warn("Could not save preset {} / {} for {}: {}", category, presetName, profile, error);
+                        if (!error.empty()) logger::warn("[Tuning Menu] preset save failed | profile={} | category={} | preset={} | {}", profile, category, presetName, error);
                         statusMessage = StatusText("presetCreateFailure");
                     }
                 }
@@ -6758,7 +6758,7 @@ namespace MPL::TuningMenu
                 }
                 else
                 {
-                    logger::warn("Could not save slider {} to {}: {}", definition.id, menuPath.string(), error);
+                    logger::warn("[Tuning Menu] slider save failed | slider={} | path={} | {}", definition.id, menuPath.string(), error);
                     statusMessage = StatusText("sliderSaveFailure", { { "reason", SliderCreatorErrorText(error) } });
                 }
             }
@@ -7662,7 +7662,7 @@ namespace MPL::TuningMenu
                         QueueLayoutReload(StatusText("layoutProfileSaved"));
                     else
                     {
-                        logger::warn("Could not save Edit Mode changes for {}: {}", a_menu.definition.profile, error);
+                        logger::warn("[Tuning Menu] Edit Mode save failed | profile={} | {}", a_menu.definition.profile, error);
                         statusMessage = StatusText("layoutProfileSaveFailure");
                     }
                 }
@@ -7679,7 +7679,7 @@ namespace MPL::TuningMenu
                         QueueLayoutReload(StatusText("layoutProfileRestored"));
                     else
                     {
-                        logger::warn("Could not restore Edit Mode changes for {}: {}", a_menu.definition.profile, error);
+                        logger::warn("[Tuning Menu] Edit Mode restore failed | profile={} | {}", a_menu.definition.profile, error);
                         statusMessage = StatusText("layoutProfileRestoreFailure");
                     }
                 }
@@ -7717,7 +7717,7 @@ namespace MPL::TuningMenu
                     else
                     {
                         logger::warn(
-                            "Could not save page {} Edit Mode changes for {}: {}",
+                            "[Tuning Menu] Edit Mode page save failed | page={} | profile={} | {}",
                             a_pageIndex,
                             a_menu.definition.profile,
                             error);
@@ -7756,7 +7756,7 @@ namespace MPL::TuningMenu
                     else
                     {
                         logger::warn(
-                            "Could not restore page {} Edit Mode changes for {}: {}",
+                            "[Tuning Menu] Edit Mode page restore failed | page={} | profile={} | {}",
                             a_pageIndex,
                             a_menu.definition.profile,
                             error);
@@ -7783,7 +7783,7 @@ namespace MPL::TuningMenu
                     for (auto& [profile, session] : layoutEditSessions)
                     {
                         if (!session.dirty || SaveLayoutEditSession(session, error)) continue;
-                        logger::warn("Could not save Edit Mode changes for {}: {}", profile, error);
+                        logger::warn("[Tuning Menu] Edit Mode save failed | profile={} | {}", profile, error);
                         success = false;
                     }
                     if (success)
@@ -7807,7 +7807,7 @@ namespace MPL::TuningMenu
                     for (auto& [profile, session] : layoutEditSessions)
                     {
                         if (!session.dirty || RestoreLayoutEditSession(session, error)) continue;
-                        logger::warn("Could not restore Edit Mode changes for {}: {}", profile, error);
+                        logger::warn("[Tuning Menu] Edit Mode restore failed | profile={} | {}", profile, error);
                         success = false;
                     }
                     if (success)
@@ -7929,7 +7929,7 @@ namespace MPL::TuningMenu
             auto* editSession = EnsureLayoutEditSession(a_menu.definition.profile, a_menu.path, error);
             if (!editSession)
             {
-                logger::warn("Could not open Profile page Edit Mode for {}: {}", a_menu.definition.profile, error);
+                logger::warn("[Tuning Menu] Profile Edit Mode open failed | profile={} | {}", a_menu.definition.profile, error);
                 statusMessage = StatusText("layoutEditSessionFailure");
                 return;
             }
@@ -8136,7 +8136,7 @@ namespace MPL::TuningMenu
             auto* editSession = EnsureLayoutEditSession(a_menu.definition.profile, a_menu.path, error);
             if (!editSession)
             {
-                logger::warn("Could not open Edit Mode for {}: {}", a_menu.definition.profile, error);
+                logger::warn("[Tuning Menu] Edit Mode open failed | profile={} | {}", a_menu.definition.profile, error);
                 statusMessage = StatusText("layoutEditSessionFailure");
                 return;
             }
@@ -8703,14 +8703,14 @@ namespace MPL::TuningMenu
                 const auto sourcePath = source != copySources.end() ? (*source)->directory : std::filesystem::path{};
                 if (SliderCreator::CreateProfile(kProfileRoot, profileName, error, sourcePath))
                 {
-                    logger::info("Created TuningUtil profile {} in {}", profileName, (kProfileRoot / profileName).string());
+                    logger::info("[Tuning Menu] profile={} | status=created | path={}", profileName, (kProfileRoot / profileName).string());
                     newProfileName.fill('\0');
                     profileCopySource.clear();
                     settingsStatusMessage = StatusText("profileCreated", { { "profile", profileName } });
                 }
                 else
                 {
-                    logger::warn("Could not create TuningUtil profile {}: {}", profileName, error);
+                    logger::warn("[Tuning Menu] profile={} | create failed | {}", profileName, error);
                     settingsStatusMessage = StatusText("profileCreateFailure", { { "reason", SliderCreatorErrorText(error) } });
                 }
             }
@@ -8747,14 +8747,14 @@ namespace MPL::TuningMenu
         }
         if (!SKSEMenuFramework::IsInstalled())
         {
-            logger::info("SKSE Menu Framework is not installed; the Luma profile menu is disabled");
+            logger::info("[Tuning Menu] status=disabled | SKSE Menu Framework missing");
             return;
         }
 
         const auto frameworkVersion = SKSEMenuFramework::GetMenuFrameworkVersion();
         if (frameworkVersion <= 0.0f)
         {
-            logger::warn("SKSE Menu Framework was found but its API is unavailable; the Luma profile menu was not registered");
+            logger::warn("[Tuning Menu] registration failed | SKSE Menu Framework API unavailable");
             return;
         }
 
@@ -8766,7 +8766,7 @@ namespace MPL::TuningMenu
             SKSEMenuFramework::AddSectionItem(SKSEMenuSettings::SettingsProfileLabel(false), RenderSettingsPage);
             registered = true;
             logger::info(
-                "Registered the Luma Settings page with SKSE Menu Framework {}; tuning profile menus are disabled for this launch",
+                "[Tuning Menu] registered | framework={} | settingsPage=true | profilePages=0 | tuningMenu=false",
                 frameworkVersion);
             return;
         }
@@ -8776,9 +8776,9 @@ namespace MPL::TuningMenu
         menuEffectOverride.backgroundBlurEnabled = ReadFrameworkBoolean("BlurBackgroundOnMenu", true);
         menuFrameworkEvent = SKSEMenuFramework::AddEvent(HandleMenuFrameworkEvent, 0.0f);
         logger::info(
-            "Luma profile menu effect override: freeze time {}, background blur {}",
-            menuEffectOverride.freezeTimeEnabled ? "enabled" : "not enabled in SKSE Menu Framework",
-            menuEffectOverride.backgroundBlurEnabled ? "enabled" : "not enabled in SKSE Menu Framework");
+            "[Tuning Menu] effects | freeze={} | blur={}",
+            menuEffectOverride.freezeTimeEnabled,
+            menuEffectOverride.backgroundBlurEnabled);
         const auto pageCount = std::min(profileMenus.size(), kMaximumProfilePages);
         registeredProfilePaths.reserve(pageCount);
         if (SKSEMenuSettings::SettingsProfileFirst())
@@ -8790,7 +8790,7 @@ namespace MPL::TuningMenu
             registeredProfilePaths.push_back(profileMenus[index].path);
             SKSEMenuFramework::AddSectionItem(profileMenus[index].definition.title, kProfileRenderers[index]);
             logger::info(
-                "Registered Luma/{} from {}",
+                "[Tuning Menu] page={} | source={}",
                 profileMenus[index].definition.title,
                 profileMenus[index].path.string());
         }
@@ -8801,14 +8801,14 @@ namespace MPL::TuningMenu
         if (profileMenus.size() > kMaximumProfilePages)
         {
             logger::warn(
-                "Luma found {} profile menus, but only the first {} can be registered",
+                "[Tuning Menu] profile pages={}/{} | excess ignored",
                 profileMenus.size(),
                 kMaximumProfilePages);
         }
         registered = true;
         logger::info(
-            "Registered the Luma Settings page and {} tuning profile page(s) with SKSE Menu Framework {}",
-            pageCount,
-            frameworkVersion);
+            "[Tuning Menu] registered | framework={} | settingsPage=true | profilePages={}",
+            frameworkVersion,
+            pageCount);
     }
 }  // namespace MPL::TuningMenu

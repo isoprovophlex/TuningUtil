@@ -45,10 +45,10 @@ namespace MPL::WeatherRuntime
         const auto lightEntries = loadedData->emittanceLightRefMap.size();
         updateCellEmittance(cell);
         DetailedLogging::Info(
-            "[Effect Lighting] Refreshed {} REGN emittance cache(s) and {} loaded light(s) in cell {:08X} after WTHR sunlight changes",
+            "[Effect Lighting] refresh | cell={:08X} | regions={} | lights={}",
+            cell->GetFormID(),
             refreshedRegions,
-            lightEntries,
-            cell->GetFormID());
+            lightEntries);
         return static_cast<std::uint32_t>(
             std::min<std::size_t>(
                 lightEntries,
@@ -85,7 +85,7 @@ namespace MPL::WeatherRuntime
         {
             result.status = SetWeatherStatus::kAppliedWithoutLoadedData;
             DetailedLogging::Info(
-                "[Emittance Refresh] Forced weather {:08X}, but the player cell has no loaded emittance data",
+                "[Emittance Refresh] weather={:08X} | cellData=unloaded",
                 a_weather->GetFormID());
             return result;
         }
@@ -119,7 +119,7 @@ namespace MPL::WeatherRuntime
                 lightEntries,
                 std::numeric_limits<std::uint32_t>::max()));
         DetailedLogging::Info(
-            "[Emittance Refresh] Cell {:08X}: target={:08X}, override={}, source entries={}, region sources={}, region fallbacks={}, light entries={}",
+            "[Emittance Refresh] cell={:08X} | target={:08X} | override={} | sources={} | regions={} | fallbacks={} | lights={}",
             cell->GetFormID(),
             a_weather->GetFormID(),
             a_override,

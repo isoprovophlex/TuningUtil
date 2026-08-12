@@ -363,7 +363,7 @@ namespace MPL::TuningUtil
                 }
                 else
                 {
-                    logger::warn("Ignored filtered slider {} in {} because time {} is unsupported", a_id, a_source.string(), configured);
+                    logger::warn("[TuningUtil] filtered slider={} | source={} | time={} unsupported", a_id, a_source.string(), configured);
                     return false;
                 }
             }
@@ -379,7 +379,7 @@ namespace MPL::TuningUtil
         {
             if (!ValidSliderID(a_id))
             {
-                logger::warn("Ignored filtered slider in {} because it has no stable id", a_source.string());
+                logger::warn("[TuningUtil] filtered slider ignored | source={} | id missing", a_source.string());
                 return std::nullopt;
             }
 
@@ -397,12 +397,12 @@ namespace MPL::TuningUtil
                 auto setting = ParseFilteredWeatherSetting(specification.path);
                 if (!setting)
                 {
-                    logger::warn("Ignored filtered slider {} in {} because setting {} is unsupported", rule.id, a_source.string(), specification.path);
+                    logger::warn("[TuningUtil] filtered slider={} | source={} | setting={} unsupported", rule.id, a_source.string(), specification.path);
                     return std::nullopt;
                 }
                 if (!rule.settings.empty() && setting->operation != rule.settings.front().operation)
                 {
-                    logger::warn("Ignored filtered slider {} in {} because grouped settings use different operations", rule.id, a_source.string());
+                    logger::warn("[TuningUtil] filtered slider={} | source={} | grouped operations conflict", rule.id, a_source.string());
                     return std::nullopt;
                 }
                 setting->scale = specification.scale;
@@ -436,14 +436,14 @@ namespace MPL::TuningUtil
                     });
                 if (!valid)
                 {
-                    logger::warn("Ignored filtered slider {} in {} because local link {} is unsupported",
+                    logger::warn("[TuningUtil] filtered slider={} | source={} | local link={} unsupported",
                         rule.id, a_source.string(), *rule.localLink);
                     return std::nullopt;
                 }
             }
             if (rule.hueScales && rule.settings.front().operation != FilteredWeatherOperation::saturation)
             {
-                logger::warn("Ignored filtered slider {} in {} because unique saturation scales require saturation settings",
+                logger::warn("[TuningUtil] filtered slider={} | source={} | saturation settings required",
                     rule.id, a_source.string());
                 return std::nullopt;
             }
@@ -485,7 +485,7 @@ namespace MPL::TuningUtil
 
             if (!ValidSliderID(controlID))
             {
-                logger::warn("Ignored filtered settings editor module in {} because it has no stable id", a_source.string());
+                logger::warn("[TuningUtil] filtered editor ignored | source={} | id missing", a_source.string());
                 return result;
             }
             const auto category = Lowercase(Trim(JsonString(a_control, "setting").value_or("")));
@@ -551,7 +551,7 @@ namespace MPL::TuningUtil
             const auto id = Trim(JsonString(a_control, "id").value_or(""));
             if (!ValidSliderID(id))
             {
-                logger::warn("Ignored filtered Lighting Template slider in {} because it has no stable id", a_source.string());
+                logger::warn("[TuningUtil] filtered Lighting Template slider ignored | source={} | id missing", a_source.string());
                 return std::nullopt;
             }
 
@@ -565,7 +565,7 @@ namespace MPL::TuningUtil
                 if (!setting)
                 {
                     logger::warn(
-                        "Ignored filtered Lighting Template slider {} in {} because setting {} is unsupported",
+                        "[TuningUtil] filtered Lighting Template slider={} | source={} | setting={} unsupported",
                         rule.id,
                         a_source.string(),
                         specification.path);
@@ -578,7 +578,7 @@ namespace MPL::TuningUtil
             if (rule.settings.empty())
             {
                 logger::warn(
-                    "Ignored filtered Lighting Template slider {} in {} because it has no supported settings",
+                    "[TuningUtil] filtered Lighting Template slider={} | source={} | settings unsupported",
                     rule.id,
                     a_source.string());
                 return std::nullopt;
@@ -641,7 +641,7 @@ namespace MPL::TuningUtil
                         }
                         else if (*duplicate != rule)
                         {
-                            logger::warn("Ignored conflicting duplicate filtered slider id {} in {}", rule.id, path.string());
+                            logger::warn("[TuningUtil] filtered slider={} ignored | duplicate conflict | source={}", rule.id, path.string());
                         }
                     }
                 }
@@ -687,7 +687,7 @@ namespace MPL::TuningUtil
                     else if (*duplicate != *rule)
                     {
                         logger::warn(
-                            "Ignored conflicting duplicate filtered Lighting Template slider id {} in {}",
+                            "[TuningUtil] filtered Lighting Template slider={} ignored | duplicate conflict | source={}",
                             rule->id,
                             path.string());
                     }
@@ -910,13 +910,13 @@ namespace MPL::TuningUtil
             const auto normalized = JsonOverlay::Overlay(filterSchema, a_json, normalizationError);
             if (!normalized)
             {
-                logger::warn("Could not normalize TuningUtil settings {}: {}", a_source.string(), normalizationError);
+                logger::warn("[TuningUtil] settings normalize failed | source={} | {}", a_source.string(), normalizationError);
                 return std::nullopt;
             }
             const auto parsed = rfl::json::read<Settings, rfl::DefaultIfMissing>(*normalized);
             if (!parsed)
             {
-                logger::warn("Could not load TuningUtil settings {}: {}", a_source.string(), parsed.error().what());
+                logger::warn("[TuningUtil] settings load failed | source={} | {}", a_source.string(), parsed.error().what());
                 return std::nullopt;
             }
             return parsed.value();
@@ -935,7 +935,7 @@ namespace MPL::TuningUtil
             }
 
             logger::warn(
-                "TuningUtil global defaults {} are missing or invalid; using compiled emergency defaults",
+                "[TuningUtil] global defaults invalid | source={} | fallback=compiled",
                 kGlobalDefaultsPath.string());
             globalDefaultsCache = SerializeSettings(Settings{});
             return *globalDefaultsCache;
@@ -981,7 +981,7 @@ namespace MPL::TuningUtil
             const auto localDefaults = LocalDefaultsText(a_profile, error);
             if (!localDefaults)
             {
-                logger::warn("Could not compose TuningUtil defaults for {}: {}", a_profile.name, error);
+                logger::warn("[TuningUtil] {} defaults compose failed | {}", a_profile.name, error);
                 return std::nullopt;
             }
             const auto activePresetSettings = ActivePresetSettingsText(a_profile, error);
@@ -991,7 +991,7 @@ namespace MPL::TuningUtil
             auto defaults = presetDefaults ? ParseSettings(*presetDefaults, ProfileDefaultsPath(a_profile)) : std::nullopt;
             if (!defaults)
             {
-                logger::warn("Could not compose active preset settings for {}: {}", a_profile.name, error);
+                logger::warn("[TuningUtil] {} preset compose failed | {}", a_profile.name, error);
                 return std::nullopt;
             }
 
@@ -1004,12 +1004,12 @@ namespace MPL::TuningUtil
                 {
                     settings = std::move(*parsed);
                     explicitUserSettings = ReadText(UserSettingsPath(a_profile)).value_or("{}");
-                    DetailedLogging::Info("Applied sparse TuningUtil user overrides {}", UserSettingsPath(a_profile).string());
+                    DetailedLogging::Info("[TuningUtil] {} user overrides | source={}", a_profile.name, UserSettingsPath(a_profile).string());
                 }
             }
             else if (!stored)
             {
-                logger::warn("Could not merge TuningUtil user settings {}: {}", UserSettingsPath(a_profile).string(), error);
+                logger::warn("[TuningUtil] user settings merge failed | source={} | {}", UserSettingsPath(a_profile).string(), error);
             }
             return CachedSettings{
                 std::move(settings),
@@ -1078,7 +1078,7 @@ namespace MPL::TuningUtil
             auto parsed = overlaid ? ParseSettings(*overlaid, a_profile.directory / "runtime settings") : std::nullopt;
             if (!parsed)
             {
-                logger::warn("Could not apply TuningUtil settings patch for {}: {}", a_profileName, error);
+                logger::warn("[TuningUtil] {} settings patch failed | {}", a_profileName, error);
                 return false;
             }
             GetSettings(a_profileName) = std::move(*parsed);
@@ -1095,17 +1095,17 @@ namespace MPL::TuningUtil
             std::filesystem::create_directories(path.parent_path(), fileError);
             if (fileError)
             {
-                logger::warn("Could not create TuningUtil user directory {}: {}", path.parent_path().string(), fileError.message());
+                logger::warn("[TuningUtil] user directory create failed | path={} | {}", path.parent_path().string(), fileError.message());
                 return false;
             }
             std::ofstream file(path, std::ios::binary | std::ios::trunc);
             file << CompactLinkArrays(std::string(a_settings)) << '\n';
             if (!file)
             {
-                logger::warn("Could not save TuningUtil user settings {}", path.string());
+                logger::warn("[TuningUtil] user settings save failed | path={}", path.string());
                 return false;
             }
-            logger::info("Saved sparse TuningUtil user overrides to {}", path.string());
+            logger::info("[TuningUtil] user overrides | path={} | status=saved", path.string());
             return true;
         }
 
@@ -1154,20 +1154,20 @@ namespace MPL::TuningUtil
             }
             if (!ParseSettings(*defaultText, ProfileDefaultsPath(a_profile)))
             {
-                logger::warn("Refused to save TuningUtil profile {} because its defaults are unreadable", a_profileName);
+                logger::warn("[TuningUtil] {} save rejected | defaults unreadable", a_profileName);
                 return false;
             }
             const auto current = SerializeSettings(a_settings);
             const auto declared = CombineDeclaredSettings(current, *defaultText, error);
             if (!declared)
             {
-                logger::warn("Could not retain declared settings while saving {}: {}", a_profileName, error);
+                logger::warn("[TuningUtil] {} save failed | declared settings | {}", a_profileName, error);
                 return false;
             }
             const auto difference = JsonOverlay::Difference(*declared, *defaultText, error);
             if (!difference)
             {
-                logger::warn("Could not create sparse TuningUtil settings for {}: {}", a_profileName, error);
+                logger::warn("[TuningUtil] {} save failed | sparse settings | {}", a_profileName, error);
                 return false;
             }
             if (!WriteUserSettings(a_profile, *difference))
@@ -1579,19 +1579,19 @@ namespace MPL::TuningUtil
             if (name.empty())
             {
                 logger::warn(
-                    "Ignored TuningUtil profile {} because profileSettings.json has no valid profile name",
+                    "[TuningUtil] profile ignored | path={} | name invalid",
                     iterator->path().string());
                 continue;
             }
             if (!ParseSettings(*defaults, defaultPath))
             {
-                logger::warn("Ignored TuningUtil profile {} because its defaults are invalid", name);
+                logger::warn("[TuningUtil] {} ignored | defaults invalid", name);
                 continue;
             }
             if (std::ranges::any_of(profiles, [&](const Profile& a_profile)
                     { return Config::IEquals(a_profile.name, name); }))
             {
-                logger::warn("Ignored duplicate TuningUtil profile {} in {}", name, iterator->path().string());
+                logger::warn("[TuningUtil] {} ignored | duplicate | path={}", name, iterator->path().string());
                 continue;
             }
             const auto document = Parse(*defaults);
@@ -1605,7 +1605,7 @@ namespace MPL::TuningUtil
             {
                 pluginFilteredProfileDirectories.push_back(iterator->path());
                 logger::info(
-                    "Disabled TuningUtil profile {} for this session because one of its PluginIndependency plugins is loaded: {}",
+                    "[TuningUtil] {} disabled | PluginIndependency={}",
                     name,
                     PluginDependencyList(independencies));
                 continue;
@@ -1614,7 +1614,7 @@ namespace MPL::TuningUtil
             {
                 pluginFilteredProfileDirectories.push_back(iterator->path());
                 logger::info(
-                    "Disabled TuningUtil profile {} for this session because none of its PluginDependency plugins are loaded: {}",
+                    "[TuningUtil] {} disabled | PluginDependency missing={}",
                     name,
                     PluginDependencyList(dependencies));
                 continue;
@@ -1642,7 +1642,7 @@ namespace MPL::TuningUtil
         SortProfiles();
         discoveryInitialized = true;
         DetailedLogging::Info(
-            "Cached {} settings-defined TuningUtil profile(s); SKSE menu definitions are optional",
+            "[TuningUtil] profiles={}",
             profiles.size());
         return profiles;
     }
@@ -1889,10 +1889,10 @@ namespace MPL::TuningUtil
             }
             changed = true;
             DetailedLogging::Info(
-                "Reloaded {} filtered weather rule(s) and {} filtered Lighting Template rule(s) for TuningUtil profile {}",
+                "[TuningUtil] {} filters | weather={} | lightingTemplates={}",
+                profile.name,
                 profile.filteredWeatherRules.size(),
-                profile.filteredLightingTemplateRules.size(),
-                profile.name);
+                profile.filteredLightingTemplateRules.size());
         }
         return changed;
     }
@@ -1904,7 +1904,7 @@ namespace MPL::TuningUtil
         const auto* profile = FindProfile(name);
         if (name.empty() || !profile)
         {
-            logger::warn("Rejected TuningUtil settings access for unknown profile {}", a_profileName);
+            logger::warn("[TuningUtil] settings access rejected | profile={} unknown", a_profileName);
             return rejected;
         }
         const auto cacheKey = Lowercase(name);
@@ -1916,7 +1916,7 @@ namespace MPL::TuningUtil
         auto settings = LoadStoredSettings(*profile);
         if (!settings)
         {
-            logger::warn("TuningUtil profile {} has no readable defaults; using neutral settings", name);
+            logger::warn("[TuningUtil] {} defaults unreadable | fallback=neutral", name);
             return settingsCache.try_emplace(cacheKey, CachedSettings{}).first->second.settings;
         }
         return settingsCache.try_emplace(cacheKey, std::move(*settings)).first->second.settings;
@@ -1940,7 +1940,7 @@ namespace MPL::TuningUtil
             }
             else
             {
-                logger::warn("Could not compose defaults for TuningUtil profile {}: {}", profileName, error);
+                logger::warn("[TuningUtil] {} stack defaults failed | {}", profileName, error);
             }
         }
         for (const auto& profileName : a_profileNames)
@@ -1957,7 +1957,7 @@ namespace MPL::TuningUtil
             }
             else
             {
-                logger::warn("Could not compose active presets for TuningUtil profile {}: {}", profileName, error);
+                logger::warn("[TuningUtil] {} stack presets failed | {}", profileName, error);
             }
         }
         for (const auto& profileName : a_profileNames)
@@ -1974,7 +1974,7 @@ namespace MPL::TuningUtil
             }
             else
             {
-                logger::warn("Could not compose user settings for TuningUtil profile {}: {}", profileName, error);
+                logger::warn("[TuningUtil] {} stack user settings failed | {}", profileName, error);
             }
         }
         return ParseSettings(combined, "resolved profile stack").value_or(Settings{});
@@ -2073,7 +2073,7 @@ namespace MPL::TuningUtil
                 if (a_error.empty()) a_error = "Matching user settings could not be removed.";
                 return false;
             }
-            DetailedLogging::Info("Removed user overrides matching the selected preset for {}", profile->name);
+            DetailedLogging::Info("[TuningUtil] {} user overrides | matchingPreset removed", profile->name);
         }
         return RestoreSettings(a_profileName);
     }
@@ -2152,7 +2152,7 @@ namespace MPL::TuningUtil
                 "The profile settings were updated, but {} could not be inspected: {}",
                 userPath.string(),
                 removeError.message());
-            logger::warn("{}", a_error);
+            logger::warn("[TuningUtil] permanent settings warning | {}", a_error);
         }
         else if (hasUserSettingsFile &&
                  !std::filesystem::remove(userPath, removeError) &&
@@ -2163,7 +2163,7 @@ namespace MPL::TuningUtil
                 "The profile settings were updated, but {} could not be cleared: {}",
                 userPath.string(),
                 removeError ? removeError.message() : "unknown error");
-            logger::warn("{}", a_error);
+            logger::warn("[TuningUtil] permanent settings warning | {}", a_error);
         }
 
         profile->defaultSettingRoots = SettingRoots(*merged);
@@ -2173,7 +2173,7 @@ namespace MPL::TuningUtil
         ApplySettings();
         if (userSettingsCleared)
             logger::info(
-                "Made user settings permanent for profile {} in {}",
+                "[TuningUtil] {} user settings | permanent=true | path={}",
                 canonicalName,
                 defaultsPath.string());
         a_profileName = canonicalName;
@@ -2201,7 +2201,7 @@ namespace MPL::TuningUtil
                                     std::nullopt;
         if (!difference || !WriteUserSettings(*profile, *difference))
         {
-            logger::warn("Could not save TuningUtil page settings for {}: {}", a_profileName, error);
+            logger::warn("[TuningUtil] {} page save failed | {}", a_profileName, error);
             return false;
         }
         if (auto cached = settingsCache.find(Lowercase(profile->name)); cached != settingsCache.end())
@@ -2350,8 +2350,7 @@ namespace MPL::TuningUtil
             globalDefaultsCache.reset();
             discoveryInitialized = false;
             runtimeStateReleased = true;
-            logger::info(
-                "TuningUtil applied profiles in startup-only mode and retained point-light state for runtime reference corrections");
+            logger::info("[TuningUtil] startupOnly=true | pointLightState=retained");
         }
     }
 }  // namespace MPL::TuningUtil

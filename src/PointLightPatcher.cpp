@@ -84,6 +84,13 @@ namespace MPL::PointLightPatcher
             bool hasApplied = false;
         };
 
+        struct ReferenceRuntimeFadeBaseline
+        {
+            float sourceFade;
+            float appliedFade;
+            bool hasApplied = false;
+        };
+
         struct DocumentDeleter
         {
             void operator()(yyjson_doc* a_document) const { yyjson_doc_free(a_document); }
@@ -99,6 +106,8 @@ namespace MPL::PointLightPatcher
 
         std::unordered_map<RE::TESObjectLIGH*, Baseline> baselines;
         std::unordered_map<RE::TESObjectREFR*, float> referenceFadeBaselines;
+        std::unordered_map<RE::TESObjectREFR*, ReferenceRuntimeFadeBaseline>
+            referenceRuntimeFadeBaselines;
         std::unordered_map<RE::NiPointLight*, LightPlacerRuntimeBaseline> lightPlacerRuntimeBaselines;
         std::unordered_set<RE::TESObjectLIGH*> externallyEmissiveLights;
         std::optional<std::vector<std::string>> effectLightingRegionExclusionConfig;
@@ -127,7 +136,8 @@ namespace MPL::PointLightPatcher
         void QueueLoadedPointLightRefresh(RE::FormID);
         LoadedReferenceRefreshResult RefreshLoadedLightReferences(
             const AppliedState&,
-            bool = true);
+            bool = true,
+            std::string_view = "loaded-reference-refresh");
 
         bool IsCurrentCell(const RE::FormID a_cell)
         {
@@ -193,6 +203,22 @@ namespace MPL::PointLightPatcher
             return extra ? extra->source : nullptr;
         }
 
+        bool IsReferenceDiagnosticEnabled(
+            const RE::TESObjectREFR* a_reference)
+        {
+            if (!DetailedLogging::IsEnabled() || !a_reference)
+            {
+                return false;
+            }
+            if (!ExternalEmittanceSource(a_reference))
+            {
+                return false;
+            }
+            const auto* player = RE::PlayerCharacter::GetSingleton();
+            return player && a_reference->GetParentCell() ==
+                                 player->GetParentCell();
+        }
+
         bool HasExternalEmittance(const RE::TESObjectREFR* a_reference)
         {
             return ExternalEmittanceSource(a_reference) != nullptr;
@@ -252,14 +278,14 @@ namespace MPL::PointLightPatcher
                 if (!form)
                 {
                     logger::warn(
-                        "Point Light classification region {} could not be resolved; ignoring it",
+                        "[Point Lights] region={} | status=unresolved",
                         configured);
                     continue;
                 }
                 if (!form->Is(RE::FormType::Region))
                 {
                     logger::warn(
-                        "Point Light classification entry {} ({:08X}) is not a REGN record; ignoring it",
+                        "[Point Lights] region={} | form={:08X} | type=invalid",
                         configured,
                         form->GetFormID());
                     continue;
@@ -267,7 +293,7 @@ namespace MPL::PointLightPatcher
                 result.insert(form->GetFormID());
             }
             logger::info(
-                "Point Light classification routes {} REGN record(s) to Brightness instead of Sunlight",
+                "[Point Lights] regions | Brightness={}",
                 result.size());
             return result;
         }
@@ -323,7 +349,7 @@ namespace MPL::PointLightPatcher
                 const auto text = ReadFile(path);
                 if (!text)
                 {
-                    logger::warn("Could not read XEMIUtil Light Placer mapping {}", path.string());
+                    logger::warn("[Point Lights] XEMIUtil mapping read failed | file={}", path.string());
                     continue;
                 }
                 yyjson_read_err readError{};
@@ -332,7 +358,7 @@ namespace MPL::PointLightPatcher
                 auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
                 if (!yyjson_is_arr(root))
                 {
-                    logger::warn("Could not parse XEMIUtil Light Placer mapping {}", path.string());
+                    logger::warn("[Point Lights] XEMIUtil mapping parse failed | file={}", path.string());
                     continue;
                 }
                 std::size_t entryIndex = 0;
@@ -359,7 +385,7 @@ namespace MPL::PointLightPatcher
                     }
                 }
             }
-            DetailedLogging::Info("Loaded {} XEMIUtil Light Placer emittance mapping(s)", result.size());
+            DetailedLogging::Info("[Point Lights] XEMIUtil mappings={}", result.size());
             return result;
         }
 
@@ -791,13 +817,12 @@ namespace MPL::PointLightPatcher
             catch (const std::exception& error)
             {
                 logger::error(
-                    "TuningUtil Light Placer transformer failed: {}",
+                    "[Point Lights] Light Placer transform failed | {}",
                     error.what());
             }
             catch (...)
             {
-                logger::error(
-                    "TuningUtil Light Placer transformer failed with an unknown exception");
+                logger::error("[Point Lights] Light Placer transform failed | unknown exception");
             }
             return false;
         }
@@ -808,8 +833,7 @@ namespace MPL::PointLightPatcher
             if (!a_succeeded)
             {
                 lightPlacerState.reset();
-                logger::warn(
-                    "Heliosphan's combined Light Placer reload failed; TuningUtil will retry the requested settings");
+                logger::warn("[Point Lights] Light Placer reload failed | broker=Heliosphan | retry=true");
             }
             else if (kUseDirectLightPlacerNiLights)
             {
@@ -848,9 +872,7 @@ namespace MPL::PointLightPatcher
                 !heliosphanAPI->RegisterReferenceClient)
             {
                 heliosphanAPI = nullptr;
-                DetailedLogging::Info(
-                    "{}",
-                    "Heliosphan Light Placer broker is unavailable; using TuningUtil's standalone reload path");
+                DetailedLogging::Info("{}", "[Point Lights] Light Placer broker=standalone | Heliosphan unavailable");
                 return false;
             }
             static const HeliosphanAPI::LightPlacerTransformer transformer{
@@ -863,8 +885,7 @@ namespace MPL::PointLightPatcher
                     std::addressof(transformer)))
             {
                 heliosphanAPI = nullptr;
-                logger::warn(
-                    "Heliosphan rejected TuningUtil's Light Placer transformer; using the standalone reload path");
+                logger::warn("[Point Lights] Light Placer broker=standalone | transformer rejected");
                 return false;
             }
             static const HeliosphanAPI::ReferenceCallbacks
@@ -877,12 +898,11 @@ namespace MPL::PointLightPatcher
                     std::addressof(heliosphanReferenceCallbacks));
             if (!heliosphanReferenceNotifications)
             {
-                logger::warn(
-                    "Heliosphan rejected TuningUtil's reference-emittance client");
+                logger::warn("[Point Lights] Heliosphan reference client=rejected");
             }
             logger::info(
-                "Connected TuningUtil point-light settings to Heliosphan's Light Placer reload broker; reference notifications={}",
-                heliosphanReferenceNotifications ? "available" : "unavailable");
+                "[Point Lights] Heliosphan | LightPlacer=true | referenceNotifications={}",
+                heliosphanReferenceNotifications);
             return true;
         }
 
@@ -899,13 +919,13 @@ namespace MPL::PointLightPatcher
             }
             if (!command)
             {
-                DetailedLogging::Info("{}", "Light Placer reload command was not found; placed-light refresh skipped");
+                DetailedLogging::Info("{}", "[Point Lights] Light Placer reload=skipped | command unavailable");
                 return false;
             }
             auto* script = RE::IFormFactory::Create<RE::Script>();
             if (!script)
             {
-                logger::error("Could not create the console script needed to reload Light Placer");
+                logger::error("[Point Lights] Light Placer reload failed | console script unavailable");
                 return false;
             }
             script->SetCommand(command);
@@ -947,13 +967,13 @@ namespace MPL::PointLightPatcher
                 const auto original = ReadFile(iterator->path());
                 if (!original)
                 {
-                    logger::warn("Could not read Light Placer config {}", iterator->path().string());
+                    logger::warn("[Point Lights] Light Placer read failed | file={}", iterator->path().string());
                     continue;
                 }
                 const auto transformed = TransformLightPlacerJson(*original, a_state, mappings);
                 if (!transformed)
                 {
-                    logger::warn("Could not transform Light Placer config {}; leaving it unchanged", iterator->path().string());
+                    logger::warn("[Point Lights] Light Placer transform failed | file={} | unchanged=true", iterator->path().string());
                     continue;
                 }
                 replacements.push_back({ iterator->path(), *original, *transformed });
@@ -965,7 +985,7 @@ namespace MPL::PointLightPatcher
             {
                 if (!WriteFile(replacements[attempted].path, replacements[attempted].transformed))
                 {
-                    logger::error("Could not temporarily update Light Placer config {}", replacements[attempted].path.string());
+                    logger::error("[Point Lights] Light Placer temporary write failed | file={}", replacements[attempted].path.string());
                     ++attempted;
                     writeSucceeded = false;
                     break;
@@ -980,12 +1000,12 @@ namespace MPL::PointLightPatcher
             {
                 if (!WriteFile(replacements[i].path, replacements[i].original))
                 {
-                    logger::critical("Could not restore Light Placer config {}", replacements[i].path.string());
+                    logger::critical("[Point Lights] Light Placer restore failed | file={}", replacements[i].path.string());
                 }
             }
             if (writeSucceeded)
             {
-                logger::info("Point Lights refreshed {} Light Placer config(s) and restored their original files", attempted);
+                logger::info("[Point Lights] Light Placer reload | files={} | restored=true", attempted);
             }
             if (reloadSucceeded && kUseDirectLightPlacerNiLights)
             {
@@ -1293,7 +1313,7 @@ namespace MPL::PointLightPatcher
             else if (a_logEmptyResult || lightCount != 0)
             {
                 DetailedLogging::Info(
-                    "Directly tuned {} of {} Light Placer NiLight node(s) across {} loaded reference(s)",
+                    "[Point Lights] Light Placer runtime | changed={}/{} | references={}",
                     changedCount,
                     lightCount,
                     loadedReferenceCount);
@@ -1333,7 +1353,7 @@ namespace MPL::PointLightPatcher
                         if (lightCount != 0)
                         {
                             DetailedLogging::Info(
-                                "Post-reload direct Light Placer refresh found {} NiLight node(s) on attempt {}/{}",
+                                "[Point Lights] Light Placer post-reload | nodes={} | attempt={}/{}",
                                 lightCount,
                                 a_attempt,
                                 kPostReloadRefreshAttempts);
@@ -1353,14 +1373,12 @@ namespace MPL::PointLightPatcher
                         if (a_retryUntilFound)
                         {
                             logger::warn(
-                                "Post-reload direct Light Placer refresh found no NiLight nodes after {} bounded attempts; the next cell-load refresh remains active",
+                                "[Point Lights] Light Placer post-reload | nodes=0 | attempts={} | cellRefresh=true",
                                 kPostReloadRefreshAttempts);
                         }
                         else
                         {
-                            DetailedLogging::Info(
-                                "{}",
-                                "Post-reload direct Light Placer refresh found no previously loaded NiLight nodes; bounded retries were not needed");
+                            DetailedLogging::Info("{}", "[Point Lights] Light Placer post-reload | nodes=0 | retries=false");
                         }
                     };
                     if (auto* taskInterface =
@@ -1430,12 +1448,13 @@ namespace MPL::PointLightPatcher
                 {
                     loadedReferences = RefreshLoadedLightReferences(
                         *appliedState,
-                        false);
+                        false,
+                        "cell-load");
                 }
                 DirectLightRefreshResult directLights;
                 RefreshDirectLightPlacerLights(false, &directLights);
                 DetailedLogging::Info(
-                    "TuningUtil cell {:08X} point-light refresh completed: loaded point-light references={}, Brightness routes={}, Sunlight routes={}; Light Placer nodes changed={}/{} across {} loaded references",
+                    "[Point Lights] cell={:08X} | references={} | Brightness={} | Sunlight={} | LightPlacer={}/{} | loadedReferences={}",
                     a_cell,
                     loadedReferences.refreshed,
                     loadedReferences.brightness,
@@ -1462,8 +1481,7 @@ namespace MPL::PointLightPatcher
                 loadedReferenceRefreshPending.store(
                     false,
                     std::memory_order_release);
-                logger::warn(
-                    "Point Lights could not queue its loaded-cell refresh on the game thread");
+                logger::warn("[Point Lights] loaded-cell refresh queue failed | game thread unavailable");
             }
         }
 
@@ -1490,18 +1508,79 @@ namespace MPL::PointLightPatcher
 
         CellFullyLoadedEventSink cellFullyLoadedEventSink;
 
-        bool ApplyReferenceFadeOverride(RE::TESObjectREFR* a_reference, const AppliedState& a_state)
+        bool ApplyReferenceFadeOverride(
+            RE::TESObjectREFR* a_reference,
+            const AppliedState& a_state,
+            const std::string_view a_context =
+                "reference-fade")
         {
             auto* light = GetBaseLight(a_reference);
             auto* extraLightData = a_reference ? a_reference->extraList.GetByType<RE::ExtraLightData>() : nullptr;
-            if (!light || !extraLightData || extraLightData->data.fade <= 0.0f)
+            if (!light || !extraLightData)
             {
                 return false;
             }
 
-            const auto baseline = referenceFadeBaselines.try_emplace(a_reference, extraLightData->data.fade).first->second;
+            const auto before = extraLightData->data.fade;
             const auto multiplier = ReferenceFadeMultiplier(a_reference, a_state);
-            extraLightData->data.fade = baseline * static_cast<float>(std::max(0.0, multiplier));
+            auto baseline = referenceFadeBaselines.find(a_reference);
+            if (baseline == referenceFadeBaselines.end() &&
+                extraLightData->data.fade <= 0.0f)
+            {
+                if (IsReferenceDiagnosticEnabled(a_reference))
+                {
+                    const auto* source = ExternalEmittanceSource(a_reference);
+                    const auto* cell = a_reference->GetParentCell();
+                    DetailedLogging::Info(
+                        "[Point Lights] diagnostic | stage={} | operation=reference-fade | result=skipped-nonpositive | cell={:08X} | reference={:08X} | base=[{:08X}] | XEMI=[{:08X}] | route={} | baseline={:.6f} | multiplier={:.6f} | before={:.6f} | after={:.6f} | 3D={}",
+                        a_context,
+                        cell ? cell->GetFormID() : 0,
+                        a_reference->GetFormID(),
+                        light->GetFormID(),
+                        source ? source->GetFormID() : 0,
+                        IsEffectLightingSource(source, a_state) ?
+                            "Sunlight" :
+                            "Brightness",
+                        0.0f,
+                        multiplier,
+                        before,
+                        extraLightData->data.fade,
+                        a_reference->Is3DLoaded());
+                }
+                return false;
+            }
+
+            if (baseline == referenceFadeBaselines.end())
+            {
+                baseline = referenceFadeBaselines
+                               .emplace(
+                                   a_reference,
+                                   extraLightData->data.fade)
+                               .first;
+            }
+            extraLightData->data.fade = baseline->second *
+                                        static_cast<float>(
+                                            std::max(0.0, multiplier));
+            if (IsReferenceDiagnosticEnabled(a_reference))
+            {
+                const auto* source = ExternalEmittanceSource(a_reference);
+                const auto* cell = a_reference->GetParentCell();
+                DetailedLogging::Info(
+                    "[Point Lights] diagnostic | stage={} | operation=reference-fade | result=applied | cell={:08X} | reference={:08X} | base=[{:08X}] | XEMI=[{:08X}] | route={} | baseline={:.6f} | multiplier={:.6f} | before={:.6f} | after={:.6f} | 3D={}",
+                    a_context,
+                    cell ? cell->GetFormID() : 0,
+                    a_reference->GetFormID(),
+                    light->GetFormID(),
+                    source ? source->GetFormID() : 0,
+                    IsEffectLightingSource(source, a_state) ?
+                        "Sunlight" :
+                        "Brightness",
+                    baseline->second,
+                    multiplier,
+                    before,
+                    extraLightData->data.fade,
+                    a_reference->Is3DLoaded());
+            }
             return true;
         }
 
@@ -1517,13 +1596,19 @@ namespace MPL::PointLightPatcher
                 {
                     externallyEmissiveLights.insert(light);
                 }
-                if (!ApplyReferenceFadeOverride(reference, a_state)) continue;
+                if (!ApplyReferenceFadeOverride(
+                        reference,
+                        a_state,
+                        "settings-apply"))
+                {
+                    continue;
+                }
                 ++adjusted;
                 if (IsEffectLightingSource(ExternalEmittanceSource(reference), a_state)) ++sunlight;
                 else ++brightness;
             }
             DetailedLogging::Info(
-                "Adjusted {} reference-level point-light fade override(s): {} Brightness, {} Sunlight",
+                "[Point Lights] reference fade | adjusted={} | Brightness={} | Sunlight={}",
                 adjusted,
                 brightness,
                 sunlight);
@@ -1532,7 +1617,8 @@ namespace MPL::PointLightPatcher
         bool RefreshLoadedLightReference(
             RE::TESObjectREFR* a_reference,
             const AppliedState& a_state,
-            const WeatherPatcher::AmbientHueScaleValues& a_hueScales)
+            const WeatherPatcher::AmbientHueScaleValues& a_hueScales,
+            const std::string_view a_context)
         {
             auto* light = GetBaseLight(a_reference);
             if (!light || !a_reference->Is3DLoaded())
@@ -1540,6 +1626,36 @@ namespace MPL::PointLightPatcher
                 return false;
             }
 
+            float runtimeFadeBeforeUpdate = 0.0f;
+            bool hadRuntimeLightBeforeUpdate = false;
+            const bool logDiagnostic =
+                IsReferenceDiagnosticEnabled(a_reference);
+            if (logDiagnostic)
+            {
+                if (auto* extraLight =
+                        a_reference->extraList.GetByType<RE::ExtraLight>();
+                    extraLight && extraLight->lightData &&
+                    extraLight->lightData->light)
+                {
+                    runtimeFadeBeforeUpdate =
+                        extraLight->lightData->light
+                            ->GetLightRuntimeData()
+                            .fade;
+                    hadRuntimeLightBeforeUpdate = true;
+                }
+            }
+
+            const auto* emittanceSource =
+                ExternalEmittanceSource(a_reference);
+            const bool sharedXEMIBase =
+                externallyEmissiveLights.contains(light);
+            const auto baseline = baselines.find(light);
+            const auto sourceFade = baseline != baselines.end() ?
+                                        baseline->second.fade :
+                                        light->fade;
+            const auto adjustedRecordFade = light->fade;
+            const bool correctBaseFadeContribution =
+                sharedXEMIBase && baseline != baselines.end();
             a_reference->UpdateRefLight();
             if (auto* extraLight = a_reference->extraList.GetByType<RE::ExtraLight>();
                 extraLight && extraLight->lightData && extraLight->lightData->light)
@@ -1547,8 +1663,6 @@ namespace MPL::PointLightPatcher
                 const auto* extraLightData =
                     a_reference->extraList.GetByType<RE::ExtraLightData>();
                 auto& runtime = extraLight->lightData->light->GetLightRuntimeData();
-                const auto* emittanceSource = ExternalEmittanceSource(a_reference);
-                const bool sharedXEMIBase = externallyEmissiveLights.contains(light);
                 if (!emittanceSource)
                 {
                     constexpr float colorChannelScale = 1.0f / 255.0f;
@@ -1563,27 +1677,96 @@ namespace MPL::PointLightPatcher
                         runtime.diffuse = TuneLightPlacerDiffuse(
                             runtime.diffuse,
                             a_state,
-                            a_hueScales);
+                        a_hueScales);
                     }
                 }
-                const bool hasReferenceFade = extraLightData && extraLightData->data.fade > 0.0f;
-                const auto baseline = baselines.find(light);
-                const auto sourceFade = baseline != baselines.end() ?
-                                            baseline->second.fade :
-                                            light->fade;
-                runtime.fade = hasReferenceFade ?
-                                   extraLightData->data.fade :
-                               sharedXEMIBase ?
-                                   sourceFade * static_cast<float>(
-                                                    std::max(0.0, ReferenceFadeMultiplier(a_reference, a_state))) :
-                                   light->fade;
+                const bool hasReferenceFade =
+                    extraLightData &&
+                    (extraLightData->data.fade > 0.0f ||
+                     referenceFadeBaselines.contains(a_reference));
+                const auto runtimeFadeAfterUpdate = runtime.fade;
+                const auto recordFadeAdjustment =
+                    correctBaseFadeContribution ?
+                        adjustedRecordFade - sourceFade :
+                        0.0f;
+                const auto normalizedRuntimeFade =
+                    std::max(
+                        0.0f,
+                        runtimeFadeAfterUpdate - recordFadeAdjustment);
+                const auto multiplier =
+                    std::max(
+                        0.0,
+                        ReferenceFadeMultiplier(a_reference, a_state));
+                float effectiveRuntimeBaseline = sourceFade;
+                if (sharedXEMIBase && !hasReferenceFade)
+                {
+                    auto [runtimeBaseline, inserted] =
+                        referenceRuntimeFadeBaselines.try_emplace(
+                            a_reference,
+                            ReferenceRuntimeFadeBaseline{
+                                .sourceFade = normalizedRuntimeFade,
+                                .appliedFade = 0.0f,
+                                .hasApplied = false,
+                            });
+                    auto& captured = runtimeBaseline->second;
+                    if (!inserted &&
+                        (!captured.hasApplied ||
+                         !NearlyEqual(
+                             runtimeFadeAfterUpdate,
+                             captured.appliedFade)))
+                    {
+                        captured.sourceFade = normalizedRuntimeFade;
+                    }
+                    effectiveRuntimeBaseline = captured.sourceFade;
+                    runtime.fade = effectiveRuntimeBaseline *
+                                   static_cast<float>(multiplier);
+                    captured.appliedFade = runtime.fade;
+                    captured.hasApplied = true;
+                }
+                else
+                {
+                    referenceRuntimeFadeBaselines.erase(a_reference);
+                    runtime.fade = hasReferenceFade ?
+                                       extraLightData->data.fade :
+                                       light->fade;
+                }
+                if (logDiagnostic)
+                {
+                    const auto* cell = a_reference->GetParentCell();
+                    DetailedLogging::Info(
+                        "[Point Lights] diagnostic | stage={} | operation=runtime-refresh | cell={:08X} | reference={:08X} | base=[{:08X}] | XEMI=[{:08X}] | route={} | sharedXEMI={} | corrected={} | recordFade={:.6f} | baselineFade={:.6f} | adjustment={:.6f} | normalized={:.6f} | runtimeBaseline={:.6f} | multiplier={:.6f} | referenceFade={} | preAvailable={} | pre={:.6f} | post={:.6f} | final={:.6f}",
+                        a_context,
+                        cell ? cell->GetFormID() : 0,
+                        a_reference->GetFormID(),
+                        light->GetFormID(),
+                        emittanceSource ? emittanceSource->GetFormID() : 0,
+                        IsEffectLightingSource(emittanceSource, a_state) ?
+                            "Sunlight" :
+                            "Brightness",
+                        sharedXEMIBase,
+                        correctBaseFadeContribution,
+                        light->fade,
+                        sourceFade,
+                        recordFadeAdjustment,
+                        normalizedRuntimeFade,
+                        effectiveRuntimeBaseline,
+                        multiplier,
+                        hasReferenceFade ?
+                            extraLightData->data.fade :
+                            0.0f,
+                        hadRuntimeLightBeforeUpdate,
+                        runtimeFadeBeforeUpdate,
+                        runtimeFadeAfterUpdate,
+                        runtime.fade);
+                }
             }
             return true;
         }
 
         LoadedReferenceRefreshResult RefreshLoadedLightReferences(
             const AppliedState& a_state,
-            const bool a_logResult)
+            const bool a_logResult,
+            const std::string_view a_context)
         {
             LoadedReferenceRefreshResult result;
             auto* tes = RE::TES::GetSingleton();
@@ -1592,13 +1775,27 @@ namespace MPL::PointLightPatcher
                 return result;
             }
             const auto hueScales = WeatherPatcher::ResolveHueScales(a_state.settings.hueScales);
+            std::unordered_set<RE::TESObjectREFR*> loadedReferences;
             tes->ForEachReference([&](RE::TESObjectREFR* a_reference)
                 {
                 if (auto* light = GetBaseLight(a_reference))
                 {
+                    if (a_reference->Is3DLoaded())
+                    {
+                        loadedReferences.insert(a_reference);
+                    }
                     ReconcileExternalEmittanceBase(a_reference, std::addressof(a_state));
-                    ApplyReferenceFadeOverride(a_reference, a_state);
-                    result.refreshed += RefreshLoadedLightReference(a_reference, a_state, hueScales) ? 1 : 0;
+                    ApplyReferenceFadeOverride(
+                        a_reference,
+                        a_state,
+                        a_context);
+                    result.refreshed += RefreshLoadedLightReference(
+                                            a_reference,
+                                            a_state,
+                                            hueScales,
+                                            a_context) ?
+                                            1 :
+                                            0;
                     if (a_reference->Is3DLoaded() && externallyEmissiveLights.contains(light))
                     {
                         if (IsEffectLightingSource(ExternalEmittanceSource(a_reference), a_state)) ++result.sunlight;
@@ -1606,10 +1803,16 @@ namespace MPL::PointLightPatcher
                     }
                 }
                 return RE::BSContainer::ForEachResult::kContinue; });
+            std::erase_if(
+                referenceRuntimeFadeBaselines,
+                [&](const auto& a_entry)
+                {
+                    return !loadedReferences.contains(a_entry.first);
+                });
             if (a_logResult)
             {
                 DetailedLogging::Info(
-                    "Refreshed {} loaded point-light reference(s); shared XEMI-backed bases routed {} reference(s) to Brightness and {} to Sunlight",
+                    "[Point Lights] loaded references | refreshed={} | Brightness={} | Sunlight={}",
                     result.refreshed,
                     result.brightness,
                     result.sunlight);
@@ -1696,10 +1899,13 @@ namespace MPL::PointLightPatcher
             }
 
             appliedState = state;
-            RefreshLoadedLightReferences(state);
+            RefreshLoadedLightReferences(
+                state,
+                true,
+                "settings-apply");
             RefreshDirectLightPlacerLights();
             logger::info(
-                "Point Lights applied Brightness fade to {} light record(s) and color tuning to {} non-XEMI light record(s); {} XEMI-backed base record(s) use per-reference fade routing",
+                "[Point Lights] records | fade={} | color={} | perReference={}",
                 fadeCount,
                 lightCount,
                 externalEmittanceCount);
@@ -1725,8 +1931,7 @@ namespace MPL::PointLightPatcher
                 }
                 if (brokered)
                 {
-                    logger::info(
-                        "Point Lights requested a combined Heliosphan and TuningUtil Light Placer reload");
+                    logger::info("[Point Lights] Light Placer reload | broker=Heliosphan | status=requested");
                 }
                 else
                 {
@@ -1745,8 +1950,7 @@ namespace MPL::PointLightPatcher
         }
         if (!kUseDirectLightPlacerNiLights)
         {
-            logger::info(
-                "Point Lights is using the retained Light Placer JSON transform and reload path");
+            logger::info("[Point Lights] Light Placer | mode=JSON reload");
             runtimeEventsInstalled = true;
             return;
         }
@@ -1754,15 +1958,13 @@ namespace MPL::PointLightPatcher
             RE::ScriptEventSourceHolder::GetSingleton();
         if (!eventSource)
         {
-            logger::warn(
-                "Point Lights could not register its direct Light Placer cell-load refresh");
+            logger::warn("[Point Lights] Light Placer cell refresh=unregistered");
             return;
         }
         eventSource->AddEventSink(
             std::addressof(cellFullyLoadedEventSink));
         runtimeEventsInstalled = true;
-        logger::info(
-            "Point Lights enabled direct Light Placer NiLight color tuning and JSON fade reloads");
+        logger::info("[Point Lights] Light Placer | mode=NiLight color/JSON fade");
     }
 
     void RecordCellChangeThread()
@@ -1793,6 +1995,8 @@ namespace MPL::PointLightPatcher
         ResetCellTracking();
         appliedState.reset();
         lightPlacerState.reset();
+        referenceFadeBaselines.clear();
+        referenceRuntimeFadeBaselines.clear();
         if (!brokerReloadPending.load(std::memory_order_acquire))
         {
             std::scoped_lock lock(brokerStateLock);
@@ -1870,7 +2074,10 @@ namespace MPL::PointLightPatcher
             {
                 if (appliedState)
                 {
-                    ApplyReferenceFadeOverride(a_reference, *appliedState);
+                    ApplyReferenceFadeOverride(
+                        a_reference,
+                        *appliedState,
+                        "reference-initialization");
                 }
                 const auto hueScales = appliedState ?
                                            std::optional{ WeatherPatcher::ResolveHueScales(
@@ -1881,14 +2088,18 @@ namespace MPL::PointLightPatcher
                     RefreshLoadedLightReference(
                         a_reference,
                         *appliedState,
-                        *hueScales);
+                        *hueScales,
+                        "reference-initialization");
                 }
             }
             return;
         }
         if (appliedState)
         {
-            ApplyReferenceFadeOverride(a_reference, *appliedState);
+            ApplyReferenceFadeOverride(
+                a_reference,
+                *appliedState,
+                "reference-initialization");
         }
     }
 }  // namespace MPL::PointLightPatcher

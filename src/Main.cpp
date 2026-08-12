@@ -42,18 +42,18 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     SKSE::Init(a_skse);
     if (!MPL::LumaClient::Load())
     {
-        logger::critical("TuningUtil requires LumaUtil API version {}", MPL::LumaAPI::kVersion);
+        logger::critical("[TuningUtil] startup failed | LumaAPI required={}", MPL::LumaAPI::kVersion);
         return false;
     }
     MPL::TuningSettings::Load();
-    logger::info("TuningUtil loaded for game version {}", a_skse->RuntimeVersion().string());
+    logger::info("[TuningUtil] startup | game={}", a_skse->RuntimeVersion().string());
     if (MPL::TuningSettings::IsTuningMenuEnabledForSession())
     {
         MPL::WeatherLock::InstallHooks();
     }
     else
     {
-        logger::info("Skipped weather-lock hooks because the Luma tuning menu is disabled for this launch");
+        logger::info("[Weather Lock] hooks=skipped | tuningMenu=false");
     }
     SKSE::GetMessagingInterface()->RegisterListener(OnSKSEMessage);
     MPL::LumaClient::SetRuntimeReady(true);

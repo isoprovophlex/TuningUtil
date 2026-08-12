@@ -656,7 +656,6 @@ namespace MPL::LightingPatcher
             RE::TESObjectCELL* cell = nullptr;
             RE::BGSLocation* location = nullptr;
             RE::BGSKeyword* keyword = nullptr;
-            std::size_t matchingCellCount = 1;
         };
 
         RecordFilter::Resolved ResolveFilteredLightingTemplateFilter(
@@ -708,7 +707,7 @@ namespace MPL::LightingPatcher
                 if (!keyword)
                 {
                     logger::warn(
-                        "Lighting Template location-type {} for {} ignored invalid keyword selector '{}'",
+                        "[Lighting Template] {} {} | keyword='{}' invalid",
                         a_filterKind,
                         a_owner,
                         selector);
@@ -727,7 +726,6 @@ namespace MPL::LightingPatcher
             const std::span<const std::string> a_selectors,
             const std::span<const std::string> a_multiLocationExceptions,
             RE::TESDataHandler* a_dataHandler,
-            const std::unordered_map<RE::FormID, std::size_t>& a_templateCellCounts,
             const bool a_inclusion)
         {
             const auto filterKind = a_inclusion ? "inclusion" : "exclusion";
@@ -771,7 +769,7 @@ namespace MPL::LightingPatcher
 
                 ++matchingCellCount;
                 const auto templateFormID = lightingTemplate->GetFormID();
-                const auto [evidence, inserted] = evidenceByTemplate.try_emplace(
+                evidenceByTemplate.try_emplace(
                     templateFormID,
                     LocationTypeTemplateEvidence{
                         .lightingTemplate = lightingTemplate,
@@ -779,41 +777,25 @@ namespace MPL::LightingPatcher
                         .location = location,
                         .keyword = *matchedKeyword,
                     });
-                if (!inserted)
-                {
-                    ++evidence->second.matchingCellCount;
-                }
             }
 
             std::unordered_set<RE::FormID> result;
             for (const auto& [templateFormID, evidence] : evidenceByTemplate)
             {
                 result.insert(templateFormID);
-                const auto total = a_templateCellCounts.find(templateFormID);
-                const auto totalCellCount = total != a_templateCellCounts.end() ? total->second : 0;
-                const auto otherCellCount = totalCellCount > evidence.matchingCellCount ?
-                                                totalCellCount - evidence.matchingCellCount :
-                                                0;
                 logger::info(
-                    "Lighting Template location-type {} for {} {} template {} ({}) because cell {} ({}) uses location {} ({}) with keyword {} ({}); matching cells={}, other cells={}",
-                    a_inclusion ? "inclusion" : "exclusion",
+                    "{} {} | {} | cell={} | location={} | keyword={}",
                     a_owner,
-                    a_inclusion ? "included" : "excluded",
+                    a_inclusion ? "include" : "exclude",
                     RecordFilter::FormKey(evidence.lightingTemplate),
-                    RecordFilter::DisplayName(evidence.lightingTemplate),
                     RecordFilter::FormKey(evidence.cell),
-                    RecordFilter::DisplayName(evidence.cell),
                     RecordFilter::FormKey(evidence.location),
-                    RecordFilter::DisplayName(evidence.location),
-                    RecordFilter::FormKey(evidence.keyword),
-                    RecordFilter::DisplayName(evidence.keyword),
-                    evidence.matchingCellCount,
-                    otherCellCount);
+                    RecordFilter::FormKey(evidence.keyword));
             }
             logger::info(
-                "Lighting Template location-type {} for {} resolved {} keyword(s) and {} multi-location exception keyword(s), matched {} interior CELL record(s), bypassed {} exceptional CELL record(s), and selected {} template record(s)",
-                a_inclusion ? "inclusion" : "exclusion",
+                "[Lighting Template] {} {} | keywords={} | exceptions={} | cells={} | bypassed={} | templates={}",
                 a_owner,
+                a_inclusion ? "include" : "exclude",
                 keywords.size(),
                 exceptionKeywords.size(),
                 matchingCellCount,
@@ -829,19 +811,8 @@ namespace MPL::LightingPatcher
             auto* dataHandler = RE::TESDataHandler::GetSingleton();
             if (!dataHandler)
             {
-                logger::warn(
-                    "TESDataHandler is unavailable; per-slider Lighting Template location-type filters were not resolved");
+                logger::warn("[Lighting Template] filters unresolved | TESDataHandler unavailable");
                 return;
-            }
-
-            std::unordered_map<RE::FormID, std::size_t> templateCellCounts;
-            for (auto* cell : dataHandler->interiorCells)
-            {
-                auto* lightingTemplate = cell ? cell->GetRuntimeData().lightingTemplate : nullptr;
-                if (lightingTemplate)
-                {
-                    ++templateCellCounts[lightingTemplate->GetFormID()];
-                }
             }
 
             for (const auto& discovered : TuningUtil::GetProfiles())
@@ -850,7 +821,7 @@ namespace MPL::LightingPatcher
                 for (const auto& rule : discovered.filteredLightingTemplateRules)
                 {
                     const auto key = FilteredLocationTypeFilterKey(profileName, rule.id);
-                    const auto owner = "profile " + profileName + " slider " + rule.id;
+                    const auto owner = profileName + "/" + rule.id;
                     if (!rule.locationTypeInclusions.empty())
                     {
                         startupFilteredLocationTypeTemplateInclusions.insert_or_assign(
@@ -860,7 +831,6 @@ namespace MPL::LightingPatcher
                                 rule.locationTypeInclusions,
                                 rule.inclusionMultiLocationExceptions,
                                 dataHandler,
-                                templateCellCounts,
                                 true));
                     }
                     if (!rule.locationTypeExclusions.empty())
@@ -872,7 +842,6 @@ namespace MPL::LightingPatcher
                                 rule.locationTypeExclusions,
                                 rule.exclusionMultiLocationExceptions,
                                 dataHandler,
-                                templateCellCounts,
                                 false));
                     }
                 }
@@ -1018,7 +987,7 @@ namespace MPL::LightingPatcher
                 if (match == kTemplateInheritFlags.end())
                 {
                     logger::warn(
-                        "TuningUtil profile {} ignored unknown template inheritance flag {}",
+                        "[Lighting] {} inheritance | flag={} unknown",
                         a_profileName,
                         name);
                     continue;
@@ -1092,10 +1061,9 @@ namespace MPL::LightingPatcher
                 return;
             }
             DetailedLogging::Info(
-                "Template inheritance for profile {} excluded cell {:08X};{} through cellExclusions",
+                "[Lighting] {} inheritance exclude | cell={:08X} | source=cellExclusions",
                 a_profile.name,
-                a_cell->GetFormID(),
-                RecordFilter::DisplayName(a_cell));
+                a_cell->GetFormID());
         }
 
         bool UsesTemplateInheritance(const std::string_view a_profileName)
@@ -1166,7 +1134,7 @@ namespace MPL::LightingPatcher
             auto* dataHandler = RE::TESDataHandler::GetSingleton();
             if (!dataHandler)
             {
-                logger::warn("TESDataHandler is unavailable; startup CELL settings were not applied");
+                logger::warn("[Lighting] startup CELL apply failed | TESDataHandler unavailable");
                 return;
             }
 
@@ -1180,7 +1148,7 @@ namespace MPL::LightingPatcher
             for (const auto& profile : inheritProfiles)
             {
                 DetailedLogging::Info(
-                    "Startup template inheritance for profile {} matched {} interior CELL record(s)",
+                    "[Lighting] {} inheritance | cells={}",
                     profile.name,
                     inheritTargetCounts[profile.name]);
             }
@@ -1354,7 +1322,7 @@ namespace MPL::LightingPatcher
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
-            logger::warn("TESDataHandler is unavailable; Lighting settings were not applied");
+            logger::warn("[Lighting] apply failed | TESDataHandler unavailable");
             return;
         }
 
@@ -1365,7 +1333,7 @@ namespace MPL::LightingPatcher
                 TuningUtil::ResolveSettingsStack(activeCellProfiles),
                 activeCellProfiles);
             DetailedLogging::Info(
-                "Applied {} stacked Lighting profile(s) to {} direct interior cell record(s)",
+                "[Lighting] cells | profiles={} | targets={}",
                 activeCellProfiles.size(),
                 cellCount);
         }
@@ -1428,13 +1396,13 @@ namespace MPL::LightingPatcher
         for (const auto& profile : templateProfiles)
         {
             DetailedLogging::Info(
-                "Lighting Template filter for profile {} targeted {} {} template record(s)",
+                "[Lighting Template] {} | targets={} | scope={}",
                 profile.name,
                 profileTargetCounts[profile.name],
                 profile.ownsPluginTemplates ? "owned" : "unclaimed");
         }
         logger::info(
-            "Applied {} Lighting Template profile stack(s) to {} template record(s)",
+            "[Lighting Template] apply | stacks={} | targets={}",
             templateGroups.size(),
             templateCount);
 
