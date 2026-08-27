@@ -119,6 +119,12 @@ namespace MPL::SliderCreator
         std::size_t,
         std::size_t,
         std::string&);
+    bool RenameModule(
+        const std::filesystem::path&,
+        std::size_t,
+        std::size_t,
+        const std::string&,
+        std::string&);
     bool AddProfileElement(
         const std::filesystem::path&,
         const std::string&,
@@ -132,6 +138,11 @@ namespace MPL::SliderCreator
     bool RemoveProfileModule(
         const std::filesystem::path&,
         std::size_t,
+        std::string&);
+    bool RenameProfileModule(
+        const std::filesystem::path&,
+        std::size_t,
+        const std::string&,
         std::string&);
     bool MoveProfilePage(
         const std::filesystem::path&,

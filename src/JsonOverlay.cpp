@@ -310,6 +310,57 @@ namespace MPL::JsonOverlay
             return Document(document);
         }
 
+        std::optional<std::string> ValueText(yyjson_val* a_value, std::string& a_error)
+        {
+            std::size_t length = 0;
+            yyjson_write_err error{};
+            auto* data = yyjson_val_write_opts(
+                a_value,
+                YYJSON_WRITE_NOFLAG,
+                nullptr,
+                &length,
+                &error);
+            if (!data)
+            {
+                a_error = error.msg ? error.msg : "Could not serialize a JSON value";
+                return std::nullopt;
+            }
+
+            std::string result(data, length);
+            std::free(data);
+            return result;
+        }
+
+        bool AppendFlattenedValues(
+            yyjson_val* a_value,
+            const std::string& a_path,
+            std::vector<ValueEntry>& a_entries,
+            std::string& a_error)
+        {
+            if (yyjson_is_obj(a_value) && yyjson_obj_size(a_value) != 0)
+            {
+                yyjson_obj_iter iterator = yyjson_obj_iter_with(a_value);
+                while (auto* key = yyjson_obj_iter_next(&iterator))
+                {
+                    const std::string_view name(yyjson_get_str(key), yyjson_get_len(key));
+                    const auto path = a_path.empty() ? std::string(name) : a_path + "." + std::string(name);
+                    if (!AppendFlattenedValues(yyjson_obj_iter_get_val(key), path, a_entries, a_error))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            const auto value = ValueText(a_value, a_error);
+            if (!value)
+            {
+                return false;
+            }
+            a_entries.push_back({ a_path, *value });
+            return true;
+        }
+
         bool AddMember(
             yyjson_mut_doc* a_document,
             yyjson_mut_val* a_object,
@@ -651,6 +702,17 @@ namespace MPL::JsonOverlay
         return yyjson_is_bool(value) ? std::optional<bool>{ yyjson_get_bool(value) } : std::nullopt;
     }
 
+    std::optional<std::int64_t> IntegerMember(
+        const std::string_view a_json,
+        const std::string_view a_name)
+    {
+        std::string error;
+        const auto document = Parse(a_json, "JSON object", error);
+        auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
+        auto* value = yyjson_is_obj(root) ? yyjson_obj_getn(root, a_name.data(), a_name.size()) : nullptr;
+        return yyjson_is_int(value) ? std::optional<std::int64_t>{ yyjson_get_sint(value) } : std::nullopt;
+    }
+
     std::optional<std::string> SetBooleanMember(
         const std::string_view a_json,
         const std::string_view a_name,
@@ -673,6 +735,34 @@ namespace MPL::JsonOverlay
         if (!root || !key || !value || !yyjson_mut_obj_put(root, key, value))
         {
             a_error = "Could not update the JSON boolean value";
+            return std::nullopt;
+        }
+        yyjson_mut_doc_set_root(result.get(), root);
+        return Write(result.get(), a_error);
+    }
+
+    std::optional<std::string> SetIntegerMember(
+        const std::string_view a_json,
+        const std::string_view a_name,
+        const std::int64_t a_value,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto source = Parse(a_json, "JSON object", a_error);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        if (!yyjson_is_obj(sourceRoot))
+        {
+            if (a_error.empty()) a_error = "The JSON document must contain an object at the root";
+            return std::nullopt;
+        }
+
+        MutableDocument result(yyjson_mut_doc_new(nullptr));
+        auto* root = yyjson_val_mut_copy(result.get(), sourceRoot);
+        auto* key = yyjson_mut_strncpy(result.get(), a_name.data(), a_name.size());
+        auto* value = yyjson_mut_sint(result.get(), a_value);
+        if (!root || !key || !value || !yyjson_mut_obj_put(root, key, value))
+        {
+            a_error = "Could not update the JSON integer value";
             return std::nullopt;
         }
         yyjson_mut_doc_set_root(result.get(), root);
@@ -844,5 +934,26 @@ namespace MPL::JsonOverlay
         RemoveLikeValue(root, schemaRoot);
         yyjson_mut_doc_set_root(result.get(), root);
         return Write(result.get(), a_error);
+    }
+
+    std::optional<std::vector<ValueEntry>> FlattenValues(
+        const std::string_view a_json,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto document = Parse(a_json, "preset settings", a_error);
+        auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
+        if (!yyjson_is_obj(root))
+        {
+            if (a_error.empty()) a_error = "Preset settings must contain a JSON object at the root";
+            return std::nullopt;
+        }
+
+        std::vector<ValueEntry> entries;
+        if (!AppendFlattenedValues(root, {}, entries, a_error))
+        {
+            return std::nullopt;
+        }
+        return entries;
     }
 }  // namespace MPL::JsonOverlay

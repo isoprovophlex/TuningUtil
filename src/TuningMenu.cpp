@@ -163,6 +163,7 @@ namespace MPL::TuningMenu
             std::string id;
             std::string label;
             std::string header;
+            std::optional<std::string> displayName;
             std::string setting;
             struct SliderTarget
             {
@@ -271,6 +272,13 @@ namespace MPL::TuningMenu
             std::array<char, 128> name{};
             std::string removalCategory;
             std::string removalPreset;
+            std::array<char, 96> categoryRename{};
+            std::array<char, 128> presetRename{};
+            std::string categoryRenameSource;
+            std::string presetRenameSource;
+            std::string settingsSelection;
+            std::vector<JsonOverlay::ValueEntry> settings;
+            std::string settingsError;
         };
 
         struct PendingPresetRemovals
@@ -289,10 +297,17 @@ namespace MPL::TuningMenu
 
         struct LayoutEditorState
         {
+            struct ModuleNameInput
+            {
+                std::array<char, 256> value{};
+                std::string source;
+            };
+
             std::array<char, 128> newPageName{};
             std::array<char, 128> pageName{};
             std::array<char, 256> elementText{};
             std::string pageNameSource;
+            std::unordered_map<std::string, ModuleNameInput> moduleNames;
             int elementChoice = 0;
             int moduleChoice = 0;
             bool moduleAdvanced = false;
@@ -398,21 +413,6 @@ namespace MPL::TuningMenu
             std::uint64_t settingsRevision = std::numeric_limits<std::uint64_t>::max();
         };
 
-        enum class DynamicAmbientDragTarget
-        {
-            darkLimit,
-            range,
-            brightLimit,
-        };
-
-        struct DynamicAmbientDragState
-        {
-            DynamicAmbientDragTarget target = DynamicAmbientDragTarget::darkLimit;
-            float startMouseX = 0.0f;
-            float startDarkLimit = 0.0f;
-            float startBrightLimit = 255.0f;
-        };
-
         enum class RecordFilterKind
         {
             lightingTemplate,
@@ -481,7 +481,10 @@ namespace MPL::TuningMenu
         void DrawCreatorRecordList(std::vector<std::string>&, const std::string&, RecordFilterKind);
         void RefreshProfileMenuState(const MenuDefinition&, std::span<const std::string>);
         std::string LayoutModuleDisplayName(const MenuControl&);
+        void QueueLayoutEditReload(LayoutEditSession&, std::string);
         void DrawItemTooltip(const std::string&);
+        template <std::size_t Size>
+        void SetInputText(std::array<char, Size>&, std::string_view);
 
         std::vector<LoadedMenu> profileMenus;
         std::vector<DefinitionFile> loadedDefinitionFiles;
@@ -499,7 +502,6 @@ namespace MPL::TuningMenu
         std::unordered_map<std::string, WeatherFilterEditorState> weatherFilterEditorStates;
         std::unordered_map<std::string, RecordFilterEditorState> recordFilterEditorStates;
         std::unordered_map<std::string, DynamicAmbientModuleState> dynamicAmbientModuleStates;
-        std::unordered_map<ImGuiMCP::ImGuiID, DynamicAmbientDragState> dynamicAmbientDragStates;
         std::unordered_map<std::string, std::vector<WeatherMenuEntry>> sliderCreatorWeatherEntries;
         std::optional<std::vector<RecordMenuEntry>> lightingTemplateMenuEntries;
         std::optional<std::vector<RecordMenuEntry>> baseLightMenuEntries;
@@ -738,6 +740,11 @@ namespace MPL::TuningMenu
             return a_control.label.empty() ? SKSEMenuSettings::Label(a_key, a_fallback) : a_control.label;
         }
 
+        std::string ControlDisplayName(const MenuControl& a_control, std::string a_fallback)
+        {
+            return a_control.displayName.value_or(std::move(a_fallback));
+        }
+
         void SameActionLine()
         {
             ImGuiMCP::SameLine(0.0f, SKSEMenuSettings::GetActionButtonSpacing());
@@ -827,6 +834,9 @@ namespace MPL::TuningMenu
                 std::pair{ "The module cannot move farther in that direction.", "layoutModuleMoveBoundary" },
                 std::pair{ "The module order could not be changed.", "layoutModuleMoveFailure" },
                 std::pair{ "The module could not be removed.", "layoutModuleRemoveFailure" },
+                std::pair{ "The selected module is unavailable.", "layoutModuleUnavailable" },
+                std::pair{ "This module does not have a display name.", "layoutModuleNameUnavailable" },
+                std::pair{ "The module could not be renamed.", "layoutModuleRenameFailure" },
                 std::pair{ "The page cannot move farther in that direction.", "layoutPageMoveBoundary" },
                 std::pair{ "The page order could not be changed.", "layoutPageMoveFailure" },
                 std::pair{ "The page could not be renamed.", "layoutPageRenameFailure" },
@@ -939,10 +949,10 @@ namespace MPL::TuningMenu
             return a_control.type == "weatherSelector" ||
                    a_control.type == "weatherControlCompact" ||
                    a_control.type == "weatherSliderCreator" ||
-                   a_control.type == "dynamicAmbientWithin" ||
-                   a_control.type == "dynamicAmbientBetween" ||
-                   a_control.type == "dynamicSunlightWithin" ||
-                   a_control.type == "dynamicSunlightBetween" ||
+                   a_control.type == "ambientWithinGauge" ||
+                   a_control.type == "ambientBetweenGauge" ||
+                   a_control.type == "sunlightWithinGauge" ||
+                   a_control.type == "sunlightBetweenGauge" ||
                    a_control.type == "dynamicAmbientWeatherList";
         }
 
@@ -1198,7 +1208,7 @@ namespace MPL::TuningMenu
             if (setting.contains("huerange")) return { 0.0f, 255.0f };
             if (setting.contains("hueshift")) return { -180.0f, 180.0f };
             if (setting.contains("compressionanchor")) return { 0.0f, 255.0f };
-            if (setting.contains("compression")) return { -200.0f, 200.0f };
+            if (setting.contains("compression")) return { -200.0f, 100.0f };
             if (setting.contains("saturation")) return { 0.0f, 6.0f };
             if (setting.contains("intbrightness")) return { 0.0f, 10.0f };
             if (setting.contains("brightnessmultiplier")) return { 0.1f, 4.0f };
@@ -1246,6 +1256,11 @@ namespace MPL::TuningMenu
                 if (a_control.format.empty()) result.format = SliderFormatFromStep(result.step, result.format);
             }
             if (!a_control.format.empty()) result.format = a_control.format;
+            const auto settingName = Lowercase(std::string(a_setting));
+            if (settingName.contains("compression") && !settingName.contains("compressionanchor"))
+            {
+                result.maximum = std::min(result.maximum, 100.0f);
+            }
             return result;
         }
 
@@ -1392,9 +1407,10 @@ namespace MPL::TuningMenu
             ImGuiMCP::SetNextItemWidth(inputWidth);
             auto inputValue = a_value;
             const auto inputMinimum =
-                a_inputRange == SliderInputRange::hue ? 0.0f : a_minimum < 0.0f ? -99.0f :
+                a_inputRange == SliderInputRange::hue ? 0.0f : a_minimum < 0.0f ? std::min(-99.0f, a_minimum) :
                                                                                  0.0f;
-            const auto inputMaximum = a_inputRange == SliderInputRange::hue ? 255.0f : 99.0f;
+            const auto inputMaximum =
+                a_inputRange == SliderInputRange::hue ? 255.0f : std::max(99.0f, a_maximum);
             if (ImGuiMCP::InputFloat(
                     ("##ValueInput" + a_id).c_str(),
                     &inputValue,
@@ -1437,11 +1453,10 @@ namespace MPL::TuningMenu
                 SliderNeutralValue(a_setting));
         }
 
-        bool DrawDynamicAmbientRangeSlider(
+        void DrawDynamicAmbientRangeDisplay(
             const std::string_view a_setting,
-            const std::string& a_id,
-            float& a_darkLimit,
-            float& a_brightLimit)
+            const float a_darkLimit,
+            const float a_brightLimit)
         {
             const auto style = SKSEMenuSettings::ResolveSliderDefaults(
                 a_setting,
@@ -1453,90 +1468,9 @@ namespace MPL::TuningMenu
             const float width = style.width > 0.0f ? style.width : 420.0f;
             const float height = ImGuiMCP::GetFrameHeight();
             const auto position = ImGuiMCP::GetCursorScreenPos();
-            const auto itemID = ImGuiMCP::GetID(a_id.c_str());
             const auto* imguiStyle = ImGuiMCP::GetStyle();
             const float handleThickness = std::clamp(imguiStyle ? imguiStyle->GrabMinSize : 10.0f, 6.0f, height);
-            const float handleHitRadius = handleThickness * 0.75f;
-            ImGuiMCP::InvisibleButton(a_id.c_str(), ImGuiMCP::ImVec2(width, height));
-
-            if (ImGuiMCP::IsItemActivated())
-            {
-                const float mouseX = std::clamp(ImGuiMCP::GetMousePos().x, position.x, position.x + width);
-                const float darkX = position.x + (width * a_darkLimit / 255.0f);
-                const float brightX = position.x + (width * a_brightLimit / 255.0f);
-                const float darkDistance = std::abs(mouseX - darkX);
-                const float brightDistance = std::abs(mouseX - brightX);
-                const bool handleSelected =
-                    darkDistance <= handleHitRadius ||
-                    brightDistance <= handleHitRadius;
-                if (handleSelected || (mouseX > darkX && mouseX < brightX))
-                {
-                    dynamicAmbientDragStates[itemID] = {
-                        .target = handleSelected ?
-                                      (darkDistance <= brightDistance ?
-                                              DynamicAmbientDragTarget::darkLimit :
-                                              DynamicAmbientDragTarget::brightLimit) :
-                                      DynamicAmbientDragTarget::range,
-                        .startMouseX = mouseX,
-                        .startDarkLimit = a_darkLimit,
-                        .startBrightLimit = a_brightLimit,
-                    };
-                }
-                else
-                {
-                    dynamicAmbientDragStates.erase(itemID);
-                }
-            }
-
-            auto changed = false;
-            if (ImGuiMCP::IsItemActive())
-            {
-                const float mouseX = std::clamp(ImGuiMCP::GetMousePos().x, position.x, position.x + width);
-                const auto drag = dynamicAmbientDragStates.find(itemID);
-                if (drag != dynamicAmbientDragStates.end())
-                {
-                    if (drag->second.target == DynamicAmbientDragTarget::range)
-                    {
-                        const float span = drag->second.startBrightLimit - drag->second.startDarkLimit;
-                        const float translated = SnapSliderValue(
-                            drag->second.startDarkLimit +
-                                (255.0f * (mouseX - drag->second.startMouseX) / width),
-                            0.0f,
-                            255.0f - span,
-                            std::max(1.0f, style.step));
-                        const float translatedBright = translated + span;
-                        changed =
-                            std::abs(translated - a_darkLimit) > 0.0001f ||
-                            std::abs(translatedBright - a_brightLimit) > 0.0001f;
-                        a_darkLimit = translated;
-                        a_brightLimit = translatedBright;
-                    }
-                    else
-                    {
-                        const float value = SnapSliderValue(
-                            255.0f * (mouseX - position.x) / width,
-                            0.0f,
-                            255.0f,
-                            std::max(1.0f, style.step));
-                        if (drag->second.target == DynamicAmbientDragTarget::darkLimit)
-                        {
-                            const float limited = std::min(value, a_brightLimit);
-                            changed = std::abs(limited - a_darkLimit) > 0.0001f;
-                            a_darkLimit = limited;
-                        }
-                        else
-                        {
-                            const float limited = std::max(value, a_darkLimit);
-                            changed = std::abs(limited - a_brightLimit) > 0.0001f;
-                            a_brightLimit = limited;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                dynamicAmbientDragStates.erase(itemID);
-            }
+            ImGuiMCP::Dummy(ImGuiMCP::ImVec2(width, height));
 
             auto* drawList = ImGuiMCP::GetWindowDrawList();
             const auto frameColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImGuiCol_FrameBg);
@@ -1545,51 +1479,11 @@ namespace MPL::TuningMenu
             const ImGuiMCP::ImVec2 maximum(position.x + width, position.y + height);
             const float darkX = position.x + (width * a_darkLimit / 255.0f);
             const float brightX = position.x + (width * a_brightLimit / 255.0f);
-            const float mouseX = ImGuiMCP::GetMousePos().x;
-            const float darkDistance = std::abs(mouseX - darkX);
-            const float brightDistance = std::abs(mouseX - brightX);
-            const bool darkHovered =
-                ImGuiMCP::IsItemHovered() &&
-                darkDistance <= handleHitRadius &&
-                darkDistance <= brightDistance;
-            const bool brightHovered =
-                ImGuiMCP::IsItemHovered() &&
-                brightDistance <= handleHitRadius &&
-                brightDistance < darkDistance;
-            const bool rangeHovered =
-                ImGuiMCP::IsItemHovered() &&
-                !darkHovered &&
-                !brightHovered &&
-                mouseX > darkX &&
-                mouseX < brightX;
-            const auto drag = dynamicAmbientDragStates.find(itemID);
-            const bool rangeActive =
-                ImGuiMCP::IsItemActive() &&
-                drag != dynamicAmbientDragStates.end() &&
-                drag->second.target == DynamicAmbientDragTarget::range;
-            const bool darkActive =
-                ImGuiMCP::IsItemActive() &&
-                drag != dynamicAmbientDragStates.end() &&
-                drag->second.target == DynamicAmbientDragTarget::darkLimit;
-            const bool brightActive =
-                ImGuiMCP::IsItemActive() &&
-                drag != dynamicAmbientDragStates.end() &&
-                drag->second.target == DynamicAmbientDragTarget::brightLimit;
             const auto* normalRangeColor = ImGuiMCP::GetStyleColorVec4(ImGuiMCP::ImGuiCol_SliderGrab);
-            const auto* activeRangeColor = ImGuiMCP::GetStyleColorVec4(ImGuiMCP::ImGuiCol_SliderGrabActive);
-            const auto normalColor = normalRangeColor ?
-                                         *normalRangeColor :
-                                         ImGuiMCP::ImVec4(0.24f, 0.52f, 0.88f, 1.0f);
-            const auto activeColor = activeRangeColor ?
-                                         *activeRangeColor :
-                                         ImGuiMCP::ImVec4(0.35f, 0.65f, 1.0f, 1.0f);
             const auto rangeColor = ImGuiMCP::GetColorU32(
-                rangeActive ? activeColor :
-                rangeHovered ? ImGuiMCP::ImLerp(normalColor, activeColor, 0.55f) :
-                               normalColor);
-            const float hoveredHandleThickness = std::min(height, handleThickness * 1.25f);
-            const float darkThickness = darkHovered || darkActive ? hoveredHandleThickness : handleThickness;
-            const float brightThickness = brightHovered || brightActive ? hoveredHandleThickness : handleThickness;
+                normalRangeColor ?
+                    *normalRangeColor :
+                    ImGuiMCP::ImVec4(0.24f, 0.52f, 0.88f, 1.0f));
             ImGuiMCP::ImDrawListManager::AddRectFilled(drawList, minimum, maximum, frameColor, 3.0f, 0);
             ImGuiMCP::ImDrawListManager::AddRectFilled(
                 drawList,
@@ -1603,33 +1497,23 @@ namespace MPL::TuningMenu
                 ImGuiMCP::ImVec2(darkX, position.y - 1.0f),
                 ImGuiMCP::ImVec2(darkX, position.y + height + 1.0f),
                 white,
-                darkThickness);
+                handleThickness);
             ImGuiMCP::ImDrawListManager::AddLine(
                 drawList,
                 ImGuiMCP::ImVec2(brightX, position.y - 1.0f),
                 ImGuiMCP::ImVec2(brightX, position.y + height + 1.0f),
                 white,
-                brightThickness);
-            return changed;
+                handleThickness);
         }
 
         void DrawDynamicBrightnessModule(
             const MenuDefinition& a_menu,
+            const MenuControl& a_control,
             const WeatherPatcher::DynamicAmbientMode a_mode,
-            const WeatherPatcher::DynamicBrightnessField a_field,
-            const std::size_t a_index)
+            const WeatherPatcher::DynamicBrightnessField a_field)
         {
             auto profile = a_menu.profile;
-            auto& settings = TuningUtil::GetSettings(profile);
             const bool ambient = a_field == WeatherPatcher::DynamicBrightnessField::ambient;
-            auto& configured =
-                ambient ?
-                    (a_mode == WeatherPatcher::DynamicAmbientMode::within ?
-                            settings.dynamicAmbientWithin :
-                            settings.dynamicAmbientBetween) :
-                    (a_mode == WeatherPatcher::DynamicAmbientMode::within ?
-                            settings.dynamicSunlightWithin :
-                            settings.dynamicSunlightBetween);
             const auto stateKey =
                 profile +
                 (ambient ? "Ambient" : "Sunlight") +
@@ -1652,64 +1536,35 @@ namespace MPL::TuningMenu
             const auto labelKey =
                 ambient ?
                     (a_mode == WeatherPatcher::DynamicAmbientMode::within ?
-                            "dynamicAmbientWithin" :
-                            "dynamicAmbientBetween") :
+                            "ambientWithinGauge" :
+                            "ambientBetweenGauge") :
                     (a_mode == WeatherPatcher::DynamicAmbientMode::within ?
-                            "dynamicSunlightWithin" :
-                            "dynamicSunlightBetween");
+                            "sunlightWithinGauge" :
+                            "sunlightBetweenGauge");
             const auto fallbackLabel =
                 ambient ?
                     (a_mode == WeatherPatcher::DynamicAmbientMode::within ?
-                            "Dynamic Ambient Within" :
-                            "Dynamic Ambient Between") :
+                            "Ambient Brightness Within Weather Gauge" :
+                            "Ambient Brightness Between Weather Gauge") :
                     (a_mode == WeatherPatcher::DynamicAmbientMode::within ?
-                            "Dynamic Sunlight Within" :
-                            "Dynamic Sunlight Between");
-            ImGuiMCP::TextUnformatted(SKSEMenuSettings::Label(labelKey, fallbackLabel).c_str());
-            if (!state.range.available)
+                            "Sunlight Brightness Within Weather Gauge" :
+                            "Sunlight Brightness Between Weather Gauge");
+            const auto displayName = ControlDisplayName(
+                a_control,
+                ControlLabel(a_control, labelKey, fallbackLabel));
+            if (!displayName.empty()) ImGuiMCP::TextUnformatted(displayName.c_str());
+            const auto& result = state.status ? state.status->result : state.range;
+            if (!result.available)
             {
                 ImGuiMCP::BeginDisabled();
             }
 
-            float darkLimit = static_cast<float>(configured.darkLimit.value_or(state.range.darkLimit));
-            float brightLimit = static_cast<float>(configured.brightLimit.value_or(state.range.brightLimit));
+            float darkLimit = static_cast<float>(result.darkLimit);
+            float brightLimit = static_cast<float>(result.brightLimit);
             darkLimit = std::clamp(darkLimit, 0.0f, 255.0f);
             brightLimit = std::clamp(brightLimit, darkLimit, 255.0f);
-            const auto sliderID = std::format(
-                "##{}{}{}DynamicBrightness{}",
-                profile,
-                ambient ? "Ambient" : "Sunlight",
-                a_mode == WeatherPatcher::DynamicAmbientMode::within ? "Within" : "Between",
-                a_index);
-            if (DrawDynamicAmbientRangeSlider(labelKey, sliderID, darkLimit, brightLimit))
-            {
-                configured.darkLimit = darkLimit;
-                configured.brightLimit = brightLimit;
-                ApplySliderChange(false);
-                refreshState();
-            }
-            const auto& result = state.status ? state.status->result : state.range;
-            if (state.status && state.status->compression)
-            {
-                ImGuiMCP::Text(
-                    "%s: %.0f%%",
-                    SKSEMenuSettings::Label("dynamicCompression", "Compression").c_str(),
-                    *state.status->compression);
-            }
-            else
-            {
-                ImGuiMCP::Text(
-                    "%s: %s",
-                    SKSEMenuSettings::Label("dynamicCompression", "Compression").c_str(),
-                    SKSEMenuSettings::Label("notAvailable", "N/A").c_str());
-            }
-            ImGuiMCP::Text(
-                "%s: %.0f    %s: %.0f",
-                SKSEMenuSettings::Label("darkBrightness", "Dark Brightness").c_str(),
-                result.darkLimit,
-                SKSEMenuSettings::Label("brightBrightness", "Bright Brightness").c_str(),
-                result.brightLimit);
-            if (!state.range.available)
+            DrawDynamicAmbientRangeDisplay(labelKey, darkLimit, brightLimit);
+            if (!result.available)
             {
                 ImGuiMCP::EndDisabled();
             }
@@ -2670,15 +2525,34 @@ namespace MPL::TuningMenu
             }
         }
 
-        void DrawTimeOfDayControls(const std::string& a_id);
+        void DrawQuickSelectSection(
+            const MenuDefinition& a_menu,
+            const std::string& a_id,
+            const float a_width,
+            const bool a_showControls)
+        {
+            constexpr auto flags = ImGuiMCP::ImGuiChildFlags_AutoResizeY |
+                                   ImGuiMCP::ImGuiChildFlags_AlwaysAutoResize;
+            const auto visible = ImGuiMCP::BeginChild(
+                ("QuickSelectSection##" + a_id).c_str(),
+                ImGuiMCP::ImVec2(a_width, 0.0f),
+                flags);
+            if (visible)
+            {
+                const auto label = SKSEMenuSettings::Label("quickSelect", "Quick Select") +
+                                   "##" + a_id;
+                if (ImGuiMCP::CollapsingHeader(label.c_str()))
+                    DrawQuickSelect(a_menu, a_id, a_showControls);
+            }
+            ImGuiMCP::EndChild();
+        }
+
+        float DrawTimeOfDayControls(const MenuDefinition& a_menu, const std::string& a_id);
 
         void DrawWeatherControlCompact(const MenuDefinition& a_menu, const std::string& a_id)
         {
-            DrawTimeOfDayControls(a_id + "Time");
-            DrawQuickSelect(a_menu, a_id + "QuickSelect", false);
-            DrawWeatherLockToggle(a_menu, "##LockWeather" + a_id);
-            ImGuiMCP::SameLine();
-            ImGuiMCP::TextUnformatted("Lock Weather");
+            const auto controlWidth = DrawTimeOfDayControls(a_menu, a_id + "Time");
+            DrawQuickSelectSection(a_menu, a_id + "QuickSelect", controlWidth, false);
         }
 
         void DrawWeatherSelector(const MenuDefinition& a_menu, const MenuControl& a_control, const std::string& a_id)
@@ -2707,7 +2581,7 @@ namespace MPL::TuningMenu
                     flags);
                 if (visible)
                 {
-                    DrawHeader(a_title);
+                    if (!a_title.empty()) DrawHeader(a_title);
                     a_draw();
                 }
                 ImGuiMCP::EndChild();
@@ -2717,7 +2591,9 @@ namespace MPL::TuningMenu
                 }
             };
 
-            DrawTimeOfDayControls(a_id);
+            const auto controlWidth = DrawTimeOfDayControls(a_menu, a_id);
+            DrawQuickSelectSection(a_menu, a_id + "QuickSelect", controlWidth, true);
+            ImGuiMCP::Spacing();
             drawBox(
                 "WeatherSelectBox",
                 "Weather Select",
@@ -2727,21 +2603,6 @@ namespace MPL::TuningMenu
                     DrawWeatherSelectWindow(
                         a_menu,
                         a_id + "Window");
-                    DrawWeatherLockToggle(
-                        a_menu,
-                        "##LockWeather" + a_id);
-                    ImGuiMCP::SameLine();
-                    ImGuiMCP::TextUnformatted("Lock Weather");
-                });
-            drawBox(
-                "QuickSelectBox",
-                "Quick Select",
-                [&]
-                {
-                    DrawQuickSelect(
-                        a_menu,
-                        a_id + "QuickSelect",
-                        true);
                 });
             ImGuiMCP::Separator();
             DrawCurrentRegion(a_control);
@@ -2858,10 +2719,11 @@ namespace MPL::TuningMenu
             statusMessage = StatusText(enabled ? "profileEnabled" : "profileDisabled");
         }
 
-        void DrawTimeOfDayControls(const std::string& a_id)
+        float DrawTimeOfDayControls(const MenuDefinition& a_menu, const std::string& a_id)
         {
             constexpr auto inputWidth = 80.0f;
             constexpr auto fallbackFormat = "%.2f";
+            constexpr auto maximumGameHour = 23.99f;
             const auto style = SKSEMenuSettings::ResolveSliderDefaults(
                 "timeOfDay",
                 0.0f,
@@ -2871,59 +2733,64 @@ namespace MPL::TuningMenu
                 IsSafeSliderFormat(style.format) ?
                     style.format.c_str() :
                     fallbackFormat;
-            constexpr auto timeLabel = "Time of Day";
+            const auto sliderWidth = style.width != 0.0f ? style.width : ImGuiMCP::CalcItemWidth();
 
-            ImGuiMCP::TextUnformatted(timeLabel);
+            ImGuiMCP::TextUnformatted("Time of Day");
             ImGuiMCP::SameLine();
             ImGuiMCP::SetNextItemWidth(inputWidth);
 
             auto* calendar = RE::Calendar::GetSingleton();
+            auto changed = false;
+            auto value = calendar && calendar->gameHour ? calendar->GetHour() : 0.0f;
             if (!calendar || !calendar->gameHour)
             {
                 ImGuiMCP::TextDisabled(
                     "%s",
                     DisplayText("currentTimeUnavailable").c_str());
-                return;
+            }
+            else
+            {
+                auto inputValue = value;
+                if (ImGuiMCP::InputFloat(
+                        ("##TimeOfDayValue" + a_id).c_str(),
+                        &inputValue,
+                        0.0f,
+                        0.0f,
+                        format))
+                {
+                    value = std::clamp(inputValue, 0.0f, maximumGameHour);
+                    changed = true;
+                }
             }
 
-            auto value = calendar->GetHour();
-            auto changed = false;
-            auto inputValue = value;
-            if (ImGuiMCP::InputFloat(
-                    ("##TimeOfDayValue" + a_id).c_str(),
-                    &inputValue,
-                    0.0f,
-                    0.0f,
-                    format))
-            {
-                value = std::clamp(inputValue, 0.0f, 24.0f);
-                changed = true;
-            }
+            const auto* imguiStyle = ImGuiMCP::GetStyle();
+            const auto lockSpacing = imguiStyle ? imguiStyle->ItemSpacing.x * 2.0f : 16.0f;
+            ImGuiMCP::SameLine(0.0f, lockSpacing);
+            ImGuiMCP::TextUnformatted(SKSEMenuSettings::Label("lockWeather", "Lock Weather").c_str());
+            ImGuiMCP::SameLine();
+            DrawWeatherLockToggle(a_menu, "##LockWeather" + a_id);
 
-            auto sliderValue = std::clamp(value, 0.0f, 24.0f);
-            if (style.width != 0.0f)
-            {
-                ImGuiMCP::SetNextItemWidth(style.width);
-            }
-            if (ImGuiMCP::SliderFloat(
+            auto sliderValue = std::clamp(value, 0.0f, maximumGameHour);
+            ImGuiMCP::SetNextItemWidth(sliderWidth);
+            if (calendar && calendar->gameHour && ImGuiMCP::SliderFloat(
                     ("##TimeOfDaySlider" + a_id).c_str(),
                     &sliderValue,
                     0.0f,
-                    24.0f,
+                    maximumGameHour,
                     ""))
             {
                 value = SnapSliderValue(
                     sliderValue,
                     0.0f,
-                    24.0f,
+                    maximumGameHour,
                     style.step);
                 changed = true;
             }
             if (changed)
             {
-                calendar->gameHour->value = std::clamp(value, 0.0f, 24.0f);
-                WeatherLock::Maintain(true);
+                calendar->gameHour->value = std::clamp(value, 0.0f, maximumGameHour);
             }
+            return sliderWidth;
         }
 
         struct LinkableParts
@@ -3667,20 +3534,26 @@ namespace MPL::TuningMenu
             return fields;
         }
 
-        bool DrawWeatherLinks(TuningUtil::Settings& a_settings, const std::string& a_prefix)
+        bool DrawWeatherLinks(
+            TuningUtil::Settings& a_settings,
+            const std::string& a_prefix,
+            const std::string_view a_heading)
         {
             return DrawLinkOnlyCategory(
-                "Weather Links",
+                a_heading,
                 WeatherLinkFields(a_settings.links.weather),
                 a_prefix,
                 0.0,
                 6.0f);
         }
 
-        bool DrawInteriorLinks(TuningUtil::Settings& a_settings, const std::string& a_prefix)
+        bool DrawInteriorLinks(
+            TuningUtil::Settings& a_settings,
+            const std::string& a_prefix,
+            const std::string_view a_heading)
         {
             return DrawLinkOnlyCategory(
-                "Interior Links",
+                a_heading,
                 InteriorLinkFields(a_settings.links.interior),
                 a_prefix,
                 0.0,
@@ -4177,9 +4050,15 @@ namespace MPL::TuningMenu
             auto& settings = TuningUtil::GetSettings(profile);
             auto changed = false;
             if (Config::IEquals(a_control.setting, "weather"))
-                changed |= DrawWeatherLinks(settings, profile + "LinksWeather");
+                changed |= DrawWeatherLinks(
+                    settings,
+                    profile + "LinksWeather",
+                    ControlDisplayName(a_control, "Weather Links"));
             else if (Config::IEquals(a_control.setting, "interior"))
-                changed |= DrawInteriorLinks(settings, profile + "LinksInterior");
+                changed |= DrawInteriorLinks(
+                    settings,
+                    profile + "LinksInterior",
+                    ControlDisplayName(a_control, "Interior Links"));
 
             if (changed) ApplySliderChange(false);
         }
@@ -4730,12 +4609,12 @@ namespace MPL::TuningMenu
             else if (a_category == "betweenCompression")
             {
                 auto betweenFields = WeatherCompressionFields(settings.betweenWeatherCompression, settings.links.weather);
-                changed |= DrawLinkableCategory(betweenFields, -200.0f, 200.0f, prefix + "between", 10.0f);
+                changed |= DrawLinkableCategory(betweenFields, -200.0f, 100.0f, prefix + "between", 10.0f);
             }
             else if (a_category == "withinCompression")
             {
                 auto withinFields = WeatherCompressionFields(settings.withinWeatherCompression, settings.links.weather);
-                changed |= DrawLinkableCategory(withinFields, -200.0f, 200.0f, prefix + "within", 10.0f);
+                changed |= DrawLinkableCategory(withinFields, -200.0f, 100.0f, prefix + "within", 10.0f);
             }
             else if (a_category == "exteriorImageSpace")
             {
@@ -4895,16 +4774,6 @@ namespace MPL::TuningMenu
                     10.0f);
                 drawMultiplier("Saturation", "saturation", settings.pointLights.saturationMultiplier, 6.0f);
 
-                DrawHeader("Saturation Scales");
-                auto hueScales = HueScaleFields(settings.pointLights.hueScales);
-                changed |= DrawValueOnlyCategory(
-                    hueScales,
-                    0.0f,
-                    4.0f,
-                    prefix + "hueScales",
-                    0.1f,
-                    "pointLights.hueScales");
-
                 DrawHeader("Hue Shift");
                 auto hueShift = HueShiftBandFields(settings.pointLights.hueShift);
                 changed |= DrawValueOnlyCategory(hueShift, -180.0f, 180.0f, prefix + "hueShift", 0.1f);
@@ -5013,6 +4882,9 @@ namespace MPL::TuningMenu
                 auto& input = presetSaveInputs[profile];
                 input.removalCategory.clear();
                 input.removalPreset.clear();
+                input.categoryRenameSource.clear();
+                input.presetRenameSource.clear();
+                input.settingsSelection.clear();
                 RefreshAfterPresetChange(a_menu);
                 statusMessage = StatusText("presetControlSaved");
             }
@@ -5030,6 +4902,9 @@ namespace MPL::TuningMenu
             auto& input = presetSaveInputs[profile];
             input.removalCategory.clear();
             input.removalPreset.clear();
+            input.categoryRenameSource.clear();
+            input.presetRenameSource.clear();
+            input.settingsSelection.clear();
             RefreshAfterPresetChange(a_menu);
             statusMessage = StatusText("presetControlRestored");
         }
@@ -5128,18 +5003,68 @@ namespace MPL::TuningMenu
                 if (ImGuiMCP::BeginChild(panelId.c_str(), ImGuiMCP::ImVec2(0.0f, 0.0f), panelFlags))
                 {
                     DrawHeader(category);
+                    {
+                        const auto presetSelected = std::ranges::any_of(
+                            activePresets,
+                            [&](const WeatherPatcher::ActivePreset& a_preset)
+                            { return Config::IEquals(a_preset.category, category); });
+                        const auto label = SKSEMenuSettings::Label("presetDefault", "Default") +
+                                           "##" + profile + category + "PresetDefault";
+                        auto selected = false;
+                        if (presetSelected)
+                        {
+                            const ButtonColorStyle color(
+                                SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::ordinary));
+                            selected = ImGuiMCP::Button(label.c_str());
+                        }
+                        else
+                        {
+                            const auto presetColor = [&](const SKSEMenuSettings::InteractionState a_interaction)
+                            {
+                                const auto color = SKSEMenuSettings::GetPresetColor(
+                                    SKSEMenuSettings::PresetState::active,
+                                    a_interaction);
+                                return ImGuiMCP::ImVec4(color[0], color[1], color[2], color[3]);
+                            };
+                            ImGuiMCP::PushStyleColor(
+                                ImGuiMCP::ImGuiCol_Button,
+                                presetColor(SKSEMenuSettings::InteractionState::normal));
+                            ImGuiMCP::PushStyleColor(
+                                ImGuiMCP::ImGuiCol_ButtonHovered,
+                                presetColor(SKSEMenuSettings::InteractionState::hovered));
+                            ImGuiMCP::PushStyleColor(
+                                ImGuiMCP::ImGuiCol_ButtonActive,
+                                presetColor(SKSEMenuSettings::InteractionState::pressed));
+                            selected = ImGuiMCP::Button(label.c_str());
+                            ImGuiMCP::PopStyleColor(3);
+                        }
+                        if (selected)
+                        {
+                            std::string error;
+                            if (WeatherPatcher::PreviewPresetDefault(profile, category, error))
+                            {
+                                weatherMenuEntries.clear();
+                                sliderCreatorWeatherEntries.clear();
+                                activeWeatherLockProfile.clear();
+                                ActivateWeatherLockPreference(a_menu);
+                                statusMessage = StatusText(
+                                    "presetDefaultPreview",
+                                    { { "category", category } });
+                            }
+                            else
+                            {
+                                if (!error.empty()) logger::warn("[Tuning Menu] preset default preview failed | profile={} | category={} | {}", profile, category, error);
+                                statusMessage = StatusText("presetLoadFailure");
+                            }
+                        }
+                    }
                     if (presets.empty())
                     {
                         DrawDisplayText("noPresets", true);
                     }
-                    auto firstPreset = true;
                     for (const auto& preset : presets)
                     {
-                        if (!firstPreset)
-                        {
-                            SameActionLine();
-                        }
-                        firstPreset = false;
+                        SameActionLine();
 
                         const auto label = preset + "##" + profile + category + "Preset";
                         const auto active = std::ranges::any_of(activePresets, [&](const WeatherPatcher::ActivePreset& a_preset)
@@ -5179,14 +5104,12 @@ namespace MPL::TuningMenu
                                 sliderCreatorWeatherEntries.clear();
                                 activeWeatherLockProfile.clear();
                                 ActivateWeatherLockPreference(a_menu);
-                                statusMessage = active ?
-                                                    StatusText("presetDeselected", { { "category", category } }) :
-                                                    StatusText(
-                                                        "presetPreview",
-                                                        {
-                                                            { "category", category },
-                                                            { "preset", preset },
-                                                        });
+                                statusMessage = StatusText(
+                                    "presetPreview",
+                                    {
+                                        { "category", category },
+                                        { "preset", preset },
+                                    });
                             }
                             else
                             {
@@ -5209,9 +5132,11 @@ namespace MPL::TuningMenu
             auto& input = presetSaveInputs[profile];
             auto& pending = PendingPresetRemovalState(profile);
             const auto moduleName = ControlLabel(a_control, "presetControl", "Presets Create");
-            const auto heading = a_control.header.empty() ?
-                                     SKSEMenuSettings::Label("presetCreatorHeader", "Create Presets") :
-                                     a_control.header;
+            const auto heading = ControlDisplayName(
+                a_control,
+                a_control.header.empty() ?
+                    SKSEMenuSettings::Label("createPresetHeader", "Create Preset") :
+                    a_control.header);
             const auto savePanelId = moduleName + "##" + profile + "PresetCategory";
             constexpr auto savePanelFlags = ImGuiMCP::ImGuiChildFlags_Border |
                                             ImGuiMCP::ImGuiChildFlags_AlwaysUseWindowPadding |
@@ -5226,7 +5151,7 @@ namespace MPL::TuningMenu
             }
             if (ImGuiMCP::BeginChild(savePanelId.c_str(), ImGuiMCP::ImVec2(0.0f, 0.0f), savePanelFlags))
             {
-                DrawHeader(heading);
+                if (!heading.empty()) DrawHeader(heading);
                 {
                     const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                     const auto label = SKSEMenuSettings::Label("savePresetControl", "Save Presets") +
@@ -5264,6 +5189,7 @@ namespace MPL::TuningMenu
                         pending.categories.erase(Lowercase(category));
                         pending.presets.erase(PresetVisualKey(category, presetName));
                         presetVisualStates.erase(Lowercase(profile));
+                        input.settingsSelection.clear();
                         input.name.fill('\0');
                         statusMessage = StatusText(
                             "presetCreated",
@@ -5279,7 +5205,7 @@ namespace MPL::TuningMenu
                     }
                 }
 
-                DrawHeader(SKSEMenuSettings::Label("removePresetOrCategory", "Remove Preset or Category"));
+                DrawHeader(SKSEMenuSettings::Label("editPresetHeader", "Edit Preset"));
                 auto categories = WeatherPatcher::GetPresetCategories(profile);
                 std::erase_if(categories, [&](const std::string& a_category)
                     { return pending.categories.contains(Lowercase(a_category)); });
@@ -5287,11 +5213,16 @@ namespace MPL::TuningMenu
                 {
                     input.removalCategory.clear();
                     input.removalPreset.clear();
+                    input.categoryRenameSource.clear();
+                    input.presetRenameSource.clear();
+                    input.settingsSelection.clear();
                 }
                 const auto categoryPreview = input.removalCategory.empty() ?
                                                  DisplayText("selectPresetCategory") :
                                                  input.removalCategory;
-                if (ImGuiMCP::BeginCombo(("Category##" + profile + "PresetRemovalCategory").c_str(), categoryPreview.c_str()))
+                const auto categorySelectionLabel = SKSEMenuSettings::Label("presetCategory", "Category") +
+                                                    "##" + profile + "PresetEditCategory";
+                if (ImGuiMCP::BeginCombo(categorySelectionLabel.c_str(), categoryPreview.c_str()))
                 {
                     for (const auto& category : categories)
                     {
@@ -5299,6 +5230,9 @@ namespace MPL::TuningMenu
                         {
                             input.removalCategory = category;
                             input.removalPreset.clear();
+                            input.categoryRenameSource.clear();
+                            input.presetRenameSource.clear();
+                            input.settingsSelection.clear();
                         }
                     }
                     ImGuiMCP::EndCombo();
@@ -5314,44 +5248,340 @@ namespace MPL::TuningMenu
                 if (!std::ranges::contains(presets, input.removalPreset)) input.removalPreset.clear();
                 const auto presetPreview = input.removalPreset.empty() ? DisplayText("selectPreset") : input.removalPreset;
                 ImGuiMCP::BeginDisabled(input.removalCategory.empty());
-                if (ImGuiMCP::BeginCombo(("Preset##" + profile + "PresetRemovalName").c_str(), presetPreview.c_str()))
+                const auto presetSelectionLabel = SKSEMenuSettings::Label("preset", "Preset") +
+                                                  "##" + profile + "PresetEditName";
+                if (ImGuiMCP::BeginCombo(presetSelectionLabel.c_str(), presetPreview.c_str()))
                 {
                     for (const auto& preset : presets)
                     {
                         if (ImGuiMCP::Selectable(preset.c_str(), Config::IEquals(preset, input.removalPreset)))
+                        {
                             input.removalPreset = preset;
+                            input.presetRenameSource.clear();
+                            input.settingsSelection.clear();
+                        }
                     }
                     ImGuiMCP::EndCombo();
                 }
                 ImGuiMCP::EndDisabled();
 
-                ImGuiMCP::BeginDisabled(input.removalCategory.empty() || input.removalPreset.empty());
-                const auto removePresetLabel = SKSEMenuSettings::Label("removePreset", "Remove Preset");
-                if (ImGuiMCP::Button((removePresetLabel + "##" + profile).c_str()))
+                const auto selectedPreset = std::ranges::find_if(presets, [&](const auto& a_preset)
+                    { return Config::IEquals(a_preset, input.removalPreset); });
+                const auto selectedPresetIndex = selectedPreset == presets.end() ?
+                                                     presets.size() :
+                                                     static_cast<std::size_t>(std::distance(presets.begin(), selectedPreset));
+                ImGuiMCP::BeginDisabled(selectedPresetIndex == 0 || selectedPresetIndex >= presets.size());
+                const auto movePresetUpLabel = SKSEMenuSettings::Label("movePresetUp", "Move Up") +
+                                               "##" + profile;
+                if (ImGuiMCP::Button(movePresetUpLabel.c_str()))
                 {
-                    const auto category = input.removalCategory;
-                    const auto preset = input.removalPreset;
-                    pending.presets.insert_or_assign(PresetVisualKey(category, preset), WeatherPatcher::ActivePreset{ category, preset });
-                    input.removalPreset.clear();
-                    RefreshAfterPresetChange(a_menu);
-                    statusMessage = StatusText("presetRemovalStaged", { { "preset", preset }, { "category", category } });
+                    std::string error;
+                    if (WeatherPatcher::MovePreset(
+                            profile,
+                            input.removalCategory,
+                            input.removalPreset,
+                            -1,
+                            error))
+                    {
+                        RefreshAfterPresetChange(a_menu);
+                        statusMessage = StatusText("presetMoved");
+                    }
+                    else
+                    {
+                        if (!error.empty()) logger::warn("[Tuning Menu] preset move failed | profile={} | category={} | preset={} | direction=up | {}", profile, input.removalCategory, input.removalPreset, error);
+                        statusMessage = StatusText("presetMoveFailure");
+                    }
+                }
+                ImGuiMCP::EndDisabled();
+                SameActionLine();
+                ImGuiMCP::BeginDisabled(
+                    selectedPresetIndex >= presets.size() || selectedPresetIndex + 1 >= presets.size());
+                const auto movePresetDownLabel = SKSEMenuSettings::Label("movePresetDown", "Move Down") +
+                                                 "##" + profile;
+                if (ImGuiMCP::Button(movePresetDownLabel.c_str()))
+                {
+                    std::string error;
+                    if (WeatherPatcher::MovePreset(
+                            profile,
+                            input.removalCategory,
+                            input.removalPreset,
+                            1,
+                            error))
+                    {
+                        RefreshAfterPresetChange(a_menu);
+                        statusMessage = StatusText("presetMoved");
+                    }
+                    else
+                    {
+                        if (!error.empty()) logger::warn("[Tuning Menu] preset move failed | profile={} | category={} | preset={} | direction=down | {}", profile, input.removalCategory, input.removalPreset, error);
+                        statusMessage = StatusText("presetMoveFailure");
+                    }
+                }
+                ImGuiMCP::EndDisabled();
+
+                if (input.categoryRenameSource != input.removalCategory)
+                {
+                    SetInputText(input.categoryRename, input.removalCategory);
+                    input.categoryRenameSource = input.removalCategory;
+                }
+                const auto presetRenameSource = input.removalPreset.empty() ?
+                                                    std::string{} :
+                                                    PresetVisualKey(input.removalCategory, input.removalPreset);
+                if (input.presetRenameSource != presetRenameSource)
+                {
+                    SetInputText(input.presetRename, input.removalPreset);
+                    input.presetRenameSource = presetRenameSource;
+                }
+
+                ImGuiMCP::SetNextItemWidth(280.0f);
+                const auto categoryNameLabel = SKSEMenuSettings::Label("presetCategoryName", "Category Name") +
+                                               "##" + profile + "PresetCategoryRename";
+                ImGuiMCP::InputText(
+                    categoryNameLabel.c_str(),
+                    input.categoryRename.data(),
+                    input.categoryRename.size());
+                const auto renamedCategoryInput = Trim(std::string(input.categoryRename.data()));
+                ImGuiMCP::BeginDisabled(
+                    input.removalCategory.empty() ||
+                    renamedCategoryInput.empty() ||
+                    renamedCategoryInput == input.removalCategory);
+                const auto renameCategoryLabel = SKSEMenuSettings::Label("renamePresetCategory", "Rename Category") +
+                                                 "##" + profile;
+                if (ImGuiMCP::Button(renameCategoryLabel.c_str()))
+                {
+                    const auto previousCategory = input.removalCategory;
+                    std::string error;
+                    if (WeatherPatcher::RenamePresetCategory(
+                            profile,
+                            previousCategory,
+                            renamedCategoryInput,
+                            error))
+                    {
+                        const auto renamedCategories = WeatherPatcher::GetPresetCategories(profile);
+                        const auto renamed = std::ranges::find_if(renamedCategories, [&](const auto& a_category)
+                            { return Config::IEquals(a_category, renamedCategoryInput); });
+                        const auto renamedCategory = renamed != renamedCategories.end() ?
+                                                         *renamed :
+                                                         renamedCategoryInput;
+                        decltype(pending.presets) renamedPendingPresets;
+                        for (auto& [key, pendingPreset] : pending.presets)
+                        {
+                            (void)key;
+                            if (Config::IEquals(pendingPreset.category, previousCategory))
+                                pendingPreset.category = renamedCategory;
+                            renamedPendingPresets.insert_or_assign(
+                                PresetVisualKey(pendingPreset.category, pendingPreset.name),
+                                std::move(pendingPreset));
+                        }
+                        pending.presets = std::move(renamedPendingPresets);
+                        pending.categories.erase(Lowercase(previousCategory));
+                        input.removalCategory = renamedCategory;
+                        input.categoryRenameSource.clear();
+                        input.presetRenameSource.clear();
+                        input.settingsSelection.clear();
+                        RefreshAfterPresetChange(a_menu);
+                        statusMessage = StatusText(
+                            "presetCategoryRenamed",
+                            {
+                                { "category", previousCategory },
+                                { "newCategory", renamedCategory },
+                            });
+                    }
+                    else
+                    {
+                        if (!error.empty()) logger::warn("[Tuning Menu] preset category rename failed | profile={} | category={} | {}", profile, previousCategory, error);
+                        statusMessage = StatusText("presetCategoryRenameFailure");
+                    }
                 }
                 ImGuiMCP::EndDisabled();
                 SameActionLine();
                 ImGuiMCP::BeginDisabled(input.removalCategory.empty());
-                const auto removeCategoryLabel = SKSEMenuSettings::Label("removePresetCategory", "Remove Category");
-                if (ImGuiMCP::Button((removeCategoryLabel + "##" + profile).c_str()))
                 {
-                    const auto category = input.removalCategory;
-                    pending.categories.insert_or_assign(Lowercase(category), category);
-                    std::erase_if(pending.presets, [&](const auto& a_entry)
-                        { return Config::IEquals(a_entry.second.category, category); });
-                    input.removalCategory.clear();
-                    input.removalPreset.clear();
-                    RefreshAfterPresetChange(a_menu);
-                    statusMessage = StatusText("presetCategoryRemovalStaged", { { "category", category } });
+                    const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
+                    const auto removeCategoryLabel = SKSEMenuSettings::Label("removePresetCategory", "Remove Category") +
+                                                     "##" + profile;
+                    if (ImGuiMCP::Button(removeCategoryLabel.c_str()))
+                    {
+                        const auto category = input.removalCategory;
+                        pending.categories.insert_or_assign(Lowercase(category), category);
+                        std::erase_if(pending.presets, [&](const auto& a_entry)
+                            { return Config::IEquals(a_entry.second.category, category); });
+                        input.removalCategory.clear();
+                        input.removalPreset.clear();
+                        input.categoryRenameSource.clear();
+                        input.presetRenameSource.clear();
+                        input.settingsSelection.clear();
+                        RefreshAfterPresetChange(a_menu);
+                        statusMessage = StatusText("presetCategoryRemovalStaged", { { "category", category } });
+                    }
                 }
                 ImGuiMCP::EndDisabled();
+
+                ImGuiMCP::SetNextItemWidth(280.0f);
+                const auto presetNameLabel = SKSEMenuSettings::Label("presetName", "Preset Name") +
+                                             "##" + profile + "PresetRename";
+                ImGuiMCP::InputText(
+                    presetNameLabel.c_str(),
+                    input.presetRename.data(),
+                    input.presetRename.size());
+                auto renamedPresetInput = Trim(std::string(input.presetRename.data()));
+                if (Config::IEquals(std::filesystem::path(renamedPresetInput).extension().string(), ".json"))
+                    renamedPresetInput = std::filesystem::path(renamedPresetInput).stem().string();
+                ImGuiMCP::BeginDisabled(
+                    input.removalCategory.empty() ||
+                    input.removalPreset.empty() ||
+                    renamedPresetInput.empty() ||
+                    renamedPresetInput == input.removalPreset);
+                const auto renamePresetLabel = SKSEMenuSettings::Label("renamePreset", "Rename Preset") +
+                                               "##" + profile;
+                if (ImGuiMCP::Button(renamePresetLabel.c_str()))
+                {
+                    const auto previousPreset = input.removalPreset;
+                    std::string error;
+                    if (WeatherPatcher::RenamePreset(
+                            profile,
+                            input.removalCategory,
+                            previousPreset,
+                            renamedPresetInput,
+                            error))
+                    {
+                        const auto renamedPresets = WeatherPatcher::GetPresets(profile, input.removalCategory);
+                        const auto renamed = std::ranges::find_if(renamedPresets, [&](const auto& a_preset)
+                            { return Config::IEquals(a_preset, renamedPresetInput); });
+                        const auto renamedPreset = renamed != renamedPresets.end() ? *renamed : renamedPresetInput;
+                        input.removalPreset = renamedPreset;
+                        input.presetRenameSource.clear();
+                        input.settingsSelection.clear();
+                        RefreshAfterPresetChange(a_menu);
+                        statusMessage = StatusText(
+                            "presetRenamed",
+                            {
+                                { "preset", previousPreset },
+                                { "newPreset", renamedPreset },
+                                { "category", input.removalCategory },
+                            });
+                    }
+                    else
+                    {
+                        if (!error.empty()) logger::warn("[Tuning Menu] preset rename failed | profile={} | category={} | preset={} | {}", profile, input.removalCategory, previousPreset, error);
+                        statusMessage = StatusText("presetRenameFailure");
+                    }
+                }
+                ImGuiMCP::EndDisabled();
+                SameActionLine();
+                ImGuiMCP::BeginDisabled(input.removalCategory.empty() || input.removalPreset.empty());
+                {
+                    const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
+                    const auto updatePresetLabel = SKSEMenuSettings::Label("updatePreset", "Update Preset") +
+                                                   "##" + profile;
+                    if (ImGuiMCP::Button(updatePresetLabel.c_str()))
+                    {
+                        std::string error;
+                        if (WeatherPatcher::UpdatePreset(
+                                profile,
+                                input.removalCategory,
+                                input.removalPreset,
+                                error))
+                        {
+                            input.settingsSelection.clear();
+                            RefreshAfterPresetChange(a_menu);
+                            statusMessage = StatusText(
+                                "presetUpdated",
+                                {
+                                    { "preset", input.removalPreset },
+                                    { "category", input.removalCategory },
+                                });
+                        }
+                        else
+                        {
+                            if (!error.empty()) logger::warn("[Tuning Menu] preset update failed | profile={} | category={} | preset={} | {}", profile, input.removalCategory, input.removalPreset, error);
+                            statusMessage = StatusText("presetUpdateFailure");
+                        }
+                    }
+                }
+                SameActionLine();
+                {
+                    const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
+                    const auto removePresetLabel = SKSEMenuSettings::Label("removePreset", "Remove Preset") +
+                                                   "##" + profile;
+                    if (ImGuiMCP::Button(removePresetLabel.c_str()))
+                    {
+                        const auto category = input.removalCategory;
+                        const auto preset = input.removalPreset;
+                        pending.presets.insert_or_assign(PresetVisualKey(category, preset), WeatherPatcher::ActivePreset{ category, preset });
+                        input.removalPreset.clear();
+                        input.presetRenameSource.clear();
+                        input.settingsSelection.clear();
+                        RefreshAfterPresetChange(a_menu);
+                        statusMessage = StatusText("presetRemovalStaged", { { "preset", preset }, { "category", category } });
+                    }
+                }
+                ImGuiMCP::EndDisabled();
+
+                DrawHeader(SKSEMenuSettings::Label("presetSettings", "Preset Settings"));
+                const auto settingsSelection = input.removalPreset.empty() ?
+                                                   std::string{} :
+                                                   PresetVisualKey(input.removalCategory, input.removalPreset);
+                if (input.settingsSelection != settingsSelection)
+                {
+                    input.settingsSelection = settingsSelection;
+                    input.settings.clear();
+                    input.settingsError.clear();
+                    if (!settingsSelection.empty())
+                    {
+                        const auto settings = WeatherPatcher::GetPresetSettings(
+                            profile,
+                            input.removalCategory,
+                            input.removalPreset,
+                            input.settingsError);
+                        const auto values = settings ?
+                                                JsonOverlay::FlattenValues(*settings, input.settingsError) :
+                                                std::nullopt;
+                        if (values) input.settings = std::move(*values);
+                    }
+                }
+
+                if (settingsSelection.empty())
+                {
+                    DrawDisplayText("selectPresetSettings", true);
+                }
+                else if (!input.settingsError.empty())
+                {
+                    DrawDisplayText("presetSettingsLoadFailure", true);
+                }
+                else if (input.settings.empty())
+                {
+                    DrawDisplayText("noPresetSettings", true);
+                }
+                else
+                {
+                    constexpr auto tableFlags = ImGuiMCP::ImGuiTableFlags_SizingStretchProp |
+                                                ImGuiMCP::ImGuiTableFlags_RowBg |
+                                                ImGuiMCP::ImGuiTableFlags_BordersInnerH |
+                                                ImGuiMCP::ImGuiTableFlags_BordersOuter;
+                    const auto tableID = "PresetSettings##" + profile;
+                    if (ImGuiMCP::BeginTable(tableID.c_str(), 2, tableFlags))
+                    {
+                        ImGuiMCP::TableSetupColumn(
+                            SKSEMenuSettings::Label("presetSetting", "Setting").c_str(),
+                            ImGuiMCP::ImGuiTableColumnFlags_WidthStretch,
+                            0.6f);
+                        ImGuiMCP::TableSetupColumn(
+                            SKSEMenuSettings::Label("presetValue", "Value").c_str(),
+                            ImGuiMCP::ImGuiTableColumnFlags_WidthStretch,
+                            0.4f);
+                        ImGuiMCP::TableHeadersRow();
+                        for (const auto& setting : input.settings)
+                        {
+                            ImGuiMCP::TableNextRow();
+                            ImGuiMCP::TableSetColumnIndex(0);
+                            ImGuiMCP::TextWrapped("%s", setting.path.c_str());
+                            ImGuiMCP::TableSetColumnIndex(1);
+                            ImGuiMCP::TextWrapped("%s", setting.value.c_str());
+                        }
+                        ImGuiMCP::EndTable();
+                    }
+                }
             }
             ImGuiMCP::EndChild();
             if (customPadding) ImGuiMCP::PopStyleVar();
@@ -6124,6 +6354,24 @@ namespace MPL::TuningMenu
                 .format;
         }
 
+        struct SliderCreatorFormatOption
+        {
+            std::string_view format;
+            std::string_view sample;
+        };
+
+        constexpr std::array kSliderCreatorFormatOptions{
+            SliderCreatorFormatOption{ "%.0f", "1" },
+            SliderCreatorFormatOption{ "%.1f", "0.1" },
+            SliderCreatorFormatOption{ "%.2f", "0.01" },
+        };
+
+        std::string SliderCreatorFormatSample(const std::string_view a_format)
+        {
+            const auto option = std::ranges::find(kSliderCreatorFormatOptions, a_format, &SliderCreatorFormatOption::format);
+            return option == kSliderCreatorFormatOptions.end() ? std::string(a_format) : std::string(option->sample);
+        }
+
         float SliderCreatorPreviewInitialValue(const SliderCreatorState& a_state)
         {
             const auto operation = CreatorFilteredOperation(a_state);
@@ -6389,17 +6637,34 @@ namespace MPL::TuningMenu
             }
 
             const auto automaticFormat = SliderCreatorAutomaticFormat(a_state);
-            const auto formatHint = std::format(
-                "{}: {}",
+            const auto automaticLabel = std::format(
+                "{} ({})",
                 SKSEMenuSettings::Label("sliderCreatorAutomatic", "Automatic"),
-                automaticFormat);
+                SliderCreatorFormatSample(automaticFormat));
             const auto formatLabel = SKSEMenuSettings::Label("sliderCreatorFormat", "Format");
+            const auto selectedFormat = InputText(a_state.format);
+            const auto formatPreview = selectedFormat.empty() ?
+                                           automaticLabel :
+                                           SliderCreatorFormatSample(selectedFormat);
             ImGuiMCP::SetNextItemWidth(180.0f);
-            ImGuiMCP::InputTextWithHint(
+            if (ImGuiMCP::BeginCombo(
                 (formatLabel + "##" + a_id).c_str(),
-                formatHint.c_str(),
-                a_state.format.data(),
-                a_state.format.size());
+                formatPreview.c_str()))
+            {
+                const auto automaticSelected = selectedFormat.empty();
+                if (ImGuiMCP::Selectable(automaticLabel.c_str(), automaticSelected))
+                    SetInputText(a_state.format, "");
+                if (automaticSelected) ImGuiMCP::SetItemDefaultFocus();
+
+                for (const auto& option : kSliderCreatorFormatOptions)
+                {
+                    const auto selected = selectedFormat == option.format;
+                    if (ImGuiMCP::Selectable(option.sample.data(), selected))
+                        SetInputText(a_state.format, option.format);
+                    if (selected) ImGuiMCP::SetItemDefaultFocus();
+                }
+                ImGuiMCP::EndCombo();
+            }
         }
 
         void DrawSliderCreator(
@@ -6992,19 +7257,19 @@ namespace MPL::TuningMenu
                     };
                     for (const auto scope : scopes) addScope(scope);
                 }
-                else if (control.type == "dynamicAmbientWithin")
+                else if (control.type == "ambientWithinGauge")
                 {
                     addScope("dynamicAmbientWithin");
                 }
-                else if (control.type == "dynamicAmbientBetween")
+                else if (control.type == "ambientBetweenGauge")
                 {
                     addScope("dynamicAmbientBetween");
                 }
-                else if (control.type == "dynamicSunlightWithin")
+                else if (control.type == "sunlightWithinGauge")
                 {
                     addScope("dynamicSunlightWithin");
                 }
-                else if (control.type == "dynamicSunlightBetween")
+                else if (control.type == "sunlightBetweenGauge")
                 {
                     addScope("dynamicSunlightBetween");
                 }
@@ -7280,16 +7545,17 @@ namespace MPL::TuningMenu
             const ButtonColorStyle buttonColor(ControlButtonColor(a_module));
             const auto drawText = [&](const bool a_separator)
             {
+                const auto text = ControlDisplayName(a_module, a_module.label);
                 const auto scale = std::isfinite(a_module.fontScale) && a_module.fontScale > 0.0f ?
                                        a_module.fontScale :
                                        1.0f;
                 if (a_separator)
                 {
-                    DrawHeader(a_module.label, scale);
+                    if (!text.empty()) DrawHeader(text, scale);
                     return;
                 }
                 if (scale != 1.0f) ImGuiMCP::SetWindowFontScale(scale);
-                ImGuiMCP::TextWrapped("%s", a_module.label.c_str());
+                if (!text.empty()) ImGuiMCP::TextWrapped("%s", text.c_str());
                 if (scale != 1.0f) ImGuiMCP::SetWindowFontScale(1.0f);
             };
 
@@ -7353,7 +7619,9 @@ namespace MPL::TuningMenu
                 const auto fallbackLabel = !a_module.settings.empty() ?
                                                std::string(SliderTargetPath(a_module.settings.front())) :
                                                a_module.setting;
-                const auto visibleLabel = a_module.label.empty() ? fallbackLabel : a_module.label;
+                const auto visibleLabel = ControlDisplayName(
+                    a_module,
+                    a_module.label.empty() ? fallbackLabel : a_module.label);
                 const auto label = visibleLabel + "##" + a_menu.profile + "MenuModule" + std::to_string(a_index);
                 const auto& profile = a_menu.profile;
                 const auto filteredWeather =
@@ -7387,23 +7655,23 @@ namespace MPL::TuningMenu
                 }
                 return;
             }
-            if (a_module.type == "dynamicAmbientWithin" ||
-                a_module.type == "dynamicAmbientBetween" ||
-                a_module.type == "dynamicSunlightWithin" ||
-                a_module.type == "dynamicSunlightBetween")
+            if (a_module.type == "ambientWithinGauge" ||
+                a_module.type == "ambientBetweenGauge" ||
+                a_module.type == "sunlightWithinGauge" ||
+                a_module.type == "sunlightBetweenGauge")
             {
-                const bool sunlight = a_module.type == "dynamicSunlightWithin" ||
-                                      a_module.type == "dynamicSunlightBetween";
+                const bool sunlight = a_module.type == "sunlightWithinGauge" ||
+                                      a_module.type == "sunlightBetweenGauge";
                 DrawDynamicBrightnessModule(
                     a_menu,
-                    a_module.type == "dynamicAmbientWithin" ||
-                            a_module.type == "dynamicSunlightWithin" ?
+                    a_module,
+                    a_module.type == "ambientWithinGauge" ||
+                            a_module.type == "sunlightWithinGauge" ?
                         WeatherPatcher::DynamicAmbientMode::within :
                         WeatherPatcher::DynamicAmbientMode::between,
                     sunlight ?
                         WeatherPatcher::DynamicBrightnessField::sunlight :
-                        WeatherPatcher::DynamicBrightnessField::ambient,
-                    a_index);
+                        WeatherPatcher::DynamicBrightnessField::ambient);
                 return;
             }
             if (a_module.type == "weatherSelector")
@@ -7646,7 +7914,8 @@ namespace MPL::TuningMenu
                         ImGuiMCP::ImVec2(0.0f, 0.0f),
                         boxFlags);
                     openBoxes.push_back({ true, visible, customPadding });
-                    if (visible && !module.label.empty()) DrawHeader(module.label);
+                    const auto boxTitle = ControlDisplayName(module, module.label);
+                    if (visible && !boxTitle.empty()) DrawHeader(boxTitle);
                     hasVisibleContent = true;
                     continue;
                 }
@@ -7686,7 +7955,7 @@ namespace MPL::TuningMenu
             LayoutModuleChoice{ "Page Actions", "pageActions", "", "" },
             LayoutModuleChoice{ "Preset Save", "presetSave", "", "" },
             LayoutModuleChoice{ "Presets", "presets", "", "" },
-            LayoutModuleChoice{ "Presets Create", "presetCreator", "", "" },
+            LayoutModuleChoice{ "Create Preset", "presetCreator", "", "" },
             LayoutModuleChoice{ "Dynamic Ambient Weather List", "dynamicAmbientWeatherList", "ambient", "" },
             LayoutModuleChoice{ "Dynamic Sunlight Weather List", "dynamicAmbientWeatherList", "sunlight", "" },
             LayoutModuleChoice{ "Weather Control Compact", "weatherControlCompact", "", "" },
@@ -7698,10 +7967,10 @@ namespace MPL::TuningMenu
             LayoutModuleChoice{ "Weather Hue Shift", "settings", "hueShift", "" },
             LayoutModuleChoice{ "Weather Compression Between", "settings", "betweenCompression", "" },
             LayoutModuleChoice{ "Weather Compression Within", "settings", "withinCompression", "" },
-            LayoutModuleChoice{ "Dynamic Ambient Between", "dynamicAmbientBetween", "", "" },
-            LayoutModuleChoice{ "Dynamic Ambient Within", "dynamicAmbientWithin", "", "" },
-            LayoutModuleChoice{ "Dynamic Sunlight Between", "dynamicSunlightBetween", "", "" },
-            LayoutModuleChoice{ "Dynamic Sunlight Within", "dynamicSunlightWithin", "", "" },
+            LayoutModuleChoice{ "Ambient Brightness Between Weather Gauge", "ambientBetweenGauge", "", "" },
+            LayoutModuleChoice{ "Ambient Brightness Within Weather Gauge", "ambientWithinGauge", "", "" },
+            LayoutModuleChoice{ "Sunlight Brightness Between Weather Gauge", "sunlightBetweenGauge", "", "" },
+            LayoutModuleChoice{ "Sunlight Brightness Within Weather Gauge", "sunlightWithinGauge", "", "" },
             LayoutModuleChoice{ "Weather Image Space", "settings", "exteriorImageSpace", "" },
             LayoutModuleChoice{ "Lighting Effects", "settings", "fxEffectLighting", "" },
             LayoutModuleChoice{ "Lighting Bulbs", "settings", "pointLights", "" },
@@ -7748,6 +8017,19 @@ namespace MPL::TuningMenu
                 std::pair{ std::string_view("profilePriority"), std::string_view("Profile Priority") },
                 std::pair{ std::string_view("advancedToggle"), std::string_view("Advanced Toggle") },
             };
+            const auto typeName = a_module.type == "separatorText" ? "Header" : a_module.type;
+            if (a_module.displayName && !a_module.displayName->empty())
+            {
+                return *a_module.displayName + " (" + typeName + ")";
+            }
+            if (!a_module.header.empty())
+            {
+                return a_module.header + " (" + typeName + ")";
+            }
+            if (!a_module.label.empty())
+            {
+                return a_module.label + " (" + typeName + ")";
+            }
             if (const auto module = std::ranges::find_if(profileModules, [&](const auto& a_choice)
                     { return Config::IEquals(a_module.type, a_choice.first); });
                 module != profileModules.end())
@@ -7766,10 +8048,6 @@ namespace MPL::TuningMenu
             {
                 return std::string(choice->name);
             }
-            if (!a_module.label.empty())
-            {
-                return a_module.label + " (" + a_module.type + ")";
-            }
             if (!a_module.setting.empty())
             {
                 return a_module.setting + " (" + a_module.type + ")";
@@ -7781,11 +8059,128 @@ namespace MPL::TuningMenu
             return a_module.type;
         }
 
+        bool LayoutModuleHasDisplayName(const MenuControl& a_module)
+        {
+            static constexpr std::array types{
+                std::string_view{ "slider" },
+                std::string_view{ "text" },
+                std::string_view{ "separatorText" },
+                std::string_view{ "boxStart" },
+                std::string_view{ "ambientWithinGauge" },
+                std::string_view{ "ambientBetweenGauge" },
+                std::string_view{ "sunlightWithinGauge" },
+                std::string_view{ "sunlightBetweenGauge" },
+                std::string_view{ "links" },
+                std::string_view{ "presetCreator" },
+            };
+            return std::ranges::contains(types, std::string_view(a_module.type));
+        }
+
+        std::optional<std::string> LayoutModuleEditableName(const MenuControl& a_module)
+        {
+            if (!LayoutModuleHasDisplayName(a_module)) return std::nullopt;
+            if (a_module.displayName) return *a_module.displayName;
+
+            if (a_module.type == "slider")
+            {
+                if (!a_module.label.empty()) return a_module.label;
+                if (!a_module.settings.empty()) return std::string(SliderTargetPath(a_module.settings.front()));
+                if (!a_module.setting.empty()) return a_module.setting;
+                return a_module.id;
+            }
+            if (a_module.type == "text" || a_module.type == "separatorText" || a_module.type == "boxStart")
+            {
+                return a_module.label;
+            }
+            if (a_module.type == "links")
+            {
+                return Config::IEquals(a_module.setting, "interior") ? "Interior Links" : "Weather Links";
+            }
+            if (a_module.type == "presetCreator")
+            {
+                return a_module.header.empty() ?
+                           SKSEMenuSettings::Label("createPresetHeader", "Create Preset") :
+                           a_module.header;
+            }
+
+            if (const auto choice = std::ranges::find_if(kLayoutModuleChoices, [&](const LayoutModuleChoice& a_choice)
+                    { return a_module.type == a_choice.type && a_module.setting == a_choice.setting; });
+                choice != kLayoutModuleChoices.end())
+            {
+                if (a_module.type == "ambientWithinGauge" ||
+                    a_module.type == "ambientBetweenGauge" ||
+                    a_module.type == "sunlightWithinGauge" ||
+                    a_module.type == "sunlightBetweenGauge")
+                {
+                    return SKSEMenuSettings::Label(a_module.type, choice->name);
+                }
+                return std::string(choice->name);
+            }
+            return std::nullopt;
+        }
+
         void QueueLayoutReload(std::string a_message)
         {
             pendingMenuReloadStatus = std::move(a_message);
             loadedDefinitionFiles.clear();
             nextDefinitionCheck = {};
+        }
+
+        void DrawLayoutModuleRenameControls(
+            const MenuDefinition& a_menu,
+            LayoutEditSession& a_session,
+            LayoutEditorState& a_state,
+            const MenuControl& a_module,
+            const std::optional<std::size_t> a_pageIndex,
+            const std::size_t a_moduleIndex)
+        {
+            const auto currentName = LayoutModuleEditableName(a_module);
+            if (!currentName) return;
+
+            const auto stateKey = std::format(
+                "{}:{}:{}:{}:{}",
+                a_menu.profile,
+                a_pageIndex ? "page" : "profile",
+                a_pageIndex.value_or(0),
+                a_moduleIndex,
+                a_module.type);
+            auto& input = a_state.moduleNames[stateKey];
+            if (input.source != *currentName)
+            {
+                SetInputText(input.value, *currentName);
+                input.source = *currentName;
+            }
+
+            ImGuiMCP::TableSetColumnIndex(4);
+            const auto renameLabel = SKSEMenuSettings::Label("renameModule", "Rename") +
+                                     "##" + stateKey;
+            if (ImGuiMCP::SmallButton(renameLabel.c_str()))
+            {
+                std::string error;
+                const auto renamed = a_pageIndex ?
+                                         SliderCreator::RenameModule(
+                                             a_session.workingPath,
+                                             *a_pageIndex,
+                                             a_moduleIndex,
+                                             InputText(input.value),
+                                             error) :
+                                         SliderCreator::RenameProfileModule(
+                                             a_session.workingPath,
+                                             a_moduleIndex,
+                                             InputText(input.value),
+                                             error);
+                if (renamed)
+                {
+                    input.source.clear();
+                    QueueLayoutEditReload(a_session, StatusText("layoutModuleRenamed"));
+                }
+                else statusMessage = SliderCreatorErrorText(error);
+            }
+
+            ImGuiMCP::TableSetColumnIndex(5);
+            ImGuiMCP::SetNextItemWidth(260.0f);
+            const auto inputLabel = "##ModuleName" + stateKey;
+            ImGuiMCP::InputText(inputLabel.c_str(), input.value.data(), input.value.size());
         }
 
         void QueueLayoutEditReload(LayoutEditSession& a_session, std::string a_message)
@@ -8212,12 +8607,14 @@ namespace MPL::TuningMenu
                                         ImGuiMCP::ImGuiTableFlags_NoSavedSettings |
                                         ImGuiMCP::ImGuiTableFlags_NoPadOuterX;
             const auto tableID = "ProfilePageContents##" + a_menu.definition.profile;
-            if (ImGuiMCP::BeginTable(tableID.c_str(), 4, tableFlags))
+            if (ImGuiMCP::BeginTable(tableID.c_str(), 6, tableFlags))
             {
                 ImGuiMCP::TableSetupColumn("Content", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed, contentWidth);
                 ImGuiMCP::TableSetupColumn("Up", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
                 ImGuiMCP::TableSetupColumn("Down", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
                 ImGuiMCP::TableSetupColumn("Remove", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                ImGuiMCP::TableSetupColumn("Rename", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                ImGuiMCP::TableSetupColumn("Name", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed, 260.0f);
                 for (std::size_t index = 0; index < profilePage.modules.size(); ++index)
                 {
                     const auto& module = profilePage.modules[index];
@@ -8267,6 +8664,13 @@ namespace MPL::TuningMenu
                         else statusMessage = SliderCreatorErrorText(editError);
                     }
                     ImGuiMCP::EndDisabled();
+                    DrawLayoutModuleRenameControls(
+                        a_menu.definition,
+                        *editSession,
+                        state,
+                        module,
+                        std::nullopt,
+                        index);
                 }
                 ImGuiMCP::EndTable();
             }
@@ -8531,12 +8935,14 @@ namespace MPL::TuningMenu
                                         ImGuiMCP::ImGuiTableFlags_NoSavedSettings |
                                         ImGuiMCP::ImGuiTableFlags_NoPadOuterX;
             const auto tableID = "PageContents##" + a_menu.definition.profile + std::to_string(a_pageIndex);
-            if (ImGuiMCP::BeginTable(tableID.c_str(), 4, tableFlags))
+            if (ImGuiMCP::BeginTable(tableID.c_str(), 6, tableFlags))
             {
                 ImGuiMCP::TableSetupColumn("Content", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed, contentWidth);
                 ImGuiMCP::TableSetupColumn("Up", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
                 ImGuiMCP::TableSetupColumn("Down", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
                 ImGuiMCP::TableSetupColumn("Remove", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                ImGuiMCP::TableSetupColumn("Rename", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                ImGuiMCP::TableSetupColumn("Name", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed, 260.0f);
                 for (std::size_t index = 0; index < a_page.modules.size(); ++index)
                 {
                     ImGuiMCP::TableNextRow();
@@ -8582,6 +8988,13 @@ namespace MPL::TuningMenu
                             QueueLayoutEditReload(*editSession, StatusText("layoutModuleRemoved"));
                         else statusMessage = SliderCreatorErrorText(error);
                     }
+                    DrawLayoutModuleRenameControls(
+                        a_menu.definition,
+                        *editSession,
+                        state,
+                        a_page.modules[index],
+                        a_pageIndex,
+                        index);
                 }
                 ImGuiMCP::EndTable();
             }

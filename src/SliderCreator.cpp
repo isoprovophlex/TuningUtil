@@ -292,6 +292,52 @@ namespace MPL::SliderCreator
             return std::ranges::any_of(kinds, [&](const auto kind) { return IEquals(a_kind, kind); });
         }
 
+        bool ModuleHasDisplayName(const std::string_view a_kind)
+        {
+            static constexpr std::array kinds{
+                std::string_view("slider"),
+                std::string_view("text"),
+                std::string_view("separatorText"),
+                std::string_view("boxStart"),
+                std::string_view("ambientWithinGauge"),
+                std::string_view("ambientBetweenGauge"),
+                std::string_view("sunlightWithinGauge"),
+                std::string_view("sunlightBetweenGauge"),
+                std::string_view("links"),
+                std::string_view("presetCreator"),
+            };
+            return std::ranges::any_of(kinds, [&](const auto kind) { return IEquals(a_kind, kind); });
+        }
+
+        bool RenameMutableModule(
+            yyjson_mut_doc* a_document,
+            yyjson_mut_val* a_module,
+            const std::string& a_name,
+            std::string& a_error)
+        {
+            const auto name = Trim(a_name);
+            auto* kindValue = yyjson_mut_is_obj(a_module) ? yyjson_mut_obj_get(a_module, "type") : nullptr;
+            if (!yyjson_mut_is_str(kindValue))
+            {
+                a_error = "The selected module is unavailable.";
+                return false;
+            }
+            const std::string_view kind(yyjson_mut_get_str(kindValue), yyjson_mut_get_len(kindValue));
+            if (!ModuleHasDisplayName(kind))
+            {
+                a_error = "This module does not have a display name.";
+                return false;
+            }
+
+            yyjson_mut_obj_remove_key(a_module, "displayName");
+            if (!AddString(a_document, a_module, "displayName", name))
+            {
+                a_error = "The module could not be renamed.";
+                return false;
+            }
+            return true;
+        }
+
         yyjson_mut_val* StringList(yyjson_mut_doc* a_document, const std::vector<std::string>& a_values)
         {
             auto* result = yyjson_mut_arr(a_document);
@@ -1236,6 +1282,38 @@ namespace MPL::SliderCreator
         return WriteDocument(a_path, document.get(), a_error);
     }
 
+    bool RenameModule(
+        const std::filesystem::path& a_path,
+        const std::size_t a_pageIndex,
+        const std::size_t a_controlIndex,
+        const std::string& a_name,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        if (!root)
+        {
+            a_error = "The menu layout could not be read.";
+            return false;
+        }
+        yyjson_mut_doc_set_root(document.get(), root);
+        auto* pages = yyjson_mut_obj_get(root, "pages");
+        auto* page = yyjson_mut_is_arr(pages) ? yyjson_mut_arr_get(pages, a_pageIndex) : nullptr;
+        auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
+        auto* module = yyjson_mut_is_arr(modules) ? yyjson_mut_arr_get(modules, a_controlIndex) : nullptr;
+        if (!module)
+        {
+            a_error = "The selected module is unavailable.";
+            return false;
+        }
+        if (!RenameMutableModule(document.get(), module, a_name, a_error)) return false;
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
     bool AddProfileElement(
         const std::filesystem::path& a_path,
         const std::string& a_kind,
@@ -1349,6 +1427,35 @@ namespace MPL::SliderCreator
             a_error = "The Profile page element could not be removed.";
             return false;
         }
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
+    bool RenameProfileModule(
+        const std::filesystem::path& a_path,
+        const std::size_t a_controlIndex,
+        const std::string& a_name,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        if (!root)
+        {
+            a_error = "The menu layout could not be read.";
+            return false;
+        }
+        yyjson_mut_doc_set_root(document.get(), root);
+        auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
+        auto* module = yyjson_mut_is_arr(modules) ? yyjson_mut_arr_get(modules, a_controlIndex) : nullptr;
+        if (!module)
+        {
+            a_error = "The selected module is unavailable.";
+            return false;
+        }
+        if (!RenameMutableModule(document.get(), module, a_name, a_error)) return false;
         return WriteDocument(a_path, document.get(), a_error);
     }
 

@@ -143,6 +143,11 @@ namespace MPL::TuningUtil
     Settings& GetSettings(std::string&);
     Settings ResolveSettingsStack(std::span<const std::string>);
     std::optional<std::string> SerializePresetSettings(std::string&, std::string&);
+    std::optional<std::string> ResolvePresetResetSettings(
+        std::string&,
+        std::string_view,
+        std::string_view,
+        std::string&);
     bool ApplyPresetPreview(std::string&, std::string_view, std::string_view, std::string&);
     bool ApplyPresetAndRemoveUserOverrides(std::string&, std::string_view, std::string&);
     bool SaveSettings(std::string&);

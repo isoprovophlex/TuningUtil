@@ -39,11 +39,30 @@ namespace MPL::WeatherPatcher
 
     std::vector<std::string> GetPresetCategories(std::string&);
     std::vector<std::string> GetPresets(std::string&, const std::string&);
+    std::optional<std::string> GetPresetSettings(
+        std::string&,
+        const std::string&,
+        const std::string&,
+        std::string&);
     std::vector<ActivePreset> GetActivePresets(std::string&, std::string&);
     std::optional<std::string> GetActivePresetSettings(std::string&, std::string&);
     void DiscardPresetPreview(std::string&);
     bool SavePreset(std::string&, const std::string&, const std::string&, std::string&);
+    bool UpdatePreset(std::string&, const std::string&, const std::string&, std::string&);
+    bool MovePreset(std::string&, const std::string&, const std::string&, int, std::string&);
+    bool RenamePreset(
+        std::string&,
+        const std::string&,
+        const std::string&,
+        const std::string&,
+        std::string&);
+    bool RenamePresetCategory(
+        std::string&,
+        const std::string&,
+        const std::string&,
+        std::string&);
     bool PreviewPreset(std::string&, const std::string&, const std::string&, std::string&);
+    bool PreviewPresetDefault(std::string&, const std::string&, std::string&);
     bool CommitPresetPreviews(std::string&, std::string&);
     bool DisableAllAutoLoadPresets(std::size_t&, std::string&);
     bool RemovePresets(

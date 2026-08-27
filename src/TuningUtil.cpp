@@ -2212,7 +2212,52 @@ namespace MPL::TuningUtil
             a_error = "The profile settings could not be prepared for a preset.";
             return std::nullopt;
         }
-        return CompactLinkArrays(*declared);
+
+        const auto difference = JsonOverlay::Difference(*declared, *defaultText, a_error);
+        if (!difference)
+        {
+            a_error = "The profile settings could not be compared with the defaults.";
+            return std::nullopt;
+        }
+
+        static const std::vector<std::string> presetExcludedSettings{
+            "profilePriority",
+            "EnableProfile",
+            "ShowAdvanced",
+        };
+        const auto preset = JsonOverlay::RemovePaths(*difference, presetExcludedSettings, a_error);
+        if (!preset)
+        {
+            a_error = "Profile-only settings could not be removed from the preset.";
+            return std::nullopt;
+        }
+        return CompactLinkArrays(*preset);
+    }
+
+    std::optional<std::string> ResolvePresetResetSettings(
+        std::string& a_profileName,
+        const std::string_view a_effectivePresetSettings,
+        const std::string_view a_resetSchema,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto* profile = FindProfile(a_profileName);
+        const auto defaults = profile ? LocalDefaultsText(*profile, a_error) : std::nullopt;
+        const auto effective = defaults ?
+                                   JsonOverlay::ProjectLike(a_effectivePresetSettings, *defaults, a_error) :
+                                   std::nullopt;
+        const auto fallback = effective ?
+                                  JsonOverlay::Overlay(*defaults, *effective, a_error) :
+                                  std::nullopt;
+        const auto reset = fallback ?
+                               JsonOverlay::ProjectLike(*fallback, a_resetSchema, a_error) :
+                               std::nullopt;
+        if (!profile || !reset)
+        {
+            if (a_error.empty()) a_error = "The preset defaults could not be resolved.";
+            return std::nullopt;
+        }
+        return reset;
     }
 
     bool ApplyPresetPreview(
