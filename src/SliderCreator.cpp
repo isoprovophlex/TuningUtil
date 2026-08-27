@@ -96,6 +96,7 @@ namespace MPL::SliderCreator
                 .formIDs = StringArray(a_object, "formIDs"),
                 .contains = StringArray(a_object, "contains"),
                 .locationTypes = StringArray(a_object, "locationTypes"),
+                .multiLocationExceptions = StringArray(a_object, "multiLocationExceptions"),
             };
         }
 
@@ -230,7 +231,7 @@ namespace MPL::SliderCreator
             yyjson_val* module = nullptr;
             yyjson_arr_foreach(a_modules, index, maximum, module)
             {
-                if (const auto kind = StringMember(module, "kind"); kind && IEquals(*kind, a_kind)) return true;
+                if (const auto kind = StringMember(module, "type"); kind && IEquals(*kind, a_kind)) return true;
             }
             return false;
         }
@@ -263,7 +264,7 @@ namespace MPL::SliderCreator
             {
                 if (HasProfileModuleKind(sourceModules, kind)) continue;
                 auto* module = yyjson_mut_obj(a_document);
-                if (!module || !AddString(a_document, module, "kind", kind) ||
+                if (!module || !AddString(a_document, module, "type", kind) ||
                     !yyjson_mut_arr_append(modules, module))
                     return nullptr;
             }
@@ -301,18 +302,25 @@ namespace MPL::SliderCreator
             auto* formIDs = StringList(a_document, a_filter.formIDs);
             auto* contains = StringList(a_document, a_filter.contains);
             auto* locationTypes = StringList(a_document, a_filter.locationTypes);
-            return filter && formIDs && contains && locationTypes &&
+            auto* multiLocationExceptions = StringList(a_document, a_filter.multiLocationExceptions);
+            return filter && formIDs && contains && locationTypes && multiLocationExceptions &&
                    yyjson_mut_obj_add_val(a_document, filter, "formIDs", formIDs) &&
                    yyjson_mut_obj_add_val(a_document, filter, "contains", contains) &&
                    (a_filter.locationTypes.empty() ||
                        yyjson_mut_obj_add_val(a_document, filter, "locationTypes", locationTypes)) &&
+                   (a_filter.multiLocationExceptions.empty() ||
+                       yyjson_mut_obj_add_val(
+                           a_document,
+                           filter,
+                           "multiLocationExceptions",
+                           multiLocationExceptions)) &&
                    yyjson_mut_obj_add_val(a_document, a_parent, a_name.data(), filter);
         }
 
         yyjson_mut_val* BuildControl(yyjson_mut_doc* a_document, const Definition& a_definition)
         {
             auto* control = yyjson_mut_obj(a_document);
-            if (!control || !AddString(a_document, control, "kind", "slider") ||
+            if (!control || !AddString(a_document, control, "type", "slider") ||
                 !AddString(a_document, control, "id", a_definition.id) ||
                 !AddString(a_document, control, "label", a_definition.label))
                 return nullptr;
@@ -367,8 +375,11 @@ namespace MPL::SliderCreator
             const auto hasRecordFilter =
                 (a_definition.filtered && a_definition.filterDomain == FilterDomain::lightingTemplate) ||
                 !a_definition.include.formIDs.empty() || !a_definition.include.contains.empty() ||
-                !a_definition.include.locationTypes.empty() || !a_definition.exclude.formIDs.empty() ||
-                !a_definition.exclude.contains.empty() || !a_definition.exclude.locationTypes.empty();
+                !a_definition.include.locationTypes.empty() ||
+                !a_definition.include.multiLocationExceptions.empty() ||
+                !a_definition.exclude.formIDs.empty() || !a_definition.exclude.contains.empty() ||
+                !a_definition.exclude.locationTypes.empty() ||
+                !a_definition.exclude.multiLocationExceptions.empty();
             if (hasRecordFilter)
             {
                 auto* filter = yyjson_mut_obj(a_document);
@@ -641,7 +652,7 @@ namespace MPL::SliderCreator
         bool KnownSliderKey(const std::string_view a_key)
         {
             static constexpr std::array keys{
-                "kind", "id", "label", "tooltip", "link", "localLink", "hueScales", "setting", "settings",
+                "type", "id", "label", "tooltip", "link", "localLink", "hueScales", "setting", "settings",
                 "invert", "times", "weatherFilter", "lightingTemplateFilter", "default", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
@@ -799,7 +810,7 @@ namespace MPL::SliderCreator
                 yyjson_val* control = nullptr;
                 yyjson_arr_foreach(modules, controlIndex, controlMaximum, control)
                 {
-                    const auto kind = StringMember(control, "kind");
+                    const auto kind = StringMember(control, "type");
                     if (kind && IEquals(*kind, "slider"))
                         page.sliders.push_back({ controlIndex, ReadDefinition(control) });
                 }
@@ -1090,7 +1101,7 @@ namespace MPL::SliderCreator
         auto* module = yyjson_mut_obj(document.get());
         const auto labelKey = kind == "text" || kind == "separatorText" || kind == "boxStart" ?
                                   "label" : "header";
-        if (!yyjson_mut_is_arr(modules) || !module || !AddString(document.get(), module, "kind", kind) ||
+        if (!yyjson_mut_is_arr(modules) || !module || !AddString(document.get(), module, "type", kind) ||
             (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
             (!a_setting.empty() && !AddString(document.get(), module, "setting", a_setting)) ||
             (a_advanced && !yyjson_mut_obj_add_bool(document.get(), module, "advanced", true)) ||
@@ -1198,7 +1209,7 @@ namespace MPL::SliderCreator
         auto* module = yyjson_mut_obj(document.get());
         const auto labelKey = kind == "text" || kind == "separatorText" || kind == "boxStart" ?
                                   "label" : "";
-        if (!modules || !module || !AddString(document.get(), module, "kind", kind) ||
+        if (!modules || !module || !AddString(document.get(), module, "type", kind) ||
             (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
             !yyjson_mut_arr_append(modules, module))
         {
@@ -1261,7 +1272,7 @@ namespace MPL::SliderCreator
             return false;
         }
         auto* sourceModule = yyjson_arr_get(sourceModules, a_controlIndex);
-        const auto sourceKind = StringMember(sourceModule, "kind").value_or("");
+        const auto sourceKind = StringMember(sourceModule, "type").value_or("");
         if (IsRequiredProfileModuleKind(sourceKind))
         {
             a_error = "Required Profile page modules cannot be removed.";
@@ -1656,7 +1667,7 @@ namespace MPL::SliderCreator
             yyjson_mut_arr_foreach(pageModules, controlPosition, controlMaximum, control)
             {
                 if (a_controlIndex && pagePosition == a_pageIndex && controlPosition == *a_controlIndex) continue;
-                auto* kind = yyjson_mut_obj_get(control, "kind");
+                auto* kind = yyjson_mut_obj_get(control, "type");
                 auto* id = yyjson_mut_obj_get(control, "id");
                 if (yyjson_mut_is_str(kind) && yyjson_mut_is_str(id) &&
                     IEquals(yyjson_mut_get_str(kind), "slider") &&
@@ -1677,7 +1688,7 @@ namespace MPL::SliderCreator
         if (a_controlIndex)
         {
             auto* existing = yyjson_mut_arr_get(modules, *a_controlIndex);
-            auto* kind = yyjson_mut_is_obj(existing) ? yyjson_mut_obj_get(existing, "kind") : nullptr;
+            auto* kind = yyjson_mut_is_obj(existing) ? yyjson_mut_obj_get(existing, "type") : nullptr;
             if (!yyjson_mut_is_str(kind) || !IEquals(yyjson_mut_get_str(kind), "slider") ||
                 !yyjson_mut_arr_replace(modules, *a_controlIndex, slider))
             {

@@ -463,7 +463,7 @@ namespace MPL::TuningUtil
         {
             std::vector<FilteredWeatherRule> result;
             if (yyjson_is_obj(yyjson_obj_get(a_control, "lightingTemplateFilter"))) return result;
-            const auto kind = Lowercase(Trim(JsonString(a_control, "kind").value_or("")));
+            const auto kind = Lowercase(Trim(JsonString(a_control, "type").value_or("")));
             const auto times = JsonStrings(a_control, "times");
             const auto filtered = !times.empty() || yyjson_is_obj(yyjson_obj_get(a_control, "weatherFilter")) ||
                                    yyjson_is_str(yyjson_obj_get(a_control, "localLink")) ||
@@ -543,7 +543,7 @@ namespace MPL::TuningUtil
             const std::filesystem::path& a_source)
         {
             if (!yyjson_is_obj(yyjson_obj_get(a_control, "lightingTemplateFilter")) ||
-                !Config::IEquals(Trim(JsonString(a_control, "kind").value_or("")), "slider"))
+                !Config::IEquals(Trim(JsonString(a_control, "type").value_or("")), "slider"))
             {
                 return std::nullopt;
             }
@@ -572,6 +572,7 @@ namespace MPL::TuningUtil
                     return std::nullopt;
                 }
                 setting->scale = specification.scale;
+                setting->ignoreLink = specification.structured && specification.ignoreLink;
                 rule.settings.push_back(std::move(*setting));
             }
             if (rule.settings.empty())
@@ -593,6 +594,12 @@ namespace MPL::TuningUtil
                 JsonStrings(yyjson_obj_get(yyjson_obj_get(a_control, "lightingTemplateFilter"), "include"), "locationTypes");
             rule.locationTypeExclusions =
                 JsonStrings(yyjson_obj_get(yyjson_obj_get(a_control, "lightingTemplateFilter"), "exclude"), "locationTypes");
+            rule.inclusionMultiLocationExceptions = JsonStrings(
+                yyjson_obj_get(yyjson_obj_get(a_control, "lightingTemplateFilter"), "include"),
+                "multiLocationExceptions");
+            rule.exclusionMultiLocationExceptions = JsonStrings(
+                yyjson_obj_get(yyjson_obj_get(a_control, "lightingTemplateFilter"), "exclude"),
+                "multiLocationExceptions");
             return rule;
         }
 
@@ -728,7 +735,7 @@ namespace MPL::TuningUtil
                 yyjson_val* control = nullptr;
                 yyjson_arr_foreach(a_modules, index, maximum, control)
                 {
-                    if (!Config::IEquals(Trim(JsonString(control, "kind").value_or("")), "slider") ||
+                    if (!Config::IEquals(Trim(JsonString(control, "type").value_or("")), "slider") ||
                         yyjson_is_obj(yyjson_obj_get(control, "weatherFilter")) ||
                         yyjson_is_obj(yyjson_obj_get(control, "lightingTemplateFilter")))
                         continue;

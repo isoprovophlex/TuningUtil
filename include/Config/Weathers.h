@@ -241,7 +241,7 @@ namespace MPL::WeatherPatcher
 
     struct ImageSpaceSettings
     {
-        bool ForceCSTonemapping = false;
+        std::optional<bool> ForceCSTonemapping;
         double saturationMultiplier = 1.0;
         double brightnessMultiplier = 1.0;
         double contrastMultiplier = 1.0;

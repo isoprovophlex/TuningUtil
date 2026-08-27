@@ -36,6 +36,7 @@ namespace MPL::SliderCreator
         std::vector<std::string> formIDs;
         std::vector<std::string> contains;
         std::vector<std::string> locationTypes;
+        std::vector<std::string> multiLocationExceptions;
     };
 
     struct HueScales

@@ -49,6 +49,7 @@ namespace MPL::TuningUtil
         FilteredLightingTemplateOperation operation = FilteredLightingTemplateOperation::brightness;
         std::string target;
         double scale = 1.0;
+        bool ignoreLink = false;
 
         bool operator==(const FilteredLightingTemplateSetting&) const = default;
     };
@@ -62,6 +63,8 @@ namespace MPL::TuningUtil
         WeatherFilter exclude;
         std::vector<std::string> locationTypeInclusions;
         std::vector<std::string> locationTypeExclusions;
+        std::vector<std::string> inclusionMultiLocationExceptions;
+        std::vector<std::string> exclusionMultiLocationExceptions;
         double defaultValue = 1.0;
 
         bool operator==(const FilteredLightingTemplateRule&) const = default;

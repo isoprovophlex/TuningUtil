@@ -1,6 +1,7 @@
 #include <CSTonemapping.h>
 #include <Config.h>
 #include <DetailedLogging.h>
+#include <HeliosphanAPI.h>
 #include <ImageSpacePatcher.h>
 #include <TuningUtil.h>
 #include <algorithm>
@@ -45,20 +46,28 @@ namespace MPL::ImageSpacePatcher
             return cache;
         }
 
+        const HeliosphanAPI::Interface* GetHeliosphanAPI()
+        {
+            static const auto* api = []
+            {
+                const auto module = GetModuleHandleW(L"Heliosphan.dll");
+                const auto request = module ?
+                                         reinterpret_cast<HeliosphanAPI::RequestInterface>(
+                                             GetProcAddress(module, "Heliosphan_RequestAPI")) :
+                                         nullptr;
+                const auto* result = request ? request(HeliosphanAPI::kVersion) : nullptr;
+                return result && result->version == HeliosphanAPI::kVersion &&
+                               result->IsAutoCSTonemappingApplied &&
+                               result->SetAutoCSTonemappingSuppressed ?
+                           result :
+                           nullptr;
+            }();
+            return api;
+        }
+
         RuntimeMonitor CaptureRuntimeMonitor()
         {
             RuntimeMonitor result;
-            if (auto* manager = RE::ImageSpaceManager::GetSingleton())
-            {
-                const auto* baseData = REL::Module::IsVR() ?
-                                           manager->GetVRRuntimeData().currentBaseData :
-                                           manager->GetRuntimeData().currentBaseData;
-                if (baseData && std::isfinite(baseData->hdr.white))
-                {
-                    result.whitePoint = baseData->hdr.white;
-                    result.whitePointAvailable = true;
-                }
-            }
             if (const auto* setting = RE::GetINISetting("bUseFilmicCurve:Display"))
             {
                 result.filmicCurve = setting->GetBool();
@@ -139,6 +148,53 @@ namespace MPL::ImageSpacePatcher
             apply(a_imageSpace->data.cinematic.contrast, a_settings.contrastMultiplier);
             apply(a_imageSpace->data.hdr.sunlightScale, a_settings.sunlightScaleMultiplier);
             apply(a_imageSpace->data.hdr.skyScale, a_settings.skyScaleMultiplier);
+        }
+
+        void CopyAdjustedFields(RE::ImageSpaceBaseData& a_target, const RE::ImageSpaceBaseData& a_source)
+        {
+            a_target.cinematic.saturation = a_source.cinematic.saturation;
+            a_target.cinematic.brightness = a_source.cinematic.brightness;
+            a_target.cinematic.contrast = a_source.cinematic.contrast;
+            a_target.hdr.sunlightScale = a_source.hdr.sunlightScale;
+            a_target.hdr.skyScale = a_source.hdr.skyScale;
+        }
+
+        void SynchronizeCurrentInteriorImageSpace(const SettingsMap& a_settings)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* cell = player ? player->GetParentCell() : nullptr;
+            if (!cell || !cell->IsInteriorCell())
+            {
+                return;
+            }
+
+            const auto* extra = cell->extraList.GetByType<RE::ExtraCellImageSpace>();
+            auto* imageSpace = extra ? extra->imageSpace : nullptr;
+            if (!imageSpace || !a_settings.contains(imageSpace))
+            {
+                return;
+            }
+
+            auto* manager = RE::ImageSpaceManager::GetSingleton();
+            if (!manager)
+            {
+                return;
+            }
+
+            const auto synchronize = [&](auto& a_runtime)
+            {
+                const auto* stat = Config::StatData::GetSingleton();
+                const auto currentBaseIsRecord = std::ranges::any_of(
+                    stat->imageSpaceBaselines,
+                    [&](const auto& a_entry) { return &a_entry.first->data == a_runtime.currentBaseData; });
+                if (a_runtime.currentBaseData && !currentBaseIsRecord)
+                {
+                    CopyAdjustedFields(*a_runtime.currentBaseData, imageSpace->data);
+                }
+                CopyAdjustedFields(a_runtime.data.baseData, imageSpace->data);
+            };
+            if (REL::Module::IsVR()) synchronize(manager->GetVRRuntimeData());
+            else synchronize(manager->GetRuntimeData());
         }
 
         const ImageSpaceSet& GetInteriorImageSpaces()
@@ -251,6 +307,13 @@ namespace MPL::ImageSpacePatcher
         for (auto& profileName : TuningUtil::GetProfilesWithSettings(exteriorRoots))
         {
             const auto& settings = TuningUtil::GetSettings(profileName);
+            if (const auto* api = GetHeliosphanAPI())
+            {
+                const auto force = settings.exteriorImageSpace.ForceCSTonemapping;
+                api->SetAutoCSTonemappingSuppressed(
+                    profileName.c_str(),
+                    settings.EnableProfile && force.has_value() && !*force);
+            }
             if (!settings.EnableProfile)
             {
                 continue;
@@ -319,7 +382,7 @@ namespace MPL::ImageSpacePatcher
             for (const auto& [imageSpace, settings] : a_settings)
             {
                 ApplyMultipliers(imageSpace, settings);
-                if (settings.ForceCSTonemapping)
+                if (settings.ForceCSTonemapping.value_or(false))
                 {
                     explicitWhiteTargets.insert(imageSpace);
                 }
@@ -327,6 +390,7 @@ namespace MPL::ImageSpacePatcher
         };
         applySettings(interiorSettings);
         applySettings(exteriorSettings);
+        SynchronizeCurrentInteriorImageSpace(interiorSettings);
 
         CSTonemapping::SetForcedTargets(explicitWhiteTargets);
 
@@ -335,6 +399,17 @@ namespace MPL::ImageSpacePatcher
             intImageSpaces.size(),
             exteriorSettings.size(),
             explicitWhiteTargets.size());
+    }
+
+    std::optional<bool> IsAutoCSTonemappingApplied(const std::string_view a_profile)
+    {
+        const auto* api = GetHeliosphanAPI();
+        if (!api)
+        {
+            return std::nullopt;
+        }
+        const std::string profile(a_profile);
+        return api->IsAutoCSTonemappingApplied(profile.c_str());
     }
 
     void RequestRuntimeMonitorRefresh()

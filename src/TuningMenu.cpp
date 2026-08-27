@@ -159,7 +159,7 @@ namespace MPL::TuningMenu
 
         struct MenuControl
         {
-            std::string kind;
+            std::string type;
             std::string id;
             std::string label;
             std::string header;
@@ -324,7 +324,6 @@ namespace MPL::TuningMenu
             std::array<char, 64> link{};
             std::array<char, 64> localLink{};
             std::array<char, 32> format{};
-            std::array<char, 160> exactSetting{};
             std::array<char, 96> includeContainsInput{};
             std::array<char, 96> excludeContainsInput{};
             int includeContainsSelection = -1;
@@ -929,14 +928,14 @@ namespace MPL::TuningMenu
 
         bool UsesWeatherMenuRuntime(const MenuControl& a_control)
         {
-            return a_control.kind == "weatherSelector" ||
-                   a_control.kind == "weatherControlCompact" ||
-                   a_control.kind == "weatherSliderCreator" ||
-                   a_control.kind == "dynamicAmbientWithin" ||
-                   a_control.kind == "dynamicAmbientBetween" ||
-                   a_control.kind == "dynamicSunlightWithin" ||
-                   a_control.kind == "dynamicSunlightBetween" ||
-                   a_control.kind == "dynamicAmbientWeatherList";
+            return a_control.type == "weatherSelector" ||
+                   a_control.type == "weatherControlCompact" ||
+                   a_control.type == "weatherSliderCreator" ||
+                   a_control.type == "dynamicAmbientWithin" ||
+                   a_control.type == "dynamicAmbientBetween" ||
+                   a_control.type == "dynamicSunlightWithin" ||
+                   a_control.type == "dynamicSunlightBetween" ||
+                   a_control.type == "dynamicAmbientWeatherList";
         }
 
         bool HasWeatherMenuControls(const MenuDefinition& a_menu)
@@ -948,7 +947,7 @@ namespace MPL::TuningMenu
         bool HasModuleKind(const MenuDefinition& a_menu, const std::string_view a_kind)
         {
             const auto matches = [&](const MenuControl& a_module)
-            { return a_module.kind == a_kind; };
+            { return a_module.type == a_kind; };
             return std::ranges::any_of(a_menu.pages, [&](const MenuPage& a_page)
                 { return std::ranges::any_of(a_page.modules, matches); });
         }
@@ -1628,14 +1627,18 @@ namespace MPL::TuningMenu
                 (ambient ? "Ambient" : "Sunlight") +
                 (a_mode == WeatherPatcher::DynamicAmbientMode::within ? "Within" : "Between");
             auto& state = dynamicAmbientModuleStates[stateKey];
-            const auto revision = TuningUtil::GetSettingsRevision();
-            if (state.settingsRevision != revision)
+            const auto refreshState = [&]()
             {
                 state.status = WeatherPatcher::GetDynamicBrightnessStatus(profile, a_mode, a_field);
                 state.range = state.status ?
                                   state.status->source :
                                   WeatherPatcher::GetDynamicAmbientRange(profile, a_mode, a_field);
-                state.settingsRevision = revision;
+                state.settingsRevision = TuningUtil::GetSettingsRevision();
+            };
+            const auto revision = TuningUtil::GetSettingsRevision();
+            if (state.settingsRevision != revision)
+            {
+                refreshState();
             }
 
             const auto labelKey =
@@ -1675,6 +1678,7 @@ namespace MPL::TuningMenu
                 configured.darkLimit = darkLimit;
                 configured.brightLimit = brightLimit;
                 ApplySliderChange(false);
+                refreshState();
             }
             const auto& result = state.status ? state.status->result : state.range;
             if (state.status && state.status->compression)
@@ -1793,9 +1797,9 @@ namespace MPL::TuningMenu
             for (const auto requiredKind : SliderCreator::kRequiredProfileModuleKinds)
             {
                 if (!std::ranges::any_of(definition.profilePage.modules, [&](const MenuControl& a_module)
-                    { return Config::IEquals(a_module.kind, requiredKind); }))
+                    { return Config::IEquals(a_module.type, requiredKind); }))
                 {
-                    definition.profilePage.modules.push_back({ .kind = std::string(requiredKind) });
+                    definition.profilePage.modules.push_back({ .type = std::string(requiredKind) });
                 }
             }
             const auto normalizeControlColors = [](std::vector<MenuControl>& a_controls)
@@ -4515,10 +4519,36 @@ namespace MPL::TuningMenu
             return changed;
         }
 
+        bool ForceCSTonemappingEnabled(
+            const std::string_view a_profile,
+            const WeatherPatcher::ImageSpaceSettings& a_settings,
+            const bool a_followAuto)
+        {
+            if (a_settings.ForceCSTonemapping)
+            {
+                return *a_settings.ForceCSTonemapping;
+            }
+            return a_followAuto &&
+                   ImageSpacePatcher::IsAutoCSTonemappingApplied(a_profile).value_or(false);
+        }
+
+        bool ForceCSTonemappingControlAvailable(const std::string_view a_profile)
+        {
+            if (!Config::IEquals(a_profile, "Helios"))
+            {
+                return true;
+            }
+            ImageSpacePatcher::RequestRuntimeMonitorRefresh();
+            const auto monitor = ImageSpacePatcher::ReadRuntimeMonitor();
+            return monitor.filmicCurveAvailable && monitor.filmicCurve;
+        }
+
         bool DrawImageSpaceSettings(
+            const std::string_view a_profile,
             WeatherPatcher::ImageSpaceSettings& a_settings,
             const std::string& a_idPrefix,
-            const std::string_view a_catalogPrefix)
+            const std::string_view a_catalogPrefix,
+            const bool a_followAuto)
         {
             auto changed = false;
             constexpr std::array<std::pair<std::string_view, std::string_view>, 5> fields{
@@ -4564,32 +4594,40 @@ namespace MPL::TuningMenu
                 }
             }
             ImGuiMCP::Separator();
-            changed |= ImGuiMCP::Checkbox(
-                ("Force CS Tonemapping##" + a_idPrefix).c_str(),
-                &a_settings.ForceCSTonemapping);
+            auto forceCSTonemapping = ForceCSTonemappingEnabled(
+                a_profile,
+                a_settings,
+                a_followAuto);
+            const auto controlAvailable = ForceCSTonemappingControlAvailable(a_profile);
+            const auto forceLabel =
+                SKSEMenuSettings::Label("forceCSTonemapping", "Force CS Tonemapping") +
+                "##" + a_idPrefix;
+            ImGuiMCP::BeginDisabled(!controlAvailable);
+            const auto forceChanged = ImGuiMCP::Checkbox(
+                    forceLabel.c_str(),
+                    &forceCSTonemapping);
+            ImGuiMCP::EndDisabled();
+            if (forceChanged)
+            {
+                a_settings.ForceCSTonemapping = forceCSTonemapping;
+                changed = true;
+            }
+            if (Config::IEquals(a_profile, "Helios"))
+            {
+                const auto monitor = ImageSpacePatcher::ReadRuntimeMonitor();
+                const auto unavailable = SKSEMenuSettings::Label("unavailableValue", "Unavailable");
+                ImGuiMCP::TextUnformatted(
+                    SKSEMenuSettings::Label("displayIniSection", "[Display]").c_str());
+                if (monitor.filmicCurveAvailable)
+                    ImGuiMCP::Text("bUseFilmicCurve=%d", monitor.filmicCurve ? 1 : 0);
+                else
+                    ImGuiMCP::Text("bUseFilmicCurve=%s", unavailable.c_str());
+                if (monitor.filmicWhiteScaleAvailable)
+                    ImGuiMCP::Text("fFilmicWhiteScale=%.3f", monitor.filmicWhiteScale);
+                else
+                    ImGuiMCP::Text("fFilmicWhiteScale=%s", unavailable.c_str());
+            }
             return changed;
-        }
-
-        void DrawTonemappingMonitor()
-        {
-            ImageSpacePatcher::RequestRuntimeMonitorRefresh();
-            const auto monitor = ImageSpacePatcher::ReadRuntimeMonitor();
-            const auto unavailable = SKSEMenuSettings::Label("unavailableValue", "Unavailable");
-            const auto whitePointLabel =
-                SKSEMenuSettings::Label("currentImageSpaceWhitePoint", "Current Image Space White Point");
-            if (monitor.whitePointAvailable)
-                ImGuiMCP::Text("%s: %.3f", whitePointLabel.c_str(), monitor.whitePoint);
-            else
-                ImGuiMCP::Text("%s: %s", whitePointLabel.c_str(), unavailable.c_str());
-            ImGuiMCP::TextUnformatted(SKSEMenuSettings::Label("displayIniSection", "[Display]").c_str());
-            if (monitor.filmicCurveAvailable)
-                ImGuiMCP::Text("bUseFilmicCurve=%d", monitor.filmicCurve ? 1 : 0);
-            else
-                ImGuiMCP::Text("bUseFilmicCurve=%s", unavailable.c_str());
-            if (monitor.filmicWhiteScaleAvailable)
-                ImGuiMCP::Text("fFilmicWhiteScale=%.3f", monitor.filmicWhiteScale);
-            else
-                ImGuiMCP::Text("fFilmicWhiteScale=%s", unavailable.c_str());
         }
 
         bool DrawWeatherSettingsEditor(
@@ -4711,7 +4749,12 @@ namespace MPL::TuningMenu
             }
             else if (a_category == "exteriorImageSpace")
             {
-                changed |= DrawImageSpaceSettings(settings.exteriorImageSpace, prefix, "exteriorImageSpace");
+                changed |= DrawImageSpaceSettings(
+                    profile,
+                    settings.exteriorImageSpace,
+                    prefix,
+                    "exteriorImageSpace",
+                    true);
             }
             else supported = false;
 
@@ -4878,7 +4921,12 @@ namespace MPL::TuningMenu
             }
             else if (a_category == "intImageSpace")
             {
-                changed |= DrawImageSpaceSettings(settings.intImageSpace, prefix, "intImageSpace");
+                changed |= DrawImageSpaceSettings(
+                    profile,
+                    settings.intImageSpace,
+                    prefix,
+                    "intImageSpace",
+                    false);
             }
             else supported = false;
 
@@ -5903,25 +5951,6 @@ namespace MPL::TuningMenu
                 }
             }
 
-            ImGuiMCP::SetNextItemWidth(360.0f);
-            ImGuiMCP::InputTextWithHint(
-                ("Exact Setting##" + a_id).c_str(),
-                "Optional exact setting path",
-                a_state.exactSetting.data(),
-                a_state.exactSetting.size());
-            if (ImGuiMCP::Button((SKSEMenuSettings::Label("addExactSliderSetting", "Add Exact Setting") + "##" + a_id).c_str()))
-            {
-                const auto setting = InputText(a_state.exactSetting);
-                if (!setting.empty())
-                {
-                    AddCreatorSetting(a_state, setting);
-                    if (const auto* entry = SliderSettingCatalog::Find(setting);
-                        entry && !SliderSettingCatalog::IsFilteredOperation(entry->filterOperation))
-                        a_state.filtered = false;
-                    a_state.exactSetting.fill('\0');
-                }
-            }
-
             if (ImGuiMCP::BeginListBox(("Slider Settings##" + a_id).c_str(), ImGuiMCP::ImVec2(0.0f, 220.0f)))
             {
                 if (a_state.settings.empty()) DrawDisplayText("sliderCreatorNoSettings", true);
@@ -6323,7 +6352,7 @@ namespace MPL::TuningMenu
             const MenuControl& a_control,
             const SliderCreatorDomain a_domain)
         {
-            const auto stateKey = a_menu.profile + ":" + a_control.kind + ":" +
+            const auto stateKey = a_menu.profile + ":" + a_control.type + ":" +
                                   (a_control.id.empty() ? "sliderCreator" : a_control.id);
             auto& state = sliderCreatorStates[stateKey];
             if (!state.initialized ||
@@ -6779,7 +6808,7 @@ namespace MPL::TuningMenu
 
             for (const auto& control : a_controls)
             {
-                if (control.kind == "slider")
+                if (control.type == "slider")
                 {
                     if (!control.id.empty() && TuningUtil::FindFilteredWeatherRule(a_menu.profile, control.id))
                     {
@@ -6799,7 +6828,7 @@ namespace MPL::TuningMenu
                         addScope(control.setting);
                     }
                 }
-                else if (control.kind == "settings")
+                else if (control.type == "settings")
                 {
                     addScope(control.setting);
                     for (const auto& rule : TuningUtil::GetFilteredWeatherRules(a_menu.profile))
@@ -6810,12 +6839,12 @@ namespace MPL::TuningMenu
                         }
                     }
                 }
-                else if (control.kind == "links")
+                else if (control.type == "links")
                 {
                     if (Config::IEquals(control.setting, "weather") || Config::IEquals(control.setting, "interior"))
                         addScope("links." + control.setting);
                 }
-                else if (control.kind == "weatherSetup")
+                else if (control.type == "weatherSetup")
                 {
                     static constexpr std::array scopes{
                         "compressionAnchor",
@@ -6828,23 +6857,23 @@ namespace MPL::TuningMenu
                     };
                     for (const auto scope : scopes) addScope(scope);
                 }
-                else if (control.kind == "dynamicAmbientWithin")
+                else if (control.type == "dynamicAmbientWithin")
                 {
                     addScope("dynamicAmbientWithin");
                 }
-                else if (control.kind == "dynamicAmbientBetween")
+                else if (control.type == "dynamicAmbientBetween")
                 {
                     addScope("dynamicAmbientBetween");
                 }
-                else if (control.kind == "dynamicSunlightWithin")
+                else if (control.type == "dynamicSunlightWithin")
                 {
                     addScope("dynamicSunlightWithin");
                 }
-                else if (control.kind == "dynamicSunlightBetween")
+                else if (control.type == "dynamicSunlightBetween")
                 {
                     addScope("dynamicSunlightBetween");
                 }
-                else if (control.kind == "interiorSetup")
+                else if (control.type == "interiorSetup")
                 {
                     static constexpr std::array scopes{
                         "intHueRanges",
@@ -7130,57 +7159,57 @@ namespace MPL::TuningMenu
                 if (scale != 1.0f) ImGuiMCP::SetWindowFontScale(1.0f);
             };
 
-            if (a_module.kind == "text" || a_module.kind == "separatorText")
+            if (a_module.type == "text" || a_module.type == "separatorText")
             {
-                drawText(a_module.kind == "separatorText");
+                drawText(a_module.type == "separatorText");
                 return;
             }
-            if (a_module.kind == "separator")
+            if (a_module.type == "separator")
             {
                 ImGuiMCP::Separator();
                 return;
             }
-            if (a_module.kind == "spacing")
+            if (a_module.type == "spacing")
             {
                 ImGuiMCP::Dummy(ImGuiMCP::ImVec2(0.0f, ImGuiMCP::GetFrameHeight()));
                 return;
             }
-            if (a_module.kind == "pageActions")
+            if (a_module.type == "pageActions")
             {
                 DrawPageActions(a_menu, a_pageModules, std::to_string(a_index));
                 return;
             }
-            if (a_module.kind == "profileActions")
+            if (a_module.type == "profileActions")
             {
                 DrawProfileActionButtons(a_menu);
                 return;
             }
-            if (a_module.kind == "enableProfile")
+            if (a_module.type == "enableProfile")
             {
                 DrawEnableProfile(a_menu);
                 return;
             }
-            if (a_module.kind == "profilePriority")
+            if (a_module.type == "profilePriority")
             {
                 DrawProfilePriorityModule(a_menu);
                 return;
             }
-            if (a_module.kind == "advancedToggle")
+            if (a_module.type == "advancedToggle")
             {
                 DrawAdvancedToggle(a_menu);
                 return;
             }
-            if (a_module.kind == "presets")
+            if (a_module.type == "presets")
             {
                 DrawPresets(a_menu, a_module);
                 return;
             }
-            if (a_module.kind == "presetCreator")
+            if (a_module.type == "presetCreator")
             {
                 DrawPresetCreator(a_menu, a_module);
                 return;
             }
-            if (a_module.kind == "slider")
+            if (a_module.type == "slider")
             {
                 const auto fallbackLabel = !a_module.settings.empty() ?
                                                std::string(SliderTargetPath(a_module.settings.front())) :
@@ -7213,17 +7242,17 @@ namespace MPL::TuningMenu
                 }
                 return;
             }
-            if (a_module.kind == "dynamicAmbientWithin" ||
-                a_module.kind == "dynamicAmbientBetween" ||
-                a_module.kind == "dynamicSunlightWithin" ||
-                a_module.kind == "dynamicSunlightBetween")
+            if (a_module.type == "dynamicAmbientWithin" ||
+                a_module.type == "dynamicAmbientBetween" ||
+                a_module.type == "dynamicSunlightWithin" ||
+                a_module.type == "dynamicSunlightBetween")
             {
-                const bool sunlight = a_module.kind == "dynamicSunlightWithin" ||
-                                      a_module.kind == "dynamicSunlightBetween";
+                const bool sunlight = a_module.type == "dynamicSunlightWithin" ||
+                                      a_module.type == "dynamicSunlightBetween";
                 DrawDynamicBrightnessModule(
                     a_menu,
-                    a_module.kind == "dynamicAmbientWithin" ||
-                            a_module.kind == "dynamicSunlightWithin" ?
+                    a_module.type == "dynamicAmbientWithin" ||
+                            a_module.type == "dynamicSunlightWithin" ?
                         WeatherPatcher::DynamicAmbientMode::within :
                         WeatherPatcher::DynamicAmbientMode::between,
                     sunlight ?
@@ -7232,21 +7261,21 @@ namespace MPL::TuningMenu
                     a_index);
                 return;
             }
-            if (a_module.kind == "weatherSelector")
+            if (a_module.type == "weatherSelector")
             {
                 const auto label = (a_module.label.empty() ? "Weather" : a_module.label) +
                                    "##" + a_menu.profile + "MenuModule" + std::to_string(a_index);
                 DrawWeatherSelector(a_menu, a_module, label);
                 return;
             }
-            if (a_module.kind == "weatherControlCompact")
+            if (a_module.type == "weatherControlCompact")
             {
                 DrawWeatherControlCompact(
                     a_menu,
                     "##" + a_menu.profile + "WeatherControlCompact" + std::to_string(a_index));
                 return;
             }
-            if (a_module.kind == "dynamicAmbientWeatherList")
+            if (a_module.type == "dynamicAmbientWeatherList")
             {
                 DrawDynamicBrightnessWeatherList(
                     a_menu,
@@ -7255,32 +7284,27 @@ namespace MPL::TuningMenu
                         WeatherPatcher::DynamicBrightnessField::ambient);
                 return;
             }
-            if (a_module.kind == "settings")
+            if (a_module.type == "settings")
             {
                 if (!DrawSettingsEditor(a_menu, a_module)) DrawUnsupportedSettingsEditor(a_module);
                 return;
             }
-            if (a_module.kind == "tonemappingMonitor")
-            {
-                DrawTonemappingMonitor();
-                return;
-            }
-            if (a_module.kind == "links")
+            if (a_module.type == "links")
             {
                 DrawLinksModule(a_menu, a_module);
                 return;
             }
-            if (a_module.kind == "weatherSetup" || a_module.kind == "interiorSetup")
+            if (a_module.type == "weatherSetup" || a_module.type == "interiorSetup")
             {
-                DrawSetupModule(a_menu, a_module.kind == "weatherSetup", a_index);
+                DrawSetupModule(a_menu, a_module.type == "weatherSetup", a_index);
                 return;
             }
-            if (a_module.kind == "weatherSliderCreator" || a_module.kind == "interiorSliderCreator")
+            if (a_module.type == "weatherSliderCreator" || a_module.type == "interiorSliderCreator")
             {
                 DrawSliderCreator(
                     a_menu,
                     a_module,
-                    a_module.kind == "interiorSliderCreator" ?
+                    a_module.type == "interiorSliderCreator" ?
                         SliderCreatorDomain::interior :
                         SliderCreatorDomain::weather);
                 return;
@@ -7289,7 +7313,7 @@ namespace MPL::TuningMenu
             DrawDisplayText(
                 "unsupportedModuleKind",
                 false,
-                { { "kind", a_module.kind } });
+                { { "kind", a_module.type } });
         }
         void DrawItemTooltip(const std::string& a_tooltip)
         {
@@ -7452,7 +7476,7 @@ namespace MPL::TuningMenu
             {
                 const auto& module = a_modules[index];
                 if (module.advanced && !advancedVisible) continue;
-                if (module.kind == "boxStart")
+                if (module.type == "boxStart")
                 {
                     if (!contentVisible())
                     {
@@ -7481,7 +7505,7 @@ namespace MPL::TuningMenu
                     hasVisibleContent = true;
                     continue;
                 }
-                if (module.kind == "boxEnd")
+                if (module.type == "boxEnd")
                 {
                     if (!openBoxes.empty()) closeBox();
                     continue;
@@ -7508,7 +7532,7 @@ namespace MPL::TuningMenu
         struct LayoutModuleChoice
         {
             std::string_view name;
-            std::string_view kind;
+            std::string_view type;
             std::string_view setting;
             std::string_view defaultLabel;
         };
@@ -7533,7 +7557,6 @@ namespace MPL::TuningMenu
             LayoutModuleChoice{ "Dynamic Sunlight Between", "dynamicSunlightBetween", "", "" },
             LayoutModuleChoice{ "Dynamic Sunlight Within", "dynamicSunlightWithin", "", "" },
             LayoutModuleChoice{ "Weather Image Space", "settings", "exteriorImageSpace", "" },
-            LayoutModuleChoice{ "Tonemapping Monitor", "tonemappingMonitor", "", "" },
             LayoutModuleChoice{ "Lighting Effects", "settings", "fxEffectLighting", "" },
             LayoutModuleChoice{ "Lighting Bulbs", "settings", "pointLights", "" },
             LayoutModuleChoice{ "Interior Brightness", "settings", "intBrightness", "" },
@@ -7580,36 +7603,36 @@ namespace MPL::TuningMenu
                 std::pair{ std::string_view("advancedToggle"), std::string_view("Advanced Toggle") },
             };
             if (const auto module = std::ranges::find_if(profileModules, [&](const auto& a_choice)
-                    { return Config::IEquals(a_module.kind, a_choice.first); });
+                    { return Config::IEquals(a_module.type, a_choice.first); });
                 module != profileModules.end())
             {
                 return std::string(module->second);
             }
             if (const auto choice = std::ranges::find_if(kLayoutModuleChoices, [&](const LayoutModuleChoice& a_choice)
-                    { return a_module.kind == a_choice.kind && a_module.setting == a_choice.setting; });
+                    { return a_module.type == a_choice.type && a_module.setting == a_choice.setting; });
                 choice != kLayoutModuleChoices.end())
             {
                 return std::string(choice->name);
             }
             if (const auto choice = std::ranges::find_if(kLayoutElementChoices, [&](const LayoutModuleChoice& a_choice)
-                    { return a_module.kind == a_choice.kind && a_module.setting == a_choice.setting; });
+                    { return a_module.type == a_choice.type && a_module.setting == a_choice.setting; });
                 choice != kLayoutElementChoices.end())
             {
                 return std::string(choice->name);
             }
             if (!a_module.label.empty())
             {
-                return a_module.label + " (" + a_module.kind + ")";
+                return a_module.label + " (" + a_module.type + ")";
             }
             if (!a_module.setting.empty())
             {
-                return a_module.setting + " (" + a_module.kind + ")";
+                return a_module.setting + " (" + a_module.type + ")";
             }
             if (!a_module.id.empty())
             {
-                return a_module.id + " (" + a_module.kind + ")";
+                return a_module.id + " (" + a_module.type + ")";
             }
-            return a_module.kind;
+            return a_module.type;
         }
 
         void QueueLayoutReload(std::string a_message)
@@ -7999,9 +8022,9 @@ namespace MPL::TuningMenu
                 }
                 ImGuiMCP::EndCombo();
             }
-            const auto elementUsesText = selectedElement.kind == "text" ||
-                                         selectedElement.kind == "separatorText" ||
-                                         selectedElement.kind == "boxStart";
+            const auto elementUsesText = selectedElement.type == "text" ||
+                                         selectedElement.type == "separatorText" ||
+                                         selectedElement.type == "boxStart";
             if (elementUsesText)
             {
                 ImGuiMCP::SetNextItemWidth(260.0f);
@@ -8022,7 +8045,7 @@ namespace MPL::TuningMenu
                 if (text.empty() && elementUsesText) text = std::string(selectedElement.defaultLabel);
                 if (SliderCreator::AddProfileElement(
                         editSession->workingPath,
-                        std::string(selectedElement.kind),
+                        std::string(selectedElement.type),
                         text,
                         editError))
                 {
@@ -8084,7 +8107,7 @@ namespace MPL::TuningMenu
                     ImGuiMCP::EndDisabled();
 
                     ImGuiMCP::TableSetColumnIndex(3);
-                    const auto required = SliderCreator::IsRequiredProfileModuleKind(module.kind);
+                    const auto required = SliderCreator::IsRequiredProfileModuleKind(module.type);
                     ImGuiMCP::BeginDisabled(required);
                     const ButtonColorStyle destructiveColor(
                         SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
@@ -8252,9 +8275,9 @@ namespace MPL::TuningMenu
                 }
                 ImGuiMCP::EndCombo();
             }
-            const auto elementUsesText = selectedElement.kind == "text" ||
-                                         selectedElement.kind == "separatorText" ||
-                                         selectedElement.kind == "boxStart";
+            const auto elementUsesText = selectedElement.type == "text" ||
+                                         selectedElement.type == "separatorText" ||
+                                         selectedElement.type == "boxStart";
             if (elementUsesText)
             {
                 ImGuiMCP::SetNextItemWidth(260.0f);
@@ -8276,7 +8299,7 @@ namespace MPL::TuningMenu
                 if (SliderCreator::AddModule(
                         editSession->workingPath,
                         a_pageIndex,
-                        std::string(selectedElement.kind),
+                        std::string(selectedElement.type),
                         text,
                         std::string(selectedElement.setting),
                         false,
@@ -8320,7 +8343,7 @@ namespace MPL::TuningMenu
                 if (SliderCreator::AddModule(
                         editSession->workingPath,
                         a_pageIndex,
-                        std::string(selectedModule.kind),
+                        std::string(selectedModule.type),
                         {},
                         std::string(selectedModule.setting),
                         state.moduleAdvanced,

@@ -403,7 +403,8 @@ namespace MPL::LightingPatcher
             RE::INTERIOR_DATA& a_data,
             RE::BGSDirectionalAmbientLightingColors& a_ambientColors,
             const Resolution& a_settings,
-            const std::array<bool, kFieldCount>& a_active)
+            const std::array<bool, kFieldCount>& a_active,
+            const std::array<double, kFieldCount>* a_directMultipliers = nullptr)
         {
             std::array<double, kFieldCount> gains{};
             std::array<bool, kFieldCount> resolved{};
@@ -428,6 +429,21 @@ namespace MPL::LightingPatcher
             for (std::size_t field = 0; field < kFieldCount; ++field)
             {
                 resolveGain(field);
+            }
+            if (a_directMultipliers)
+            {
+                for (std::size_t field = 0; field < kFieldCount; ++field)
+                {
+                    const auto multiplier = (*a_directMultipliers)[field];
+                    if (std::abs(multiplier - 1.0) > 0.0001)
+                    {
+                        gains[field] = ConstrainFieldGain(
+                            a_data,
+                            a_ambientColors,
+                            field,
+                            gains[field] * multiplier);
+                    }
+                }
             }
             for (std::size_t field = 0; field < kFieldCount; ++field)
             {
@@ -630,6 +646,7 @@ namespace MPL::LightingPatcher
         struct FilteredLightingTemplateAdjustments
         {
             std::array<double, kFieldCount> brightness{ 1.0, 1.0, 1.0, 1.0, 1.0 };
+            std::array<double, kFieldCount> directBrightness{ 1.0, 1.0, 1.0, 1.0, 1.0 };
             double fogStrength = 1.0;
         };
 
@@ -648,27 +665,39 @@ namespace MPL::LightingPatcher
         {
             const TuningUtil::PluginFilter noPlugins;
             auto result = RecordFilter::Resolve(a_rule.include, a_rule.exclude, noPlugins, noPlugins);
+            auto explicitlyListedFormIDs = result.includedFormIDs;
+            explicitlyListedFormIDs.insert(result.excludedFormIDs.begin(), result.excludedFormIDs.end());
+            const auto addLocationMatches = [&](
+                                                std::unordered_set<RE::FormID>& a_target,
+                                                const std::unordered_set<RE::FormID>& a_matches)
+            {
+                for (const auto formID : a_matches)
+                {
+                    if (!explicitlyListedFormIDs.contains(formID))
+                    {
+                        a_target.insert(formID);
+                    }
+                }
+            };
             const auto key = FilteredLocationTypeFilterKey(a_profileName, a_rule.id);
             if (const auto found = startupFilteredLocationTypeTemplateInclusions.find(key);
                 found != startupFilteredLocationTypeTemplateInclusions.end())
             {
-                result.includedFormIDs.insert(found->second.begin(), found->second.end());
+                addLocationMatches(result.includedFormIDs, found->second);
             }
             if (const auto found = startupFilteredLocationTypeTemplateExclusions.find(
                     key);
                 found != startupFilteredLocationTypeTemplateExclusions.end())
             {
-                result.excludedFormIDs.insert(found->second.begin(), found->second.end());
+                addLocationMatches(result.excludedFormIDs, found->second);
             }
             return result;
         }
 
-        std::unordered_set<RE::FormID> BuildLocationTypeTemplateSet(
+        std::vector<RE::BGSKeyword*> ResolveLocationTypeKeywords(
             const std::string_view a_owner,
             const std::span<const std::string> a_selectors,
-            RE::TESDataHandler* a_dataHandler,
-            const std::unordered_map<RE::FormID, std::size_t>& a_templateCellCounts,
-            const bool a_inclusion)
+            const std::string_view a_filterKind)
         {
             std::vector<RE::BGSKeyword*> keywords;
             std::unordered_set<RE::FormID> keywordFormIDs;
@@ -680,7 +709,7 @@ namespace MPL::LightingPatcher
                 {
                     logger::warn(
                         "Lighting Template location-type {} for {} ignored invalid keyword selector '{}'",
-                        a_inclusion ? "inclusion" : "exclusion",
+                        a_filterKind,
                         a_owner,
                         selector);
                     continue;
@@ -690,9 +719,27 @@ namespace MPL::LightingPatcher
                     keywords.push_back(keyword);
                 }
             }
+            return keywords;
+        }
+
+        std::unordered_set<RE::FormID> BuildLocationTypeTemplateSet(
+            const std::string_view a_owner,
+            const std::span<const std::string> a_selectors,
+            const std::span<const std::string> a_multiLocationExceptions,
+            RE::TESDataHandler* a_dataHandler,
+            const std::unordered_map<RE::FormID, std::size_t>& a_templateCellCounts,
+            const bool a_inclusion)
+        {
+            const auto filterKind = a_inclusion ? "inclusion" : "exclusion";
+            const auto keywords = ResolveLocationTypeKeywords(a_owner, a_selectors, filterKind);
+            const auto exceptionKeywords = ResolveLocationTypeKeywords(
+                a_owner,
+                a_multiLocationExceptions,
+                std::format("{} multi-location exception", filterKind));
 
             std::unordered_map<RE::FormID, LocationTypeTemplateEvidence> evidenceByTemplate;
             std::size_t matchingCellCount = 0;
+            std::size_t exceptionCellCount = 0;
             for (auto* cell : a_dataHandler->interiorCells)
             {
                 auto* lightingTemplate = cell ? cell->GetRuntimeData().lightingTemplate : nullptr;
@@ -709,6 +756,16 @@ namespace MPL::LightingPatcher
                     });
                 if (matchedKeyword == keywords.end())
                 {
+                    continue;
+                }
+                if (std::ranges::any_of(
+                        exceptionKeywords,
+                        [&](const RE::BGSKeyword* a_keyword)
+                        {
+                            return a_keyword && location->HasKeyword(a_keyword);
+                        }))
+                {
+                    ++exceptionCellCount;
                     continue;
                 }
 
@@ -754,11 +811,13 @@ namespace MPL::LightingPatcher
                     otherCellCount);
             }
             logger::info(
-                "Lighting Template location-type {} for {} resolved {} keyword(s), matched {} interior CELL record(s), and selected {} template record(s)",
+                "Lighting Template location-type {} for {} resolved {} keyword(s) and {} multi-location exception keyword(s), matched {} interior CELL record(s), bypassed {} exceptional CELL record(s), and selected {} template record(s)",
                 a_inclusion ? "inclusion" : "exclusion",
                 a_owner,
                 keywords.size(),
+                exceptionKeywords.size(),
                 matchingCellCount,
+                exceptionCellCount,
                 result.size());
             return result;
         }
@@ -799,6 +858,7 @@ namespace MPL::LightingPatcher
                             BuildLocationTypeTemplateSet(
                                 owner,
                                 rule.locationTypeInclusions,
+                                rule.inclusionMultiLocationExceptions,
                                 dataHandler,
                                 templateCellCounts,
                                 true));
@@ -810,6 +870,7 @@ namespace MPL::LightingPatcher
                             BuildLocationTypeTemplateSet(
                                 owner,
                                 rule.locationTypeExclusions,
+                                rule.exclusionMultiLocationExceptions,
                                 dataHandler,
                                 templateCellCounts,
                                 false));
@@ -869,7 +930,8 @@ namespace MPL::LightingPatcher
                     lightingTemplate->data,
                     lightingTemplate->directionalAmbientLightingColors,
                     brightness,
-                    allFields);
+                    allFields,
+                    std::addressof(a_filtered.directBrightness));
                 ApplyFogMax(
                     lightingTemplate->data,
                     a_settings.intFogMaxMultiplier * a_filtered.fogStrength,
@@ -1129,6 +1191,8 @@ namespace MPL::LightingPatcher
             std::string name;
             Settings settings;
             RecordFilter::Resolved filter;
+            RecordFilter::Resolved pluginOwnershipFilter;
+            bool ownsPluginTemplates = false;
             struct FilteredRule
             {
                 const TuningUtil::FilteredLightingTemplateRule* rule = nullptr;
@@ -1172,7 +1236,8 @@ namespace MPL::LightingPatcher
                     { return Config::IEquals(a_name, setting.target); });
                 if (field == kFieldNames.end()) continue;
                 const auto index = static_cast<std::size_t>(std::distance(kFieldNames.begin(), field));
-                a_adjustments.brightness[index] *= multiplier;
+                auto& brightness = setting.ignoreLink ? a_adjustments.directBrightness : a_adjustments.brightness;
+                brightness[index] *= multiplier;
             }
         }
 
@@ -1213,6 +1278,13 @@ namespace MPL::LightingPatcher
                         settings.lightingTemplateExclusions,
                         settings.lightingTemplatePluginInclusions,
                         settings.lightingTemplatePluginExclusions),
+                    .pluginOwnershipFilter = {
+                        .includedPlugins = settings.lightingTemplatePluginInclusions,
+                        .excludedPlugins = settings.lightingTemplatePluginExclusions,
+                    },
+                    .ownsPluginTemplates =
+                        !settings.lightingTemplatePluginInclusions.exact.empty() ||
+                        !settings.lightingTemplatePluginInclusions.contains.empty(),
                 };
                 for (const auto& rule : filteredRules)
                 {
@@ -1224,6 +1296,55 @@ namespace MPL::LightingPatcher
                 result.push_back(std::move(active));
             }
             return result;
+        }
+
+        bool OwnsLightingTemplate(
+            const ActiveTemplateProfile& a_profile,
+            const RE::BGSLightingTemplate* a_lightingTemplate)
+        {
+            return a_profile.ownsPluginTemplates &&
+                   RecordFilter::Matches(
+                       a_lightingTemplate,
+                       a_profile.pluginOwnershipFilter);
+        }
+
+        bool LightingTemplateIsClaimed(
+            const RE::BGSLightingTemplate* a_lightingTemplate,
+            const std::span<const ActiveTemplateProfile> a_profiles)
+        {
+            return std::ranges::any_of(
+                a_profiles,
+                [&](const ActiveTemplateProfile& a_profile)
+                {
+                    return OwnsLightingTemplate(a_profile, a_lightingTemplate);
+                });
+        }
+
+        constexpr bool ShouldTargetLightingTemplate(
+            const bool a_matchesFilter,
+            const bool a_ownsPluginTemplates,
+            const bool a_ownsTemplate,
+            const bool a_claimed)
+        {
+            return a_matchesFilter &&
+                   (a_ownsTemplate || (!a_ownsPluginTemplates && !a_claimed));
+        }
+
+        static_assert(ShouldTargetLightingTemplate(true, true, true, true));
+        static_assert(!ShouldTargetLightingTemplate(true, true, false, true));
+        static_assert(ShouldTargetLightingTemplate(true, false, false, false));
+        static_assert(!ShouldTargetLightingTemplate(true, false, false, true));
+
+        bool TargetsLightingTemplate(
+            const ActiveTemplateProfile& a_profile,
+            const RE::BGSLightingTemplate* a_lightingTemplate,
+            const bool a_claimed)
+        {
+            return ShouldTargetLightingTemplate(
+                RecordFilter::Matches(a_lightingTemplate, a_profile.filter),
+                a_profile.ownsPluginTemplates,
+                OwnsLightingTemplate(a_profile, a_lightingTemplate),
+                a_claimed);
         }
     }  // namespace
 
@@ -1263,9 +1384,12 @@ namespace MPL::LightingPatcher
             std::string signature;
             std::vector<std::string> matchingProfiles;
             FilteredLightingTemplateAdjustments filteredAdjustments;
+            const auto claimed = LightingTemplateIsClaimed(
+                lightingTemplate,
+                templateProfiles);
             for (const auto& profile : templateProfiles)
             {
-                if (RecordFilter::Matches(lightingTemplate, profile.filter))
+                if (TargetsLightingTemplate(profile, lightingTemplate, claimed))
                 {
                     matchingProfiles.push_back(profile.name);
                     signature.append(profile.name).push_back('\x1F');
@@ -1304,9 +1428,10 @@ namespace MPL::LightingPatcher
         for (const auto& profile : templateProfiles)
         {
             DetailedLogging::Info(
-                "Lighting Template filter for profile {} matched {} template record(s)",
+                "Lighting Template filter for profile {} targeted {} {} template record(s)",
                 profile.name,
-                profileTargetCounts[profile.name]);
+                profileTargetCounts[profile.name],
+                profile.ownsPluginTemplates ? "owned" : "unclaimed");
         }
         logger::info(
             "Applied {} Lighting Template profile stack(s) to {} template record(s)",
@@ -1354,20 +1479,25 @@ namespace MPL::LightingPatcher
     {
         if (!UsesTemplateInheritance(a_leftProfile) || !UsesTemplateInheritance(a_rightProfile)) return true;
 
-        const auto targetsFor = [](std::string a_profileName)
+        const auto templateProfiles = GetActiveTemplateProfiles();
+        const auto targetsFor = [&](const std::string_view a_profileName)
         {
             std::unordered_set<RE::FormID> result;
             auto* dataHandler = RE::TESDataHandler::GetSingleton();
             if (!dataHandler) return result;
-            const auto& settings = TuningUtil::GetSettings(a_profileName);
-            const auto filter = RecordFilter::Resolve(
-                settings.lightingTemplateInclusions,
-                settings.lightingTemplateExclusions,
-                settings.lightingTemplatePluginInclusions,
-                settings.lightingTemplatePluginExclusions);
+            const auto profile = std::ranges::find_if(
+                templateProfiles,
+                [&](const ActiveTemplateProfile& a_candidate)
+                {
+                    return Config::IEquals(a_candidate.name, a_profileName);
+                });
+            if (profile == templateProfiles.end()) return result;
             for (auto* lightingTemplate : dataHandler->GetFormArray<RE::BGSLightingTemplate>())
             {
-                if (RecordFilter::Matches(lightingTemplate, filter))
+                const auto claimed = LightingTemplateIsClaimed(
+                    lightingTemplate,
+                    templateProfiles);
+                if (TargetsLightingTemplate(*profile, lightingTemplate, claimed))
                 {
                     result.insert(lightingTemplate->GetFormID());
                 }
@@ -1386,23 +1516,31 @@ namespace MPL::LightingPatcher
         const std::string& a_rightProfile,
         const std::string_view a_ruleID)
     {
-        const auto targetsFor = [&](std::string a_profileName)
+        const auto templateProfiles = GetActiveTemplateProfiles();
+        const auto targetsFor = [&](const std::string_view a_profileName)
         {
             std::unordered_set<RE::FormID> result;
-            const auto* rule = TuningUtil::FindFilteredLightingTemplateRule(a_profileName, a_ruleID);
+            const auto profile = std::ranges::find_if(
+                templateProfiles,
+                [&](const ActiveTemplateProfile& a_candidate)
+                {
+                    return Config::IEquals(a_candidate.name, a_profileName);
+                });
+            const auto* rule = TuningUtil::FindFilteredLightingTemplateRule(
+                std::string(a_profileName),
+                a_ruleID);
             auto* dataHandler = RE::TESDataHandler::GetSingleton();
-            if (!rule || !dataHandler) return result;
+            if (profile == templateProfiles.end() || !rule || !dataHandler) return result;
 
-            const auto& settings = TuningUtil::GetSettings(a_profileName);
-            const auto profileFilter = RecordFilter::Resolve(
-                settings.lightingTemplateInclusions,
-                settings.lightingTemplateExclusions,
-                settings.lightingTemplatePluginInclusions,
-                settings.lightingTemplatePluginExclusions);
-            const auto ruleFilter = ResolveFilteredLightingTemplateFilter(*rule, a_profileName);
+            const auto ruleFilter = ResolveFilteredLightingTemplateFilter(
+                *rule,
+                a_profileName);
             for (auto* lightingTemplate : dataHandler->GetFormArray<RE::BGSLightingTemplate>())
             {
-                if (RecordFilter::Matches(lightingTemplate, profileFilter) &&
+                const auto claimed = LightingTemplateIsClaimed(
+                    lightingTemplate,
+                    templateProfiles);
+                if (TargetsLightingTemplate(*profile, lightingTemplate, claimed) &&
                     RecordFilter::Matches(lightingTemplate, ruleFilter))
                 {
                     result.insert(lightingTemplate->GetFormID());

@@ -834,6 +834,28 @@ namespace MPL::WeatherPatcher
         return result;
     }
 
+    struct DynamicBetweenBrightnessBaseline
+    {
+        DynamicAmbientRange range;
+        std::vector<double> weatherPeaks;
+    };
+
+    DynamicBetweenBrightnessBaseline CaptureDynamicBetweenBrightnessBaseline(
+        const SourceWeatherSet& a_weatherSet,
+        const DynamicBrightnessField a_field)
+    {
+        DynamicBetweenBrightnessBaseline result{
+            .range = AnalyzeDynamicAmbientRange(a_weatherSet, DynamicAmbientMode::between, a_field),
+        };
+        result.weatherPeaks.reserve(a_weatherSet.size());
+        for (const auto* weather : a_weatherSet)
+        {
+            const auto range = AnalyzeDynamicWeatherRange(weather, a_field);
+            result.weatherPeaks.push_back(range.available ? range.bright : 0.0);
+        }
+        return result;
+    }
+
     DynamicAmbientRange ResolveDynamicAmbientTarget(
         const DynamicAmbientRange& a_source,
         const DynamicAmbientSettings& a_settings)
@@ -1030,11 +1052,12 @@ namespace MPL::WeatherPatcher
     bool ApplyDynamicBrightnessBetween(
         const SourceWeatherSet& a_weatherSet,
         const DynamicAmbientSettings& a_settings,
+        const DynamicBetweenBrightnessBaseline& a_baseline,
         const DynamicBrightnessField a_field,
         const BrightnessResolution& a_brightness,
         DynamicBrightnessStatus& a_status)
     {
-        const auto source = AnalyzeDynamicAmbientRange(a_weatherSet, DynamicAmbientMode::between, a_field);
+        const auto& source = a_baseline.range;
         a_status = {
             .source = source,
             .result = source,
@@ -1050,23 +1073,24 @@ namespace MPL::WeatherPatcher
         }
         const auto target = ResolveDynamicAmbientTarget(source, a_settings);
 
-        for (auto* weather : a_weatherSet)
+        assert(a_baseline.weatherPeaks.size() == a_weatherSet.size());
+        for (std::size_t index = 0; index < a_weatherSet.size(); ++index)
         {
+            auto* weather = a_weatherSet[index];
             if (!weather)
             {
                 continue;
             }
-            double weatherPeak = 0.0;
-            for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
-            {
-                weatherPeak = std::max(weatherPeak, DynamicBrightnessHSVValue(weather, time, a_field));
-            }
-            if (weatherPeak <= 0.0001)
+            const double baselinePeak = a_baseline.weatherPeaks[index];
+            const double currentPeak = AnalyzeDynamicWeatherRange(weather, a_field).bright;
+            if (baselinePeak <= 0.0001)
             {
                 continue;
             }
 
-            const double gain = RemapDynamicAmbientValue(weatherPeak, source, target) / weatherPeak;
+            const double gain =
+                RemapDynamicAmbientValue(baselinePeak, source, target) /
+                std::max(1.0, currentPeak);
             for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
             {
                 ApplyDynamicBrightnessGain(weather, time, gain, a_field, a_brightness);
@@ -1074,10 +1098,10 @@ namespace MPL::WeatherPatcher
         }
         a_status.result = AnalyzeDynamicAmbientRange(a_weatherSet, DynamicAmbientMode::between, a_field);
         const double sourceSpan = source.brightLimit - source.darkLimit;
-        const double resultSpan = a_status.result.brightLimit - a_status.result.darkLimit;
+        const double targetSpan = target.brightLimit - target.darkLimit;
         a_status.compression =
             sourceSpan > 0.0001 ?
-                std::optional{ 100.0 * (1.0 - resultSpan / sourceSpan) } :
+                std::optional{ 100.0 * (1.0 - targetSpan / sourceSpan) } :
                 std::nullopt;
         return true;
     }
@@ -2651,6 +2675,12 @@ namespace MPL::WeatherPatcher
             ApplyBrightness(a_weatherSet, brightness);
         }
 
+        const auto dynamicAmbientBetweenBaseline = CaptureDynamicBetweenBrightnessBaseline(
+            a_weatherSet,
+            DynamicBrightnessField::ambient);
+        const auto dynamicSunlightBetweenBaseline = CaptureDynamicBetweenBrightnessBaseline(
+            a_weatherSet,
+            DynamicBrightnessField::sunlight);
         DynamicBrightnessStatus dynamicAmbientWithinStatus;
         DynamicBrightnessStatus dynamicAmbientBetweenStatus;
         DynamicBrightnessStatus dynamicSunlightWithinStatus;
@@ -2664,6 +2694,7 @@ namespace MPL::WeatherPatcher
         ApplyDynamicBrightnessBetween(
             a_weatherSet,
             a_settings.dynamicAmbientBetween,
+            dynamicAmbientBetweenBaseline,
             DynamicBrightnessField::ambient,
             brightness,
             dynamicAmbientBetweenStatus);
@@ -2676,6 +2707,7 @@ namespace MPL::WeatherPatcher
         ApplyDynamicBrightnessBetween(
             a_weatherSet,
             a_settings.dynamicSunlightBetween,
+            dynamicSunlightBetweenBaseline,
             DynamicBrightnessField::sunlight,
             brightness,
             dynamicSunlightBetweenStatus);
