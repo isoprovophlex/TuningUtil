@@ -56,8 +56,9 @@ namespace MPL::PointLightPatcher
         struct AppliedState
         {
             Settings settings;
+            BaseLightSettingsMap baseLightSettings;
+            SunlightBaseLights sunlightBaseLights;
             WeatherPatcher::HueRanges hueRanges;
-            std::unordered_set<RE::FormID> effectLightingRegionExclusions;
 
             bool operator==(const AppliedState&) const = default;
         };
@@ -110,8 +111,6 @@ namespace MPL::PointLightPatcher
             referenceRuntimeFadeBaselines;
         std::unordered_map<RE::NiPointLight*, LightPlacerRuntimeBaseline> lightPlacerRuntimeBaselines;
         std::unordered_set<RE::TESObjectLIGH*> externallyEmissiveLights;
-        std::optional<std::vector<std::string>> effectLightingRegionExclusionConfig;
-        std::unordered_set<RE::FormID> effectLightingRegionExclusions;
         std::optional<AppliedState> appliedState;
         std::optional<AppliedState> directLightPlacerState;
         std::optional<AppliedState> lightPlacerState;
@@ -197,6 +196,51 @@ namespace MPL::PointLightPatcher
                        nullptr;
         }
 
+        const RE::TESObjectLIGH* GetBaseLight(const RE::TESObjectREFR* a_reference)
+        {
+            auto* baseObject = a_reference ? a_reference->GetBaseObject() : nullptr;
+            return baseObject && baseObject->Is(RE::FormType::Light) ?
+                       static_cast<const RE::TESObjectLIGH*>(baseObject) :
+                       nullptr;
+        }
+
+        RE::TESObjectLIGH* ResolveBaseLight(const std::string_view a_editorIDs)
+        {
+            for (const auto& editorID : SplitLightEditorIDs(a_editorIDs))
+            {
+                if (auto* light = Config::LiteForm::FromString(editorID).Get<RE::TESObjectLIGH>()) return light;
+            }
+            return nullptr;
+        }
+
+        RE::TESObjectLIGH* LightPlacerBaseLight(const RE::NiPointLight* a_light)
+        {
+            if (!a_light) return nullptr;
+            const auto name = std::string(static_cast<std::string_view>(a_light->name));
+            if (!name.starts_with(kLightPlacerNodePrefix)) return nullptr;
+            const auto end = name.find(']');
+            const auto separator = name.find('|', kLightPlacerNodePrefix.size());
+            if (separator == std::string::npos || end == std::string::npos || separator >= end) return nullptr;
+            return ResolveBaseLight(std::string_view(name).substr(separator + 1, end - separator - 1));
+        }
+
+        const Settings& SettingsForBaseLight(
+            const RE::FormID a_formID,
+            const AppliedState& a_state)
+        {
+            if (const auto found = a_state.baseLightSettings.find(a_formID);
+                found != a_state.baseLightSettings.end())
+                return found->second;
+            return a_state.settings;
+        }
+
+        const Settings& SettingsForBaseLight(
+            const RE::TESObjectLIGH* a_light,
+            const AppliedState& a_state)
+        {
+            return SettingsForBaseLight(a_light ? a_light->GetFormID() : 0, a_state);
+        }
+
         RE::TESForm* ExternalEmittanceSource(const RE::TESObjectREFR* a_reference)
         {
             const auto* extra = a_reference ? a_reference->extraList.GetByType<RE::ExtraEmittanceSource>() : nullptr;
@@ -224,9 +268,11 @@ namespace MPL::PointLightPatcher
             return ExternalEmittanceSource(a_reference) != nullptr;
         }
 
-        bool IsEffectLightingSource(const RE::TESForm* a_source, const AppliedState& a_state)
+        bool IsSunlightBaseLight(
+            const RE::TESObjectLIGH* a_light,
+            const AppliedState& a_state)
         {
-            return a_source && !a_state.effectLightingRegionExclusions.contains(a_source->GetFormID());
+            return a_light && a_state.sunlightBaseLights.contains(a_light->GetFormID());
         }
 
         double BrightnessFadeMultiplier(const Settings& a_settings)
@@ -241,9 +287,11 @@ namespace MPL::PointLightPatcher
 
         double ReferenceFadeMultiplier(const RE::TESObjectREFR* a_reference, const AppliedState& a_state)
         {
-            return IsEffectLightingSource(ExternalEmittanceSource(a_reference), a_state) ?
-                       SunlightFadeMultiplier(a_state.settings) :
-                       BrightnessFadeMultiplier(a_state.settings);
+            const auto* light = GetBaseLight(a_reference);
+            const auto& settings = SettingsForBaseLight(light, a_state);
+            return IsSunlightBaseLight(light, a_state) ?
+                       SunlightFadeMultiplier(settings) :
+                       BrightnessFadeMultiplier(settings);
         }
 
         bool ReconcileExternalEmittanceBase(
@@ -261,41 +309,13 @@ namespace MPL::PointLightPatcher
             {
                 light->fade = baseline->second.fade * static_cast<float>(
                                                        a_state ?
-                                                           BrightnessFadeMultiplier(a_state->settings) :
+                                                           (IsSunlightBaseLight(light, *a_state) ?
+                                                                   SunlightFadeMultiplier(SettingsForBaseLight(light, *a_state)) :
+                                                                   BrightnessFadeMultiplier(SettingsForBaseLight(light, *a_state))) :
                                                            1.0);
                 light->data.color = baseline->second.color;
             }
             return true;
-        }
-
-        std::unordered_set<RE::FormID> ResolveEffectLightingRegionExclusions(
-            const std::span<const std::string> a_configuredRegions)
-        {
-            std::unordered_set<RE::FormID> result;
-            for (const auto& configured : a_configuredRegions)
-            {
-                auto* form = Config::LiteForm::FromString(configured).Get<RE::TESForm>();
-                if (!form)
-                {
-                    logger::warn(
-                        "[Point Lights] region={} | status=unresolved",
-                        configured);
-                    continue;
-                }
-                if (!form->Is(RE::FormType::Region))
-                {
-                    logger::warn(
-                        "[Point Lights] region={} | form={:08X} | type=invalid",
-                        configured,
-                        form->GetFormID());
-                    continue;
-                }
-                result.insert(form->GetFormID());
-            }
-            logger::info(
-                "[Point Lights] regions | Brightness={}",
-                result.size());
-            return result;
         }
 
         std::optional<std::string> ReadFile(const std::filesystem::path& a_path)
@@ -586,7 +606,6 @@ namespace MPL::PointLightPatcher
             yyjson_mut_doc* a_document,
             yyjson_val* a_data,
             const AppliedState& a_state,
-            const WeatherPatcher::AmbientHueScaleValues& a_hueScales,
             const EmittanceMap& a_mappings)
         {
             if (!yyjson_is_obj(a_data))
@@ -597,6 +616,8 @@ namespace MPL::PointLightPatcher
             const std::string lightEditorIDs = yyjson_is_str(lightValue) ?
                                                    std::string(yyjson_get_str(lightValue), yyjson_get_len(lightValue)) :
                                                    std::string{};
+            const auto* baseLight = ResolveBaseLight(lightEditorIDs);
+            const auto& settings = SettingsForBaseLight(baseLight, a_state);
             const auto mappedEmittance = FindMappedEmittance(a_mappings, lightEditorIDs);
             auto* configuredEmittance = yyjson_obj_get(a_data, "externalEmittance");
             const std::string emittance = mappedEmittance ?
@@ -606,16 +627,12 @@ namespace MPL::PointLightPatcher
                                                    yyjson_get_str(configuredEmittance),
                                                    yyjson_get_len(configuredEmittance)) :
                                                std::string{};
-            auto* emittanceForm = emittance.empty() ?
-                                       nullptr :
-                                       Config::LiteForm::FromString(emittance).Get<RE::TESForm>();
-            const bool effectLighting = !emittance.empty() &&
-                                        (!emittanceForm || IsEffectLightingSource(emittanceForm, a_state));
             const double fade = std::max(
                 0.0,
-                effectLighting ?
-                    SunlightFadeMultiplier(a_state.settings) :
-                    BrightnessFadeMultiplier(a_state.settings));
+                IsSunlightBaseLight(baseLight, a_state) ?
+                    SunlightFadeMultiplier(settings) :
+                    BrightnessFadeMultiplier(settings));
+            const auto hueScales = WeatherPatcher::ResolveHueScales(settings.hueScales);
             const ColorTuning tuning = !emittance.empty() ?
                                            ColorTuning{
                                                1.0,
@@ -624,9 +641,9 @@ namespace MPL::PointLightPatcher
                                                a_state.hueRanges,
                                            } :
                                            ColorTuning{
-                                               std::max(0.0, a_state.settings.saturationMultiplier),
-                                               a_hueScales,
-                                               a_state.settings.hueShift,
+                                               std::max(0.0, settings.saturationMultiplier),
+                                               hueScales,
+                                               settings.hueShift,
                                                a_state.hueRanges,
                                            };
             auto* result = CopyObject(a_document, a_data, fade, tuning);
@@ -649,7 +666,6 @@ namespace MPL::PointLightPatcher
             yyjson_mut_doc* a_document,
             yyjson_val* a_entry,
             const AppliedState& a_state,
-            const WeatherPatcher::AmbientHueScaleValues& a_hueScales,
             const EmittanceMap& a_mappings)
         {
             if (!yyjson_is_obj(a_entry))
@@ -663,7 +679,7 @@ namespace MPL::PointLightPatcher
                 auto* value = yyjson_obj_iter_get_val(key);
                 auto* copiedKey = yyjson_mut_strncpy(a_document, yyjson_get_str(key), yyjson_get_len(key));
                 auto* copiedValue = KeyEquals(key, "data") ?
-                                        CopyLightData(a_document, value, a_state, a_hueScales, a_mappings) :
+                                        CopyLightData(a_document, value, a_state, a_mappings) :
                                         yyjson_val_mut_copy(a_document, value);
                 if (!copiedKey || !copiedValue || !yyjson_mut_obj_add(result, copiedKey, copiedValue))
                 {
@@ -677,7 +693,6 @@ namespace MPL::PointLightPatcher
             yyjson_mut_doc* a_document,
             yyjson_val* a_entry,
             const AppliedState& a_state,
-            const WeatherPatcher::AmbientHueScaleValues& a_hueScales,
             const EmittanceMap& a_mappings)
         {
             if (!yyjson_is_obj(a_entry))
@@ -699,7 +714,7 @@ namespace MPL::PointLightPatcher
                     yyjson_val* lightEntry = nullptr;
                     yyjson_arr_foreach(value, index, count, lightEntry)
                     {
-                        auto* copy = CopyLightEntry(a_document, lightEntry, a_state, a_hueScales, a_mappings);
+                        auto* copy = CopyLightEntry(a_document, lightEntry, a_state, a_mappings);
                         if (!copy || !yyjson_mut_arr_append(copiedValue, copy))
                         {
                             return nullptr;
@@ -734,13 +749,12 @@ namespace MPL::PointLightPatcher
 
             MutableDocument result(yyjson_mut_doc_new(nullptr));
             auto* resultRoot = yyjson_mut_arr(result.get());
-            const auto hueScales = WeatherPatcher::ResolveHueScales(a_state.settings.hueScales);
             std::size_t index = 0;
             std::size_t count = 0;
             yyjson_val* entry = nullptr;
             yyjson_arr_foreach(root, index, count, entry)
             {
-                auto* copy = CopyConfigEntry(result.get(), entry, a_state, hueScales, a_mappings);
+                auto* copy = CopyConfigEntry(result.get(), entry, a_state, a_mappings);
                 if (!copy || !yyjson_mut_arr_append(resultRoot, copy))
                 {
                     return std::nullopt;
@@ -774,6 +788,14 @@ namespace MPL::PointLightPatcher
                    a_settings.hueShift != defaults.hueShift;
         }
 
+        bool HasLightPlacerTuning(const AppliedState& a_state)
+        {
+            return HasLightPlacerTuning(a_state.settings) ||
+                   std::ranges::any_of(
+                       a_state.baseLightSettings,
+                       [](const auto& a_entry) { return HasLightPlacerTuning(a_entry.second); });
+        }
+
         bool TransformBrokeredLightPlacerJson(
             const char*,
             const char* a_input,
@@ -793,7 +815,7 @@ namespace MPL::PointLightPatcher
                     state = brokerTransformState;
                 }
                 if (!state ||
-                    !HasLightPlacerTuning(state->settings))
+                    !HasLightPlacerTuning(*state))
                 {
                     return a_output(
                         a_context,
@@ -1039,7 +1061,7 @@ namespace MPL::PointLightPatcher
         {
             if (!a_previous)
             {
-                return HasLightPlacerTuning(a_state.settings);
+                return HasLightPlacerTuning(a_state);
             }
             const auto& settings = a_state.settings;
             const auto& previous = a_previous->settings;
@@ -1048,15 +1070,37 @@ namespace MPL::PointLightPatcher
             {
                 return true;
             }
-            if (a_state.effectLightingRegionExclusions != a_previous->effectLightingRegionExclusions &&
-                (HasLightPlacerTuning(settings) || HasLightPlacerTuning(previous)))
+            auto candidates = a_state.sunlightBaseLights;
+            candidates.insert(
+                a_previous->sunlightBaseLights.begin(),
+                a_previous->sunlightBaseLights.end());
+            for (const auto& [formID, value] : a_state.baseLightSettings)
             {
-                return true;
+                (void)value;
+                candidates.insert(formID);
             }
+            for (const auto& [formID, value] : a_previous->baseLightSettings)
+            {
+                (void)value;
+                candidates.insert(formID);
+            }
+            if (std::ranges::any_of(candidates, [&](const RE::FormID a_formID)
+                {
+                    const auto fadeFor = [&](const AppliedState& a_candidate)
+                    {
+                        const auto& baseSettings = SettingsForBaseLight(a_formID, a_candidate);
+                        return a_candidate.sunlightBaseLights.contains(a_formID) ?
+                                   baseSettings.sunlightFadeMultiplier :
+                                   baseSettings.fadeMultiplier;
+                    };
+                    return fadeFor(a_state) != fadeFor(*a_previous);
+                }))
+                return true;
             if constexpr (kUseDirectLightPlacerNiLights)
             {
                 return false;
             }
+            if (a_state.baseLightSettings != a_previous->baseLightSettings) return true;
             if (settings.saturationMultiplier != previous.saturationMultiplier ||
                 settings.hueScales != previous.hueScales ||
                 settings.hueShift != previous.hueShift)
@@ -1105,8 +1149,8 @@ namespace MPL::PointLightPatcher
 
         RE::NiColor TuneLightPlacerDiffuse(
             const RE::NiColor& a_source,
-            const AppliedState& a_state,
-            const WeatherPatcher::AmbientHueScaleValues& a_hueScales)
+            const Settings& a_settings,
+            const WeatherPatcher::HueRanges& a_hueRanges)
         {
             std::array<double, 3> channels{
                 a_source.red,
@@ -1136,11 +1180,11 @@ namespace MPL::PointLightPatcher
             const double factor =
                 std::max(
                     0.0,
-                    a_state.settings.saturationMultiplier) *
+                    a_settings.saturationMultiplier) *
                 WeatherPatcher::ColorHueScale(
                     reference,
-                    a_hueScales,
-                    a_state.hueRanges);
+                    WeatherPatcher::ResolveHueScales(a_settings.hueScales),
+                    a_hueRanges);
             for (auto& channel : channels)
             {
                 channel = std::clamp(
@@ -1151,8 +1195,8 @@ namespace MPL::PointLightPatcher
             const auto hueShift =
                 WeatherPatcher::ColorHueShiftDegrees(
                     reference,
-                    a_state.settings.hueShift,
-                    a_state.hueRanges);
+                    a_settings.hueShift,
+                    a_hueRanges);
             if (std::abs(hueShift) > 0.0001)
             {
                 const auto shifted =
@@ -1185,8 +1229,7 @@ namespace MPL::PointLightPatcher
 
         bool TuneLightPlacerNode(
             RE::NiPointLight* a_light,
-            const AppliedState& a_state,
-            const WeatherPatcher::AmbientHueScaleValues& a_hueScales)
+            const AppliedState& a_state)
         {
             auto& runtime = a_light->GetLightRuntimeData();
             const auto name =
@@ -1222,8 +1265,8 @@ namespace MPL::PointLightPatcher
             const auto tunedDiffuse =
                 TuneLightPlacerDiffuse(
                     captured.sourceDiffuse,
-                    a_state,
-                    a_hueScales);
+                    SettingsForBaseLight(LightPlacerBaseLight(a_light), a_state),
+                    a_state.hueRanges);
             const bool changed =
                 !NearlyEqual(runtime.diffuse, tunedDiffuse);
             runtime.diffuse = tunedDiffuse;
@@ -1252,9 +1295,6 @@ namespace MPL::PointLightPatcher
             }
 
             const auto state = *directLightPlacerState;
-            const auto hueScales =
-                WeatherPatcher::ResolveHueScales(
-                    state.settings.hueScales);
             std::unordered_set<RE::NiPointLight*> seen;
             std::size_t loadedReferenceCount = 0;
             std::size_t lightCount = 0;
@@ -1286,8 +1326,7 @@ namespace MPL::PointLightPatcher
                             changedCount +=
                                 TuneLightPlacerNode(
                                     a_light,
-                                    state,
-                                    hueScales) ?
+                                    state) ?
                                     1 :
                                     0;
                             return RE::BSVisit::
@@ -1538,7 +1577,7 @@ namespace MPL::PointLightPatcher
                         a_reference->GetFormID(),
                         light->GetFormID(),
                         source ? source->GetFormID() : 0,
-                        IsEffectLightingSource(source, a_state) ?
+                        IsSunlightBaseLight(light, a_state) ?
                             "Sunlight" :
                             "Brightness",
                         0.0f,
@@ -1572,7 +1611,7 @@ namespace MPL::PointLightPatcher
                     a_reference->GetFormID(),
                     light->GetFormID(),
                     source ? source->GetFormID() : 0,
-                    IsEffectLightingSource(source, a_state) ?
+                    IsSunlightBaseLight(light, a_state) ?
                         "Sunlight" :
                         "Brightness",
                     baseline->second,
@@ -1604,7 +1643,7 @@ namespace MPL::PointLightPatcher
                     continue;
                 }
                 ++adjusted;
-                if (IsEffectLightingSource(ExternalEmittanceSource(reference), a_state)) ++sunlight;
+                if (IsSunlightBaseLight(GetBaseLight(reference), a_state)) ++sunlight;
                 else ++brightness;
             }
             DetailedLogging::Info(
@@ -1617,7 +1656,6 @@ namespace MPL::PointLightPatcher
         bool RefreshLoadedLightReference(
             RE::TESObjectREFR* a_reference,
             const AppliedState& a_state,
-            const WeatherPatcher::AmbientHueScaleValues& a_hueScales,
             const std::string_view a_context)
         {
             auto* light = GetBaseLight(a_reference);
@@ -1676,8 +1714,8 @@ namespace MPL::PointLightPatcher
                     {
                         runtime.diffuse = TuneLightPlacerDiffuse(
                             runtime.diffuse,
-                            a_state,
-                        a_hueScales);
+                            SettingsForBaseLight(light, a_state),
+                            a_state.hueRanges);
                     }
                 }
                 const bool hasReferenceFade =
@@ -1740,7 +1778,7 @@ namespace MPL::PointLightPatcher
                         a_reference->GetFormID(),
                         light->GetFormID(),
                         emittanceSource ? emittanceSource->GetFormID() : 0,
-                        IsEffectLightingSource(emittanceSource, a_state) ?
+                        IsSunlightBaseLight(light, a_state) ?
                             "Sunlight" :
                             "Brightness",
                         sharedXEMIBase,
@@ -1774,7 +1812,6 @@ namespace MPL::PointLightPatcher
             {
                 return result;
             }
-            const auto hueScales = WeatherPatcher::ResolveHueScales(a_state.settings.hueScales);
             std::unordered_set<RE::TESObjectREFR*> loadedReferences;
             tes->ForEachReference([&](RE::TESObjectREFR* a_reference)
                 {
@@ -1792,13 +1829,12 @@ namespace MPL::PointLightPatcher
                     result.refreshed += RefreshLoadedLightReference(
                                             a_reference,
                                             a_state,
-                                            hueScales,
                                             a_context) ?
                                             1 :
                                             0;
-                    if (a_reference->Is3DLoaded() && externallyEmissiveLights.contains(light))
+                    if (a_reference->Is3DLoaded())
                     {
-                        if (IsEffectLightingSource(ExternalEmittanceSource(a_reference), a_state)) ++result.sunlight;
+                        if (IsSunlightBaseLight(light, a_state)) ++result.sunlight;
                         else ++result.brightness;
                     }
                 }
@@ -1824,24 +1860,16 @@ namespace MPL::PointLightPatcher
 
     void Apply(
         const Settings& a_settings,
+        const BaseLightSettingsMap& a_baseLightSettings,
+        const SunlightBaseLights& a_sunlightBaseLights,
         const WeatherPatcher::HueRanges& a_hueRanges,
-        const std::span<const std::string> a_effectLightingRegionExclusions,
         const bool a_commitLightPlacer)
     {
-        const std::vector configuredRegions(
-            a_effectLightingRegionExclusions.begin(),
-            a_effectLightingRegionExclusions.end());
-        if (!effectLightingRegionExclusionConfig ||
-            *effectLightingRegionExclusionConfig != configuredRegions)
-        {
-            effectLightingRegionExclusions =
-                ResolveEffectLightingRegionExclusions(configuredRegions);
-            effectLightingRegionExclusionConfig = configuredRegions;
-        }
         const AppliedState state{
             .settings = a_settings,
+            .baseLightSettings = a_baseLightSettings,
+            .sunlightBaseLights = a_sunlightBaseLights,
             .hueRanges = a_hueRanges,
-            .effectLightingRegionExclusions = effectLightingRegionExclusions,
         };
         const bool recordsChanged = !appliedState || *appliedState != state;
         if (kUseDirectLightPlacerNiLights)
@@ -1869,7 +1897,6 @@ namespace MPL::PointLightPatcher
             std::size_t fadeCount = 0;
             std::size_t lightCount = 0;
             std::size_t externalEmittanceCount = 0;
-            const auto hueScales = WeatherPatcher::ResolveHueScales(a_settings.hueScales);
             ApplyReferenceFadeOverrides(dataHandler, state);
             for (auto* light : dataHandler->GetFormArray<RE::TESObjectLIGH>())
             {
@@ -1877,21 +1904,26 @@ namespace MPL::PointLightPatcher
                 {
                     continue;
                 }
+                const auto& settings = SettingsForBaseLight(light, state);
+                const auto hueScales = WeatherPatcher::ResolveHueScales(settings.hueScales);
                 const auto baseline = baselines.try_emplace(light, Baseline{ light->fade, light->data.color }).first;
                 light->fade = baseline->second.fade;
                 light->data.color = baseline->second.color;
-                light->fade *= static_cast<float>(BrightnessFadeMultiplier(a_settings));
+                light->fade *= static_cast<float>(
+                    IsSunlightBaseLight(light, state) ?
+                        SunlightFadeMultiplier(settings) :
+                        BrightnessFadeMultiplier(settings));
                 ++fadeCount;
                 if (externallyEmissiveLights.contains(light))
                 {
                     ++externalEmittanceCount;
                     continue;
                 }
-                const double saturation = std::max(0.0, a_settings.saturationMultiplier) *
+                const double saturation = std::max(0.0, settings.saturationMultiplier) *
                                           WeatherPatcher::ColorHueScale(baseline->second.color, hueScales, a_hueRanges);
                 const auto hueShift = WeatherPatcher::ColorHueShiftDegrees(
                     baseline->second.color,
-                    a_settings.hueShift,
+                    settings.hueShift,
                     a_hueRanges);
                 Saturate(light->data.color, saturation);
                 WeatherPatcher::ShiftHue(light->data.color, hueShift);
@@ -2079,16 +2111,11 @@ namespace MPL::PointLightPatcher
                         *appliedState,
                         "reference-initialization");
                 }
-                const auto hueScales = appliedState ?
-                                           std::optional{ WeatherPatcher::ResolveHueScales(
-                                               appliedState->settings.hueScales) } :
-                                           std::nullopt;
-                if (appliedState && hueScales)
+                if (appliedState)
                 {
                     RefreshLoadedLightReference(
                         a_reference,
                         *appliedState,
-                        *hueScales,
                         "reference-initialization");
                 }
             }

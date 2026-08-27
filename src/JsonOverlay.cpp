@@ -28,11 +28,10 @@ namespace MPL::JsonOverlay
         constexpr std::array kRecordFilterKeys{
             std::string_view{ "weatherInclusions" },
             std::string_view{ "weatherExclusions" },
-            std::string_view{ "effectLightingInclusions" },
-            std::string_view{ "effectLightingExclusions" },
+            std::string_view{ "effectPointLightInclusions" },
+            std::string_view{ "effectPointLightExclusions" },
             std::string_view{ "lightingTemplateInclusions" },
             std::string_view{ "lightingTemplateExclusions" },
-            std::string_view{ "pointLightEffectLightingExclusions" },
         };
         constexpr std::array kPluginFilterKeys{
             std::string_view{ "pluginInclusions" },

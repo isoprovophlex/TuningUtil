@@ -13,6 +13,7 @@ namespace MPL::SliderCreator
     {
         weather,
         lightingTemplate,
+        baseLight,
     };
 
     inline constexpr std::array<std::string_view, 4> kRequiredProfileModuleKinds{
@@ -85,6 +86,7 @@ namespace MPL::SliderCreator
     struct Page
     {
         std::string title;
+        bool advanced = false;
         std::vector<ExistingSlider> sliders;
     };
 
@@ -144,6 +146,11 @@ namespace MPL::SliderCreator
         const std::filesystem::path&,
         std::size_t,
         const std::string&,
+        std::string&);
+    bool SetPageAdvanced(
+        const std::filesystem::path&,
+        std::size_t,
+        bool,
         std::string&);
     bool RemovePage(
         const std::filesystem::path&,

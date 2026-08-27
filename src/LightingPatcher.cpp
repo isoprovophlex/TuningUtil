@@ -1314,6 +1314,182 @@ namespace MPL::LightingPatcher
                 OwnsLightingTemplate(a_profile, a_lightingTemplate),
                 a_claimed);
         }
+
+        RecordFilter::Resolved ResolveFilteredBaseLightFilter(
+            const TuningUtil::FilteredBaseLightRule& a_rule)
+        {
+            const TuningUtil::PluginFilter noPlugins;
+            return RecordFilter::Resolve(a_rule.include, a_rule.exclude, noPlugins, noPlugins);
+        }
+
+        double FilteredBaseLightValue(
+            const Settings& a_settings,
+            const TuningUtil::FilteredBaseLightRule& a_rule)
+        {
+            if (const auto exact = a_settings.filteredBaseLightAdjustments.find(a_rule.id);
+                exact != a_settings.filteredBaseLightAdjustments.end())
+                return exact->second;
+            const auto insensitive = std::ranges::find_if(
+                a_settings.filteredBaseLightAdjustments,
+                [&](const auto& a_entry) { return Config::IEquals(a_entry.first, a_rule.id); });
+            return insensitive != a_settings.filteredBaseLightAdjustments.end() ?
+                       insensitive->second :
+                       a_rule.defaultValue;
+        }
+
+        template <class T>
+        double* BaseLightHueBand(T& a_settings, const std::string_view a_hue)
+        {
+            if (a_hue == "red") return &a_settings.red;
+            if (a_hue == "orange") return &a_settings.orange;
+            if (a_hue == "yellow") return &a_settings.yellow;
+            if (a_hue == "green") return &a_settings.green;
+            if (a_hue == "teal") return &a_settings.teal;
+            if (a_hue == "blue") return &a_settings.blue;
+            if (a_hue == "magenta") return &a_settings.magenta;
+            return nullptr;
+        }
+
+        bool ApplyFilteredBaseLightRule(
+            PointLightSettings& a_target,
+            const Settings& a_profileSettings,
+            const TuningUtil::FilteredBaseLightRule& a_rule)
+        {
+            const auto value = FilteredBaseLightValue(a_profileSettings, a_rule);
+            const bool hueShift = a_rule.settings.front().operation ==
+                                  TuningUtil::FilteredBaseLightOperation::hueShift;
+            const auto neutral = hueShift ? 0.0 : 1.0;
+            if (std::abs(value - neutral) <= 0.0001) return false;
+
+            auto changed = false;
+            for (const auto& setting : a_rule.settings)
+            {
+                if (setting.operation == TuningUtil::FilteredBaseLightOperation::hueShift)
+                {
+                    if (!setting.hue) continue;
+                    if (auto* target = BaseLightHueBand(a_target.hueShift, *setting.hue))
+                    {
+                        *target += value * setting.scale;
+                        changed = true;
+                    }
+                    continue;
+                }
+
+                const auto multiplier = std::max(0.0, 1.0 + ((value - 1.0) * setting.scale));
+                switch (setting.operation)
+                {
+                case TuningUtil::FilteredBaseLightOperation::brightness:
+                    a_target.fadeMultiplier *= multiplier;
+                    changed = true;
+                    break;
+                case TuningUtil::FilteredBaseLightOperation::sunlight:
+                    a_target.sunlightFadeMultiplier *= multiplier;
+                    changed = true;
+                    break;
+                case TuningUtil::FilteredBaseLightOperation::saturation:
+                    a_target.saturationMultiplier *= multiplier;
+                    changed = true;
+                    break;
+                case TuningUtil::FilteredBaseLightOperation::hueScale:
+                    if (setting.hue)
+                    {
+                        if (auto* target = BaseLightHueBand(a_target.hueScales, *setting.hue))
+                        {
+                            *target *= multiplier;
+                            changed = true;
+                        }
+                    }
+                    break;
+                case TuningUtil::FilteredBaseLightOperation::hueShift:
+                    break;
+                }
+            }
+            return changed;
+        }
+
+        struct FilteredBaseLightResolution
+        {
+            PointLightPatcher::BaseLightSettingsMap settings;
+            PointLightPatcher::SunlightBaseLights sunlightBaseLights;
+        };
+
+        FilteredBaseLightResolution ResolveFilteredBaseLightSettings(
+            RE::TESDataHandler* a_dataHandler,
+            const PointLightSettings& a_baseSettings)
+        {
+            struct ActiveRule
+            {
+                std::string profile;
+                Settings settings;
+                const TuningUtil::FilteredBaseLightRule* rule = nullptr;
+                RecordFilter::Resolved filter;
+            };
+
+            std::vector<ActiveRule> rules;
+            for (const auto& discovered : TuningUtil::GetProfiles())
+            {
+                auto profile = discovered.name;
+                const auto& settings = TuningUtil::GetSettings(profile);
+                if (!settings.EnableProfile) continue;
+                for (const auto& rule : TuningUtil::GetFilteredBaseLightRules(discovered.name))
+                {
+                    rules.push_back({
+                        .profile = discovered.name,
+                        .settings = settings,
+                        .rule = std::addressof(rule),
+                        .filter = ResolveFilteredBaseLightFilter(rule),
+                    });
+                }
+            }
+
+            FilteredBaseLightResolution result;
+            std::unordered_map<std::string, std::unordered_set<RE::FormID>> profileTargets;
+            std::unordered_map<std::string, std::unordered_set<RE::FormID>> profileSunlightTargets;
+            for (auto* light : a_dataHandler->GetFormArray<RE::TESObjectLIGH>())
+            {
+                if (!light) continue;
+                auto settings = a_baseSettings;
+                auto changed = false;
+                for (const auto& active : rules)
+                {
+                    if (!RecordFilter::Matches(light, active.filter)) continue;
+                    if (std::ranges::any_of(
+                            active.rule->settings,
+                            [](const auto& a_setting)
+                            {
+                                return a_setting.operation ==
+                                       TuningUtil::FilteredBaseLightOperation::sunlight;
+                            }))
+                    {
+                        result.sunlightBaseLights.insert(light->GetFormID());
+                        profileSunlightTargets[active.profile].insert(light->GetFormID());
+                    }
+                    if (ApplyFilteredBaseLightRule(settings, active.settings, *active.rule))
+                    {
+                        changed = true;
+                        profileTargets[active.profile].insert(light->GetFormID());
+                    }
+                }
+                if (changed) result.settings.emplace(light->GetFormID(), std::move(settings));
+            }
+            for (const auto& discovered : TuningUtil::GetProfiles())
+            {
+                if (!TuningUtil::GetFilteredBaseLightRules(discovered.name).empty())
+                {
+                    DetailedLogging::Info(
+                        "[Base Light] {} | adjusted={} | sunlight={}",
+                        discovered.name,
+                        profileTargets[discovered.name].size(),
+                        profileSunlightTargets[discovered.name].size());
+                }
+            }
+            DetailedLogging::Info(
+                "[Base Light] apply | rules={} | adjusted={} | sunlight={}",
+                rules.size(),
+                result.settings.size(),
+                result.sunlightBaseLights.size());
+            return result;
+        }
     }  // namespace
 
     void ApplyAllSettings(const bool a_commitLightPlacer)
@@ -1409,35 +1585,25 @@ namespace MPL::LightingPatcher
         static constexpr std::array pointLightRoots{
             std::string_view{ "pointLights" },
             std::string_view{ "intHueRanges" },
-            std::string_view{ "pointLightEffectLightingExclusions" },
         };
         std::vector<std::string> pointLightProfiles;
-        std::vector<std::string> pointLightRegionExclusions;
         for (auto profile : TuningUtil::GetProfilesWithSettings(pointLightRoots))
         {
             const auto& settings = TuningUtil::GetSettings(profile);
             if (settings.EnableProfile)
             {
-                for (const auto& configured : settings.pointLightEffectLightingExclusions)
-                {
-                    if (std::ranges::none_of(
-                            pointLightRegionExclusions,
-                            [&](const std::string& a_existing)
-                            {
-                                return Config::IEquals(a_existing, configured);
-                            }))
-                    {
-                        pointLightRegionExclusions.push_back(configured);
-                    }
-                }
                 pointLightProfiles.push_back(std::move(profile));
             }
         }
         const auto pointLightSettings = TuningUtil::ResolveSettingsStack(pointLightProfiles);
+        const auto filteredBaseLightSettings = ResolveFilteredBaseLightSettings(
+            dataHandler,
+            pointLightSettings.pointLights);
         PointLightPatcher::Apply(
             pointLightSettings.pointLights,
+            filteredBaseLightSettings.settings,
+            filteredBaseLightSettings.sunlightBaseLights,
             pointLightSettings.intHueRanges,
-            pointLightRegionExclusions,
             a_commitLightPlacer);
     }
 
@@ -1513,6 +1679,31 @@ namespace MPL::LightingPatcher
                 {
                     result.insert(lightingTemplate->GetFormID());
                 }
+            }
+            return result;
+        };
+
+        const auto leftTargets = targetsFor(a_leftProfile);
+        const auto rightTargets = targetsFor(a_rightProfile);
+        return std::ranges::any_of(rightTargets, [&](const auto a_formID)
+            { return leftTargets.contains(a_formID); });
+    }
+
+    bool ProfilesShareFilteredBaseLightTarget(
+        const std::string& a_leftProfile,
+        const std::string& a_rightProfile,
+        const std::string_view a_ruleID)
+    {
+        const auto targetsFor = [&](const std::string& a_profileName)
+        {
+            std::unordered_set<RE::FormID> result;
+            const auto* rule = TuningUtil::FindFilteredBaseLightRule(a_profileName, a_ruleID);
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            if (!rule || !dataHandler) return result;
+            const auto filter = ResolveFilteredBaseLightFilter(*rule);
+            for (auto* light : dataHandler->GetFormArray<RE::TESObjectLIGH>())
+            {
+                if (light && RecordFilter::Matches(light, filter)) result.insert(light->GetFormID());
             }
             return result;
         };

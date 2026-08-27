@@ -2000,6 +2000,96 @@ namespace MPL::WeatherPatcher
         return result;
     }
 
+    struct EffectLightingScope
+    {
+        RecordFilter::Resolved filter;
+        RecordFilter::Resolved pluginOwnershipFilter;
+        bool ownsPluginWeathers = false;
+    };
+
+    EffectLightingScope ResolveEffectLightingScope(const Settings& a_settings)
+    {
+        const bool hasExplicitPluginFilter =
+            !PluginFilterEmpty(a_settings.effectLightingPluginInclusions) ||
+            !PluginFilterEmpty(a_settings.effectLightingPluginExclusions);
+        const auto& includedPlugins = hasExplicitPluginFilter ?
+                                          a_settings.effectLightingPluginInclusions :
+                                          a_settings.pluginInclusions;
+        const auto& excludedPlugins = hasExplicitPluginFilter ?
+                                          a_settings.effectLightingPluginExclusions :
+                                          a_settings.pluginExclusions;
+        return {
+            .filter = RecordFilter::Resolve(
+                a_settings.effectPointLightInclusions,
+                a_settings.effectPointLightExclusions,
+                includedPlugins,
+                excludedPlugins),
+            .pluginOwnershipFilter = {
+                .includedPlugins = includedPlugins,
+                .excludedPlugins = excludedPlugins,
+            },
+            .ownsPluginWeathers = !PluginFilterEmpty(includedPlugins),
+        };
+    }
+
+    std::vector<RecordFilter::Resolved> GetActiveWeatherPluginOwners()
+    {
+        std::vector<RecordFilter::Resolved> result;
+        const auto append = [&](const TuningUtil::PluginFilter& a_inclusions,
+                                const TuningUtil::PluginFilter& a_exclusions)
+        {
+            if (!PluginFilterEmpty(a_inclusions))
+            {
+                result.push_back({
+                    .includedPlugins = a_inclusions,
+                    .excludedPlugins = a_exclusions,
+                });
+            }
+        };
+
+        for (const auto& discovered : TuningUtil::GetProfiles())
+        {
+            auto profileName = discovered.name;
+            const auto settings = LoadSettings(profileName);
+            if (!settings || !settings->EnableProfile)
+            {
+                continue;
+            }
+            append(settings->pluginInclusions, settings->pluginExclusions);
+            append(
+                settings->effectLightingPluginInclusions,
+                settings->effectLightingPluginExclusions);
+        }
+        return result;
+    }
+
+    bool EffectLightingWeatherIsClaimed(
+        const RE::TESWeather* a_weather,
+        const std::span<const RecordFilter::Resolved> a_owners)
+    {
+        return std::ranges::any_of(
+            a_owners,
+            [&](const auto& a_owner)
+            {
+                return RecordFilter::Matches(a_weather, a_owner);
+            });
+    }
+
+    constexpr bool ShouldTargetEffectLightingWeather(
+        const bool a_matchesFilter,
+        const bool a_ownsPluginWeathers,
+        const bool a_ownsWeather,
+        const bool a_claimed)
+    {
+        return a_matchesFilter &&
+               (a_ownsWeather || (!a_ownsPluginWeathers && !a_claimed));
+    }
+
+    static_assert(ShouldTargetEffectLightingWeather(true, true, true, true));
+    static_assert(!ShouldTargetEffectLightingWeather(true, true, false, true));
+    static_assert(ShouldTargetEffectLightingWeather(true, false, false, false));
+    static_assert(!ShouldTargetEffectLightingWeather(true, false, false, true));
+
     std::vector<std::string> GetOrderedSettingsProfiles()
     {
         static constexpr std::array roots{
@@ -2028,12 +2118,27 @@ namespace MPL::WeatherPatcher
     {
         static constexpr std::array roots{
             std::string_view{ "fxEffectLighting" },
-            std::string_view{ "effectLightingInclusions" },
-            std::string_view{ "effectLightingExclusions" },
+            std::string_view{ "effectPointLightInclusions" },
+            std::string_view{ "effectPointLightExclusions" },
             std::string_view{ "effectLightingPluginInclusions" },
             std::string_view{ "effectLightingPluginExclusions" },
         };
-        return TuningUtil::GetProfilesWithSettings(roots);
+        const auto directProfiles = TuningUtil::GetProfilesWithSettings(roots);
+        std::vector<std::string> result;
+        for (const auto& profile : TuningUtil::GetProfiles())
+        {
+            const bool ownsDirectSettings = std::ranges::any_of(
+                directProfiles,
+                [&](const auto& a_name) { return Config::IEquals(a_name, profile.name); });
+            const bool ownsFilteredSettings = std::ranges::any_of(
+                profile.filteredWeatherRules,
+                [](const auto& a_rule)
+                {
+                    return a_rule.domain == TuningUtil::FilteredWeatherDomain::effectLighting;
+                });
+            if (ownsDirectSettings || ownsFilteredSettings) result.push_back(profile.name);
+        }
+        return result;
     }
 
     void InvalidatePresetCache()
@@ -2168,14 +2273,6 @@ namespace MPL::WeatherPatcher
         std::unordered_set<RE::FormID> excludedFormIDs;
     };
 
-    struct CachedPointLightWeatherExclusions
-    {
-        bool initialized = false;
-        std::vector<std::string> configuredRegions;
-        std::unordered_set<RE::FormID> regionFormIDs;
-        std::unordered_set<RE::FormID> weatherFormIDs;
-    };
-
     struct WeatherResolutionCache
     {
         RE::TESDataHandler* dataHandler = nullptr;
@@ -2187,8 +2284,6 @@ namespace MPL::WeatherPatcher
         std::unordered_map<std::string, CachedResolvedWeatherFilter> weatherInclusions;
         std::unordered_map<std::string, CachedResolvedWeatherFilter> weatherExclusions;
         std::unordered_map<std::string, CachedFilteredRuleForms> filteredRuleForms;
-        std::unordered_map<std::string, CachedPointLightWeatherExclusions>
-            pointLightWeatherExclusions;
         std::unordered_set<std::string> loggedFXFilterProfiles;
         std::unordered_set<std::string> loggedWeatherEnumerations;
     };
@@ -2316,58 +2411,6 @@ namespace MPL::WeatherPatcher
             return cached->second;
         }
         return classifications.emplace(a_weather->GetFormID(), EditorIDContainsFX(a_weather)).first->second;
-    }
-
-    const CachedPointLightWeatherExclusions& ResolvePointLightWeatherExclusions(
-        const std::string_view a_profileName,
-        const TuningUtil::Settings& a_settings)
-    {
-        auto& cached = GetWeatherResolutionCache()
-                           .pointLightWeatherExclusions[LowercaseKey(std::string(a_profileName))];
-        if (cached.initialized &&
-            cached.configuredRegions == a_settings.pointLightEffectLightingExclusions)
-        {
-            return cached;
-        }
-
-        cached = {};
-        cached.initialized = true;
-        cached.configuredRegions = a_settings.pointLightEffectLightingExclusions;
-        for (const auto& configured : cached.configuredRegions)
-        {
-            auto* region = Config::LiteForm::FromString(configured).Get<RE::TESRegion>();
-            if (!region)
-            {
-                logger::warn(
-                    "[Effect Lighting] {} | region={} unresolved | weatherExclusion=false",
-                    a_profileName,
-                    configured);
-                continue;
-            }
-            cached.regionFormIDs.insert(region->GetFormID());
-
-            if (!region->dataList)
-            {
-                continue;
-            }
-            for (auto* data : region->dataList->regionDataList)
-            {
-                if (!data || data->GetType() != RE::TESRegionData::Type::kWeather)
-                {
-                    continue;
-                }
-                auto* weatherData = static_cast<RE::TESRegionDataWeather*>(data);
-                for (auto* weatherType : weatherData->weatherTypes)
-                {
-                    auto* weather = weatherType ? weatherType->weather : nullptr;
-                    if (weather)
-                    {
-                        cached.weatherFormIDs.insert(weather->GetFormID());
-                    }
-                }
-            }
-        }
-        return cached;
     }
 
     bool IsStaticWeather(const RE::TESWeather* a_weather)
@@ -3110,7 +3153,9 @@ namespace MPL::WeatherPatcher
             }
             for (const auto& rule : TuningUtil::GetFilteredWeatherRules(profile.name))
             {
-                if (rule.settings.empty() || FilteredModuleRuleIsLinked(profile.settings, rule)) continue;
+                if (rule.domain == TuningUtil::FilteredWeatherDomain::effectLighting ||
+                    rule.settings.empty() || FilteredModuleRuleIsLinked(profile.settings, rule))
+                    continue;
                 const double value = FilteredAdjustmentValue(profile.settings, rule);
                 const auto operation = rule.settings.front().operation;
                 const double neutral = rule.localLink ? 0.0 :
@@ -3271,28 +3316,30 @@ namespace MPL::WeatherPatcher
         struct ActiveProfile
         {
             std::string name;
+            Settings settings;
             RecordFilter::Resolved filter;
-            std::unordered_set<RE::FormID> pointLightRegionExclusions;
-            std::unordered_set<RE::FormID> pointLightWeatherExclusions;
+            RecordFilter::Resolved pluginOwnershipFilter;
+            bool ownsPluginWeathers = false;
+            SourceWeatherSet filteredTargets;
+            std::unordered_set<RE::FormID> globallyIncludedFormIDs;
         };
 
+        const auto pluginOwners = GetActiveWeatherPluginOwners();
         std::vector<ActiveProfile> profiles;
         for (auto& profileName : GetOrderedFXEffectLightingProfiles())
         {
             auto settings = LoadSettings(profileName);
             if (settings && settings->EnableProfile)
             {
-                const auto& pointLightExclusions =
-                    ResolvePointLightWeatherExclusions(profileName, *settings);
+                auto scope = ResolveEffectLightingScope(*settings);
                 profiles.push_back({
                     profileName,
-                    RecordFilter::Resolve(
-                        settings->effectLightingInclusions,
-                        settings->effectLightingExclusions,
-                        settings->effectLightingPluginInclusions,
-                        settings->effectLightingPluginExclusions),
-                    pointLightExclusions.regionFormIDs,
-                    pointLightExclusions.weatherFormIDs,
+                    std::move(*settings),
+                    std::move(scope.filter),
+                    std::move(scope.pluginOwnershipFilter),
+                    scope.ownsPluginWeathers,
+                    {},
+                    {},
                 });
             }
         }
@@ -3301,7 +3348,7 @@ namespace MPL::WeatherPatcher
             return 0;
         }
 
-        std::unordered_map<RE::FormID, std::unordered_set<RE::FormID>> runtimeEmittanceSources;
+        std::unordered_set<RE::FormID> runtimeEmittanceWeathers;
         auto* player = RE::PlayerCharacter::GetSingleton();
         auto* cell = player ? player->GetParentCell() : nullptr;
         auto* loadedData = cell ? cell->GetRuntimeData().loadedData : nullptr;
@@ -3319,45 +3366,48 @@ namespace MPL::WeatherPatcher
                 {
                     continue;
                 }
-                runtimeEmittanceSources[region->currentWeather->GetFormID()].insert(region->GetFormID());
+                runtimeEmittanceWeathers.insert(region->currentWeather->GetFormID());
             }
         }
 
         std::unordered_map<std::string, std::vector<RE::TESWeather*>> weatherGroups;
         std::unordered_map<std::string, std::vector<std::string>> groupProfiles;
         std::unordered_map<std::string, std::size_t> profileTargetCounts;
-        std::unordered_map<std::string, std::size_t> profileWeatherExclusionCounts;
+        std::unordered_map<std::string, std::size_t> profileOwnershipExclusionCounts;
         for (auto* weather : a_dataHandler->GetFormArray<RE::TESWeather>())
         {
-            const auto runtimeSources = weather ? runtimeEmittanceSources.find(weather->GetFormID()) : runtimeEmittanceSources.end();
-            if (!weather || (!IsFXWeather(weather) && runtimeSources == runtimeEmittanceSources.end()))
+            if (!weather || (!IsFXWeather(weather) &&
+                             !runtimeEmittanceWeathers.contains(weather->GetFormID())))
             {
                 continue;
             }
 
             std::string signature;
             std::vector<std::string> matchingProfiles;
-            for (const auto& profile : profiles)
+            const bool claimed = EffectLightingWeatherIsClaimed(weather, pluginOwners);
+            for (auto& profile : profiles)
             {
-                if (!RecordFilter::Matches(weather, profile.filter))
+                const bool matchesPluginFilter = RecordFilter::Matches(
+                    weather,
+                    profile.pluginOwnershipFilter);
+                const bool ownsWeather = profile.ownsPluginWeathers &&
+                                         matchesPluginFilter;
+                if (!ShouldTargetEffectLightingWeather(
+                        matchesPluginFilter,
+                        profile.ownsPluginWeathers,
+                        ownsWeather,
+                        claimed))
                 {
+                    if (matchesPluginFilter && claimed && !ownsWeather)
+                    {
+                        ++profileOwnershipExclusionCounts[profile.name];
+                    }
                     continue;
                 }
-                bool pointLightWeather = profile.pointLightWeatherExclusions.contains(weather->GetFormID());
-                if (!pointLightWeather && runtimeSources != runtimeEmittanceSources.end())
-                {
-                    pointLightWeather = std::ranges::any_of(
-                        runtimeSources->second,
-                        [&](const RE::FormID a_region)
-                        {
-                            return profile.pointLightRegionExclusions.contains(a_region);
-                        });
-                }
-                if (pointLightWeather)
-                {
-                    ++profileWeatherExclusionCounts[profile.name];
-                    continue;
-                }
+                profile.filteredTargets.push_back(weather);
+                if (!RecordFilter::Matches(weather, profile.filter)) continue;
+
+                profile.globallyIncludedFormIDs.insert(weather->GetFormID());
                 matchingProfiles.push_back(profile.name);
                 signature.append(profile.name).push_back('\x1F');
                 ++profileTargetCounts[profile.name];
@@ -3369,7 +3419,7 @@ namespace MPL::WeatherPatcher
             }
         }
 
-        std::size_t patched = 0;
+        std::unordered_set<RE::TESWeather*> patchedWeathers;
         for (const auto& [signature, weathers] : weatherGroups)
         {
             const auto settings = TuningUtil::ResolveSettingsStack(groupProfiles[signature]);
@@ -3407,23 +3457,146 @@ namespace MPL::WeatherPatcher
                     }
                 }
 
-                ++patched;
+                patchedWeathers.insert(weather);
             }
+        }
+
+        std::unordered_map<
+            RE::TESWeather*,
+            std::array<FilteredColorAdjustment, RE::TESWeather::ColorTime::kTotal>> filteredAdjustments;
+        std::size_t activeFilteredRules = 0;
+        for (const auto& profile : profiles)
+        {
+            for (const auto& rule : TuningUtil::GetFilteredWeatherRules(profile.name))
+            {
+                if (rule.domain != TuningUtil::FilteredWeatherDomain::effectLighting ||
+                    rule.settings.empty())
+                    continue;
+
+                const double value = FilteredAdjustmentValue(profile.settings, rule);
+                const auto operation = rule.settings.front().operation;
+                const double neutral = operation == TuningUtil::FilteredWeatherOperation::hueShift ? 0.0 : 1.0;
+                if (std::abs(value - neutral) <= 0.0001) continue;
+
+                const auto& forms = ResolveFilteredRuleForms(profile.name, rule);
+                SourceWeatherSet matching;
+                const bool timeSpecific = !std::ranges::all_of(rule.times, std::identity{});
+                for (auto* weather : profile.filteredTargets)
+                {
+                    if ((!timeSpecific || !IsStaticWeather(weather)) && MatchesFilteredWeatherRule(
+                            weather,
+                            rule,
+                            forms,
+                            weather && profile.globallyIncludedFormIDs.contains(weather->GetFormID())))
+                    {
+                        matching.push_back(weather);
+                    }
+                }
+                if (matching.empty()) continue;
+
+                FilteredColorAdjustment ruleAdjustment;
+                for (const auto& setting : rule.settings)
+                {
+                    const auto scaledValue = ScaledFilteredValue(operation, value, setting.scale);
+                    if (operation == TuningUtil::FilteredWeatherOperation::brightness)
+                    {
+                        ruleAdjustment.brightness *= std::max(0.0, scaledValue);
+                    }
+                    else if (operation == TuningUtil::FilteredWeatherOperation::saturation)
+                    {
+                        ruleAdjustment.saturation.push_back({
+                            std::max(0.0, scaledValue),
+                            rule.hueScales ? ResolveHueScales(*rule.hueScales) :
+                                             AmbientHueScaleValues{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 },
+                            profile.settings.intHueRanges,
+                        });
+                    }
+                    else
+                    {
+                        auto shift = FilteredHueShift(setting, scaledValue);
+                        if (HueShiftBandsAreActive(shift))
+                            ruleAdjustment.hue.push_back({ shift, profile.settings.intHueRanges });
+                    }
+                }
+                if (!ruleAdjustment.Active()) continue;
+
+                for (auto* weather : matching)
+                {
+                    auto& weatherAdjustments = filteredAdjustments[weather];
+                    for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
+                    {
+                        if (!rule.times[time]) continue;
+                        auto& adjustment = weatherAdjustments[time];
+                        adjustment.brightness *= ruleAdjustment.brightness;
+                        adjustment.saturation.insert(
+                            adjustment.saturation.end(),
+                            ruleAdjustment.saturation.begin(),
+                            ruleAdjustment.saturation.end());
+                        adjustment.hue.insert(
+                            adjustment.hue.end(),
+                            ruleAdjustment.hue.begin(),
+                            ruleAdjustment.hue.end());
+                    }
+                }
+                ++activeFilteredRules;
+            }
+        }
+
+        for (auto& [weather, weatherAdjustments] : filteredAdjustments)
+        {
+            if (!weather) continue;
+            CaptureBaselineIfNeeded(weather);
+            auto weatherChanged = false;
+            for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
+            {
+                const auto& adjustment = weatherAdjustments[time];
+                if (!adjustment.Active()) continue;
+                for (const auto colorType : {
+                         RE::TESWeather::ColorType::kEffectLighting,
+                         RE::TESWeather::ColorType::kSunlight,
+                     })
+                {
+                    auto& color = weather->colorData[colorType][time];
+                    if (std::abs(adjustment.brightness - 1.0) > 0.0001)
+                        MultiplyBrightnessColor(color, adjustment.brightness);
+                    if (!adjustment.saturation.empty())
+                    {
+                        double multiplier = 1.0;
+                        for (const auto& component : adjustment.saturation)
+                            multiplier *= 1.0 + ((component.multiplier - 1.0) *
+                                                 ColorHueScale(color, component.hueScales, component.ranges));
+                        SaturateColor(color, multiplier);
+                    }
+                    double hueShift = 0.0;
+                    for (const auto& component : adjustment.hue)
+                        hueShift += ColorHueShiftDegrees(color, component.shift, component.ranges);
+                    ShiftHue(color, hueShift);
+                }
+                weatherChanged = true;
+            }
+            if (weatherChanged) patchedWeathers.insert(weather);
         }
 
         for (const auto& profile : profiles)
         {
             DetailedLogging::Info(
-                "[Effect Lighting] {} | matched={} | pointLightExcluded={}",
+                "[Effect Lighting] {} | matched={} | ownershipExcluded={}",
                 profile.name,
                 profileTargetCounts[profile.name],
-                profileWeatherExclusionCounts[profile.name]);
+                profileOwnershipExclusionCounts[profile.name]);
         }
+        if (activeFilteredRules > 0)
+        {
             DetailedLogging::Info(
-                "[Effect Lighting] apply | stacks={} | targets={}",
+                "[Effect Lighting] filtered sliders | rules={} | targets={}",
+                activeFilteredRules,
+                filteredAdjustments.size());
+        }
+        DetailedLogging::Info(
+            "[Effect Lighting] apply | stacks={} | targets={}",
             weatherGroups.size(),
-            patched);
-        return patched;
+            patchedWeathers.size());
+        return patchedWeathers.size();
     }
 
     void ApplyAllSettings()
@@ -3743,6 +3916,33 @@ namespace MPL::WeatherPatcher
         return GetProfileTargetWeathers(a_profileName, false);
     }
 
+    SourceWeatherSet GetFilterableEffectLightingWeathers(std::string& a_profileName)
+    {
+        SourceWeatherSet result;
+        const auto settings = LoadSettings(a_profileName);
+        if (!settings || !settings->EnableProfile) return result;
+
+        const auto scope = ResolveEffectLightingScope(*settings);
+        const auto pluginOwners = GetActiveWeatherPluginOwners();
+        for (auto* weather : GetFXWeathers())
+        {
+            if (!weather) continue;
+            const bool matchesPluginFilter = RecordFilter::Matches(
+                weather,
+                scope.pluginOwnershipFilter);
+            const bool ownsWeather = scope.ownsPluginWeathers && matchesPluginFilter;
+            if (ShouldTargetEffectLightingWeather(
+                    matchesPluginFilter,
+                    scope.ownsPluginWeathers,
+                    ownsWeather,
+                    EffectLightingWeatherIsClaimed(weather, pluginOwners)))
+            {
+                result.push_back(weather);
+            }
+        }
+        return result;
+    }
+
     bool ProfilesShareWeatherTarget(
         const std::string& a_leftProfile,
         const std::string& a_rightProfile)
@@ -3774,9 +3974,23 @@ namespace MPL::WeatherPatcher
                 return result;
             }
 
-            auto targets = GetProfileTargetWeathers(a_profileName, false);
+            auto targets = rule->domain == TuningUtil::FilteredWeatherDomain::effectLighting ?
+                               GetFilterableEffectLightingWeathers(a_profileName) :
+                               GetProfileTargetWeathers(a_profileName, false);
             const auto& settings = GetOrCreateSettings(a_profileName);
-            const auto globallyIncluded = FilterProfileWeathers(settings, targets, a_profileName);
+            SourceWeatherSet globallyIncluded;
+            if (rule->domain == TuningUtil::FilteredWeatherDomain::effectLighting)
+            {
+                const auto scope = ResolveEffectLightingScope(settings);
+                std::ranges::copy_if(
+                    targets,
+                    std::back_inserter(globallyIncluded),
+                    [&](const auto* a_weather) { return RecordFilter::Matches(a_weather, scope.filter); });
+            }
+            else
+            {
+                globallyIncluded = FilterProfileWeathers(settings, targets, a_profileName);
+            }
             std::unordered_set<RE::FormID> globallyIncludedFormIDs;
             for (const auto* weather : globallyIncluded)
             {
@@ -3861,18 +4075,30 @@ namespace MPL::WeatherPatcher
         auto rightProfile = a_rightProfile;
         const auto& left = TuningUtil::GetSettings(leftProfile);
         const auto& right = TuningUtil::GetSettings(rightProfile);
-        const auto leftFilter = RecordFilter::Resolve(
-            left.effectLightingInclusions,
-            left.effectLightingExclusions,
-            left.effectLightingPluginInclusions,
-            left.effectLightingPluginExclusions);
-        const auto rightFilter = RecordFilter::Resolve(
-            right.effectLightingInclusions,
-            right.effectLightingExclusions,
-            right.effectLightingPluginInclusions,
-            right.effectLightingPluginExclusions);
-        return std::ranges::any_of(GetFXWeathers(), [&](const auto* a_weather)
-            { return RecordFilter::Matches(a_weather, leftFilter) && RecordFilter::Matches(a_weather, rightFilter); });
+        const auto leftScope = ResolveEffectLightingScope(left);
+        const auto rightScope = ResolveEffectLightingScope(right);
+        const auto pluginOwners = GetActiveWeatherPluginOwners();
+        return std::ranges::any_of(
+            GetFXWeathers(),
+            [&](const auto* a_weather)
+            {
+                const bool claimed = EffectLightingWeatherIsClaimed(
+                    a_weather,
+                    pluginOwners);
+                const auto targets = [&](const EffectLightingScope& a_scope)
+                {
+                    const bool ownsWeather = a_scope.ownsPluginWeathers &&
+                                             RecordFilter::Matches(
+                                                 a_weather,
+                                                 a_scope.pluginOwnershipFilter);
+                    return ShouldTargetEffectLightingWeather(
+                        RecordFilter::Matches(a_weather, a_scope.filter),
+                        a_scope.ownsPluginWeathers,
+                        ownsWeather,
+                        claimed);
+                };
+                return targets(leftScope) && targets(rightScope);
+            });
     }
 
     std::optional<std::string> NormalizePresetPathComponent(

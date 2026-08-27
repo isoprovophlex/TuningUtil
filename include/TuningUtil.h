@@ -12,6 +12,12 @@ namespace MPL::TuningUtil
         hueShift,
     };
 
+    enum class FilteredWeatherDomain
+    {
+        weather,
+        effectLighting,
+    };
+
     struct FilteredWeatherSetting
     {
         FilteredWeatherOperation operation = FilteredWeatherOperation::brightness;
@@ -27,6 +33,7 @@ namespace MPL::TuningUtil
     {
         std::string id;
         std::string controlID;
+        FilteredWeatherDomain domain = FilteredWeatherDomain::weather;
         std::vector<FilteredWeatherSetting> settings;
         std::array<bool, RE::TESWeather::ColorTime::kTotal> times{};
         WeatherFilter include;
@@ -70,6 +77,36 @@ namespace MPL::TuningUtil
         bool operator==(const FilteredLightingTemplateRule&) const = default;
     };
 
+    enum class FilteredBaseLightOperation
+    {
+        brightness,
+        sunlight,
+        saturation,
+        hueScale,
+        hueShift,
+    };
+
+    struct FilteredBaseLightSetting
+    {
+        FilteredBaseLightOperation operation = FilteredBaseLightOperation::brightness;
+        std::optional<std::string> hue;
+        double scale = 1.0;
+
+        bool operator==(const FilteredBaseLightSetting&) const = default;
+    };
+
+    struct FilteredBaseLightRule
+    {
+        std::string id;
+        std::string controlID;
+        std::vector<FilteredBaseLightSetting> settings;
+        WeatherFilter include;
+        WeatherFilter exclude;
+        double defaultValue = 1.0;
+
+        bool operator==(const FilteredBaseLightRule&) const = default;
+    };
+
     struct Profile
     {
         std::string name;
@@ -78,6 +115,7 @@ namespace MPL::TuningUtil
         std::vector<std::string> defaultSettingRoots;
         std::vector<FilteredWeatherRule> filteredWeatherRules;
         std::vector<FilteredLightingTemplateRule> filteredLightingTemplateRules;
+        std::vector<FilteredBaseLightRule> filteredBaseLightRules;
         std::vector<std::string> interiorSliderSettings;
         std::vector<std::string> ignoredInteriorSliderLinks;
     };
@@ -98,6 +136,8 @@ namespace MPL::TuningUtil
     const FilteredWeatherRule* FindFilteredWeatherRule(const std::string&, std::string_view);
     const std::vector<FilteredLightingTemplateRule>& GetFilteredLightingTemplateRules(const std::string&);
     const FilteredLightingTemplateRule* FindFilteredLightingTemplateRule(const std::string&, std::string_view);
+    const std::vector<FilteredBaseLightRule>& GetFilteredBaseLightRules(const std::string&);
+    const FilteredBaseLightRule* FindFilteredBaseLightRule(const std::string&, std::string_view);
     bool IgnoresInteriorSliderLink(std::span<const std::string>, std::string_view);
     bool ReloadFilteredRules();
     Settings& GetSettings(std::string&);

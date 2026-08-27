@@ -55,8 +55,8 @@ namespace MPL::TuningUtil
         WeatherPatcher::ImageSpaceSettings exteriorImageSpace;
 
         WeatherPatcher::FXEffectLightingSettings fxEffectLighting;
-        WeatherFilter effectLightingInclusions;
-        WeatherFilter effectLightingExclusions;
+        WeatherFilter effectPointLightInclusions;
+        WeatherFilter effectPointLightExclusions;
         PluginFilter effectLightingPluginInclusions;
         PluginFilter effectLightingPluginExclusions;
 
@@ -75,6 +75,6 @@ namespace MPL::TuningUtil
         std::vector<std::string> enableTemplateInherit;
         std::vector<std::string> cellExclusions;
         LightingPatcher::PointLightSettings pointLights;
-        std::vector<std::string> pointLightEffectLightingExclusions;
+        std::map<std::string, double> filteredBaseLightAdjustments;
     };
 }  // namespace MPL::TuningUtil

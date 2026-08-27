@@ -11,5 +11,6 @@ namespace MPL::LightingPatcher
     void ReleaseRuntimeState();
     bool ProfilesShareInteriorTarget(const std::string&, const std::string&);
     bool ProfilesShareFilteredLightingTemplateTarget(const std::string&, const std::string&, std::string_view);
+    bool ProfilesShareFilteredBaseLightTarget(const std::string&, const std::string&, std::string_view);
 
 }  // namespace MPL::LightingPatcher

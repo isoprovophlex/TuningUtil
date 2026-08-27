@@ -252,25 +252,27 @@ namespace MPL::SliderSettingCatalog
                 1.0);
             AddImageSpace(entries, Domain::lighting, "Image Space", "intImageSpace");
             Add(entries, Domain::lighting, "Effect Lighting", "Brightness",
-                "fxEffectLighting.brightnessMultiplier", {}, {}, FilterOperation::none, false, false, false, 1.0);
+                "fxEffectLighting.brightnessMultiplier", "effectLighting", {}, FilterOperation::brightness, false, false, false, 1.0);
             Add(entries, Domain::lighting, "Effect Lighting", "Saturation",
-                "fxEffectLighting.saturationMultiplier", {}, {}, FilterOperation::none, false, false, false, 1.0);
+                "fxEffectLighting.saturationMultiplier", "effectLighting", {}, FilterOperation::saturation, false, false, false, 1.0);
             for (const auto& hue : hues)
                 Add(entries, Domain::lighting, "Effect Lighting", std::string("Hue Shift / ") + std::string(hue.label),
-                    "fxEffectLighting.hueShift." + std::string(hue.key));
+                    "fxEffectLighting.hueShift." + std::string(hue.key),
+                    "effectLighting", hue.key, FilterOperation::hueShift);
             Add(entries, Domain::lighting, "Point Lights", "Brightness", "pointLights.fadeMultiplier",
-                {}, {}, FilterOperation::none, false, false, false, 1.0);
+                "brightness", {}, FilterOperation::brightness, false, false, false, 1.0);
             Add(entries, Domain::lighting, "Point Lights", "Sunlight", "pointLights.sunlightFadeMultiplier",
-                {}, {}, FilterOperation::none, false, false, false, 1.0);
+                "sunlight", {}, FilterOperation::brightness, false, false, false, 1.0);
             Add(entries, Domain::lighting, "Point Lights", "Saturation", "pointLights.saturationMultiplier",
-                {}, {}, FilterOperation::none, false, false, false, 1.0);
+                "saturation", {}, FilterOperation::saturation, false, false, false, 1.0);
             for (const auto& hue : hues)
             {
                 Add(entries, Domain::lighting, "Point Lights", std::string("Saturation Scale / ") + std::string(hue.label),
                     "pointLights.hueScales." + std::string(hue.key),
-                    {}, {}, FilterOperation::none, false, false, false, 1.0);
+                    "hueScale", hue.key, FilterOperation::saturation, false, false, false, 1.0);
                 Add(entries, Domain::lighting, "Point Lights", std::string("Hue Shift / ") + std::string(hue.label),
-                    "pointLights.hueShift." + std::string(hue.key));
+                    "pointLights.hueShift." + std::string(hue.key),
+                    "hueShift", hue.key, FilterOperation::hueShift);
             }
             return entries;
         }
