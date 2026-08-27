@@ -31,9 +31,6 @@ endif()
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG OFF)
 
-set(BUILD_TESTS OFF CACHE BOOL "Disable CommonLibSSE tests" FORCE)
-add_subdirectory(extern/CommonLibSSE)
-
 include(CMake/headerlist.cmake)
 include(CMake/sourcelist.cmake)
 
@@ -60,6 +57,8 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/Heliosphan/include
 )
 
+find_package(CommonLibSSE CONFIG REQUIRED)
+find_package(DirectXTK CONFIG REQUIRED)
 find_package(reflectcpp CONFIG REQUIRED)
 
 target_link_libraries(
@@ -126,6 +125,45 @@ if(TUNINGUTIL_BUILD_TESTS)
   target_include_directories(SliderCreatorTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(SliderCreatorTests PRIVATE reflectcpp::reflectcpp)
 
+  set(
+    TUNINGUTIL_ADDRESS_LIBRARY_1_7_99
+    ""
+    CACHE FILEPATH
+    "Path to the exact Skyrim 1.7.99 Address Library binary"
+  )
+
+  if(NOT TUNINGUTIL_ADDRESS_LIBRARY_1_7_99 AND DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    find_file(
+      TUNINGUTIL_PACKAGED_ADDRESS_LIBRARY_1_7_99
+      NAMES versionlib-1-7-99-0.bin
+      PATHS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/commonlibsse-ng/test-data"
+      NO_DEFAULT_PATH
+    )
+    if(TUNINGUTIL_PACKAGED_ADDRESS_LIBRARY_1_7_99)
+      set(
+        TUNINGUTIL_ADDRESS_LIBRARY_1_7_99
+        "${TUNINGUTIL_PACKAGED_ADDRESS_LIBRARY_1_7_99}"
+        CACHE FILEPATH
+        "Path to the exact Skyrim 1.7.99 Address Library binary"
+        FORCE
+      )
+    endif()
+  endif()
+
+  if(TUNINGUTIL_ADDRESS_LIBRARY_1_7_99)
+    add_executable(
+      TuningUtilAddressLibraryTests
+      tests/AddressLibrary1799Tests.cpp
+    )
+    target_compile_features(TuningUtilAddressLibraryTests PRIVATE cxx_std_23)
+    target_include_directories(TuningUtilAddressLibraryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(TuningUtilAddressLibraryTests PRIVATE ENABLE_COMMONLIBSSE_TESTING=1)
+    target_link_libraries(TuningUtilAddressLibraryTests PRIVATE CommonLibSSE::CommonLibSSE)
+    target_precompile_headers(TuningUtilAddressLibraryTests PRIVATE include/PCH.h)
+  else()
+    message(WARNING "The exact Skyrim 1.7.99 Address Library loader test is unavailable.")
+  endif()
+
   if(MSVC)
     foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests)
       target_compile_options(
@@ -136,8 +174,23 @@ if(TUNINGUTIL_BUILD_TESTS)
           /Zc:preprocessor
       )
     endforeach()
+    if(TARGET TuningUtilAddressLibraryTests)
+      target_compile_options(
+        TuningUtilAddressLibraryTests
+        PRIVATE
+          /utf-8
+          /permissive-
+          /Zc:preprocessor
+      )
+    endif()
   endif()
 
   add_test(NAME JsonOverlayTests COMMAND JsonOverlayTests)
   add_test(NAME SliderCreatorTests COMMAND SliderCreatorTests)
+  if(TARGET TuningUtilAddressLibraryTests)
+    add_test(
+      NAME TuningUtilAddressLibrary1799
+      COMMAND TuningUtilAddressLibraryTests "${TUNINGUTIL_ADDRESS_LIBRARY_1_7_99}"
+    )
+  endif()
 endif()

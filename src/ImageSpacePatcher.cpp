@@ -181,20 +181,16 @@ namespace MPL::ImageSpacePatcher
                 return;
             }
 
-            const auto synchronize = [&](auto& a_runtime)
+            const auto* stat = Config::StatData::GetSingleton();
+            auto* currentBaseData = manager->GetCurrentBaseData();
+            const auto currentBaseIsRecord = std::ranges::any_of(
+                stat->imageSpaceBaselines,
+                [&](const auto& a_entry) { return &a_entry.first->data == currentBaseData; });
+            if (currentBaseData && !currentBaseIsRecord)
             {
-                const auto* stat = Config::StatData::GetSingleton();
-                const auto currentBaseIsRecord = std::ranges::any_of(
-                    stat->imageSpaceBaselines,
-                    [&](const auto& a_entry) { return &a_entry.first->data == a_runtime.currentBaseData; });
-                if (a_runtime.currentBaseData && !currentBaseIsRecord)
-                {
-                    CopyAdjustedFields(*a_runtime.currentBaseData, imageSpace->data);
-                }
-                CopyAdjustedFields(a_runtime.data.baseData, imageSpace->data);
-            };
-            if (REL::Module::IsVR()) synchronize(manager->GetVRRuntimeData());
-            else synchronize(manager->GetRuntimeData());
+                CopyAdjustedFields(*currentBaseData, imageSpace->data);
+            }
+            CopyAdjustedFields(manager->GetImageSpaceData().baseData, imageSpace->data);
         }
 
         const ImageSpaceSet& GetInteriorImageSpaces()
