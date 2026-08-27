@@ -9,6 +9,12 @@
 
 namespace MPL::SliderCreator
 {
+    enum class FilterDomain
+    {
+        weather,
+        lightingTemplate,
+    };
+
     inline constexpr std::array<std::string_view, 4> kRequiredProfileModuleKinds{
         "profileActions",
         "enableProfile",
@@ -29,6 +35,7 @@ namespace MPL::SliderCreator
     {
         std::vector<std::string> formIDs;
         std::vector<std::string> contains;
+        std::vector<std::string> locationTypes;
     };
 
     struct HueScales
@@ -54,6 +61,7 @@ namespace MPL::SliderCreator
         std::vector<Target> settings;
         std::optional<HueScales> hueScales;
         bool filtered = true;
+        FilterDomain filterDomain = FilterDomain::weather;
         bool invert = false;
         bool useTimes = false;
         std::array<bool, 4> times{ true, true, true, true };

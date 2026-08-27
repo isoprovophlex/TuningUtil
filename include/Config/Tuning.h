@@ -67,10 +67,14 @@ namespace MPL::TuningUtil
         WeatherPatcher::HueRanges intHueRanges;
         double intFogMaxMultiplier = 1.0;
         WeatherPatcher::ImageSpaceSettings intImageSpace;
-        WeatherFilter lightingTemplateInclusions;
-        WeatherFilter lightingTemplateExclusions;
+        std::vector<std::string> lightingTemplateInclusions;
+        std::vector<std::string> lightingTemplateExclusions;
         PluginFilter lightingTemplatePluginInclusions;
         PluginFilter lightingTemplatePluginExclusions;
+        std::map<std::string, double> filteredLightingTemplateAdjustments;
+        std::vector<std::string> enableTemplateInherit;
+        std::vector<std::string> cellExclusions;
         LightingPatcher::PointLightSettings pointLights;
+        std::vector<std::string> pointLightEffectLightingExclusions;
     };
 }  // namespace MPL::TuningUtil

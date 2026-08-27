@@ -4,7 +4,6 @@
 #include <LightingPatcher.h>
 #include <RecordFilter.h>
 #include <RE/M/Main.h>
-#include <RE/U/UI.h>
 #include <RE/U/UIBlurManager.h>
 #include <RegionRuntime.h>
 #include <SKSEMenuFramework.h>
@@ -16,7 +15,7 @@
 #include <TuningUtil.h>
 #include <WeatherLock.h>
 #include <WeatherPatcher.h>
-#include <WeatherSyncClient.h>
+#include <WeatherRuntime.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -30,7 +29,6 @@
 #include <optional>
 #include <ranges>
 #include <span>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -55,12 +53,10 @@ namespace MPL::TuningMenu
             bool freezeTimeEnabled = true;
             bool backgroundBlurEnabled = true;
             bool lumaRenderedThisFrame = false;
-            bool lumaVisitedThisSession = false;
             bool active = false;
             bool blurContributionRemoved = false;
-            std::uint16_t blurCountBeforeOverride = 0;
-            std::uint16_t expectedBlurCountAfterClose = 0;
-            std::atomic<std::uint64_t> closeCleanupGeneration{ 0 };
+            std::atomic_bool openInitializationPending{ false };
+            std::atomic_bool closeCleanupPending{ false };
         };
 
         struct ButtonFeedbackStyle
@@ -204,6 +200,19 @@ namespace MPL::TuningMenu
                 a_target);
         }
 
+        bool SliderTargetIgnoresLink(const MenuControl::SliderTargetValue& a_target)
+        {
+            const auto* target = std::get_if<MenuControl::SliderTarget>(&a_target);
+            return target && target->ignoreLink;
+        }
+
+        bool IsInteriorLinkableSliderSetting(const std::string_view a_setting)
+        {
+            return a_setting.starts_with("intBrightnessMultiplier.") ||
+                   a_setting.starts_with("intSaturationMultiplier.") ||
+                   a_setting.starts_with("intHueShift.");
+        }
+
         struct MenuPage
         {
             std::string title;
@@ -324,6 +333,7 @@ namespace MPL::TuningMenu
             SliderCreator::Filter include;
             SliderCreator::Filter exclude;
             RE::TESWeather* selectedWeather = nullptr;
+            RE::BGSLightingTemplate* selectedLightingTemplate = nullptr;
             int catalogGroup = 0;
             int catalogSetting = 0;
             float pendingScale = 1.0f;
@@ -406,6 +416,7 @@ namespace MPL::TuningMenu
         {
             lightingTemplate,
             effectLighting,
+            region,
         };
 
         struct NamedLinkable
@@ -450,6 +461,13 @@ namespace MPL::TuningMenu
                     *hueShift = direct;
                 }
             }
+
+            void ResolveWithoutLink()
+            {
+                if (!link) return;
+                if (scalar) resolved = *scalar;
+                else if (hueShift && hueBand) resolved = (*hueShift).*hueBand;
+            }
         };
 
         std::optional<SliderSetting> FindSliderSetting(TuningUtil::Settings&, std::string_view);
@@ -484,6 +502,7 @@ namespace MPL::TuningMenu
         std::unordered_map<std::string, std::vector<WeatherMenuEntry>> sliderCreatorWeatherEntries;
         std::optional<std::vector<RecordMenuEntry>> lightingTemplateMenuEntries;
         std::optional<std::vector<RecordMenuEntry>> effectLightingMenuEntries;
+        std::optional<std::vector<RecordMenuEntry>> regionMenuEntries;
         std::unordered_map<std::string, PresetVisualState> presetVisualStates;
         std::unordered_map<std::string, int> profilePriorityInputs;
         std::unordered_map<std::string, bool> weatherLockPreferences;
@@ -496,7 +515,7 @@ namespace MPL::TuningMenu
         std::string profileCopySource;
         std::string activeWeatherLockProfile;
         std::string activeMenuPage;
-        bool menuFrameworkOpen = false;
+        std::atomic_bool menuFrameworkOpen{ false };
         bool editModeEnabled = false;
         bool lightPlacerCommitPending = false;
         MenuEffectOverride menuEffectOverride;
@@ -663,6 +682,11 @@ namespace MPL::TuningMenu
 
         void DiscardAllLayoutEditSessions()
         {
+            if (layoutEditSessions.empty())
+            {
+                return;
+            }
+
             std::vector<std::string> profiles;
             profiles.reserve(layoutEditSessions.size());
             for (const auto& [profile, session] : layoutEditSessions)
@@ -762,11 +786,13 @@ namespace MPL::TuningMenu
                 std::pair{ "All Hues is a creator shortcut; direct sliders must store its seven individual hue bands.", "sliderCreatorDirectAllHues" },
                 std::pair{ "A direct link requires only linkable, unfiltered settings.", "sliderCreatorInvalidDirectLink" },
                 std::pair{ "Filtered sliders support only weather brightness, saturation, and hue-shift settings.", "sliderCreatorFilteredUnsupportedSetting" },
+                std::pair{ "Lighting Template filters support only interior brightness settings.", "sliderCreatorFilteredLightingUnsupportedSetting" },
+                std::pair{ "Time filters, local links, and saturation scales apply only to filtered weather sliders.", "sliderCreatorLightingWeatherFeatures" },
                 std::pair{ "Every setting in a filtered slider must use the same operation.", "sliderCreatorMixedFilteredOperations" },
                 std::pair{ "The local link must name a target supported by this filtered operation.", "sliderCreatorInvalidLocalLink" },
-                std::pair{ "Slider-specific hue scales are supported only by filtered saturation sliders.", "sliderCreatorHueScalesRequireSaturation" },
-                std::pair{ "Local links and slider-specific hue scales require a filtered weather slider.", "sliderCreatorLocalFeaturesRequireFilter" },
-                std::pair{ "Every slider-specific hue scale must be a finite number.", "sliderCreatorInvalidHueScale" },
+                std::pair{ "Slider-specific saturation scales are supported only by filtered saturation sliders.", "sliderCreatorHueScalesRequireSaturation" },
+                std::pair{ "Local links and slider-specific saturation scales require a filtered weather slider.", "sliderCreatorLocalFeaturesRequireFilter" },
+                std::pair{ "Every slider-specific saturation scale must be a finite number.", "sliderCreatorInvalidHueScale" },
                 std::pair{ "Select at least one time of day or disable the time filter.", "sliderCreatorNoTimeSelected" },
                 std::pair{ "The slider minimum must be lower than its maximum.", "sliderCreatorInvalidRange" },
                 std::pair{ "The slider step cannot be negative.", "sliderCreatorNegativeStep" },
@@ -978,7 +1004,6 @@ namespace MPL::TuningMenu
         void DisableFrameworkEffectsForLuma()
         {
             menuEffectOverride.lumaRenderedThisFrame = true;
-            menuEffectOverride.lumaVisitedThisSession = true;
 
             if (menuEffectOverride.freezeTimeEnabled)
             {
@@ -998,8 +1023,6 @@ namespace MPL::TuningMenu
             {
                 if (auto* blur = RE::UIBlurManager::GetSingleton())
                 {
-                    menuEffectOverride.blurCountBeforeOverride = blur->blurCount;
-                    menuEffectOverride.expectedBlurCountAfterClose = blur->blurCount > 0 ? blur->blurCount - 1 : 0;
                     if (blur->blurCount > 0)
                     {
                         blur->DecrementBlurCount();
@@ -1010,7 +1033,7 @@ namespace MPL::TuningMenu
             logger::debug("Temporarily disabled SKSE Menu Framework freeze/blur effects for a Luma profile");
         }
 
-        void RestoreFrameworkEffects(const bool a_menuRemainsOpen)
+        void RestoreFrameworkEffects()
         {
             if (!menuEffectOverride.active)
             {
@@ -1021,7 +1044,7 @@ namespace MPL::TuningMenu
             {
                 if (auto* main = RE::Main::GetSingleton())
                 {
-                    main->GetRuntimeData().freezeTime = a_menuRemainsOpen;
+                    main->GetRuntimeData().freezeTime = true;
                 }
             }
 
@@ -1029,24 +1052,12 @@ namespace MPL::TuningMenu
             {
                 if (auto* blur = RE::UIBlurManager::GetSingleton())
                 {
-                    if (a_menuRemainsOpen)
-                    {
-                        blur->IncrementBlurCount();
-                    }
-                    else
-                    {
-                        const auto targetCount = static_cast<std::uint16_t>(menuEffectOverride.blurCountBeforeOverride - 1);
-                        while (blur->blurCount < targetCount)
-                        {
-                            blur->IncrementBlurCount();
-                        }
-                    }
+                    blur->IncrementBlurCount();
                 }
             }
 
             menuEffectOverride.active = false;
             menuEffectOverride.blurContributionRemoved = false;
-            menuEffectOverride.blurCountBeforeOverride = 0;
             logger::debug("Restored SKSE Menu Framework freeze/blur effects after leaving a Luma profile");
         }
 
@@ -1057,97 +1068,43 @@ namespace MPL::TuningMenu
                 return;
             }
 
-            // SKSE Menu Framework 3.13 dispatches its close event after releasing its own freeze and blur effects.
-            // Restoring the contribution here would reintroduce both effects after the panel is already closed.
+            // Menu Framework owns the final release for the now-closed window later in this render cycle.
             menuEffectOverride.active = false;
             menuEffectOverride.blurContributionRemoved = false;
-            menuEffectOverride.blurCountBeforeOverride = 0;
         }
 
-        void ReconcileClosedMenuState(
-            const std::uint64_t a_generation,
-            const bool a_reconcileFreeze,
-            const bool a_reconcileBlur,
-            const std::uint16_t a_expectedBlurCount)
+        void InitializeOpenedMenuState()
         {
-            if (menuEffectOverride.closeCleanupGeneration.load() != a_generation)
-            {
-                return;
-            }
-            if (const auto* mainWindow = SKSEMenuFramework::GetMainWindow(); mainWindow && mainWindow->IsOpen.load())
-            {
-                return;
-            }
-
-            // Menu Framework can deliver a final render after its close event. Keep the runtime
-            // weather guard off during the same delayed cleanup window used for freeze and blur.
             if (WeatherLock::IsEnabled())
             {
                 WeatherLock::SetEnabled(false);
             }
-
-            auto* ui = RE::UI::GetSingleton();
-            const auto gameIsPaused = ui && ui->GameIsPaused();
-            if (a_reconcileFreeze && !gameIsPaused)
-            {
-                if (auto* main = RE::Main::GetSingleton())
-                {
-                    auto& freezeTime = main->GetRuntimeData().freezeTime;
-                    if (freezeTime)
-                    {
-                        freezeTime = false;
-                    }
-                }
-            }
-
-            if (a_reconcileBlur && !gameIsPaused)
-            {
-                if (auto* blur = RE::UIBlurManager::GetSingleton(); blur && blur->blurCount > a_expectedBlurCount)
-                {
-                    while (blur->blurCount > a_expectedBlurCount)
-                    {
-                        const auto countBeforeDecrement = blur->blurCount;
-                        blur->DecrementBlurCount();
-                        if (blur->blurCount >= countBeforeDecrement)
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
+            WeatherLock::SetSelectedWeather(nullptr);
+            activeWeatherLockProfile.clear();
         }
 
-        void ScheduleClosedMenuStateReconciliation(
-            const bool a_reconcileFreeze,
-            const bool a_reconcileBlur,
-            const std::uint16_t a_expectedBlurCount)
+        void FinalizeClosedMenuState(const bool a_menuReopened)
         {
-            const auto generation = ++menuEffectOverride.closeCleanupGeneration;
-            std::thread(
-                [generation, a_reconcileFreeze, a_reconcileBlur, a_expectedBlurCount]()
-                {
-                    for (std::uint8_t check = 0; check < 10; ++check)
-                    {
-                        std::this_thread::sleep_for(100ms);
-                        if (menuEffectOverride.closeCleanupGeneration.load() != generation)
-                        {
-                            return;
-                        }
-                        if (const auto* tasks = SKSE::GetTaskInterface())
-                        {
-                            tasks->AddTask(
-                                [generation, a_reconcileFreeze, a_reconcileBlur, a_expectedBlurCount]()
-                                {
-                                    ReconcileClosedMenuState(
-                                        generation,
-                                        a_reconcileFreeze,
-                                        a_reconcileBlur,
-                                        a_expectedBlurCount);
-                                });
-                        }
-                    }
-                })
-                .detach();
+            DiscardAllLayoutEditSessions();
+            if (lightPlacerCommitPending)
+            {
+                lightPlacerCommitPending = false;
+                TuningUtil::ApplySettings(true);
+            }
+            WeatherLock::SetEnabled(false);
+            WeatherLock::SetSelectedWeather(nullptr);
+            activeWeatherLockProfile.clear();
+            statusMessage.clear();
+            settingsStatusMessage.clear();
+            if (a_menuReopened)
+            {
+                RestoreFrameworkEffects();
+            }
+            else
+            {
+                ReleaseFrameworkEffectsAfterClose();
+            }
+            menuEffectOverride.lumaRenderedThisFrame = false;
         }
 
         void __stdcall HandleMenuFrameworkEvent(const SKSEMenuFramework::Model::EventType a_event)
@@ -1155,59 +1112,36 @@ namespace MPL::TuningMenu
             switch (a_event)
             {
             case SKSEMenuFramework::Model::kOpenMenu:
-                ++menuEffectOverride.closeCleanupGeneration;
-                menuFrameworkOpen = true;
-                menuEffectOverride.lumaVisitedThisSession = false;
-                menuEffectOverride.expectedBlurCountAfterClose = 0;
-                if (WeatherLock::IsEnabled())
-                {
-                    WeatherLock::SetEnabled(false);
-                }
-                WeatherLock::SetSelectedWeather(nullptr);
-                activeWeatherLockProfile.clear();
-                [[fallthrough]];
+                menuFrameworkOpen.store(true, std::memory_order_release);
+                menuEffectOverride.openInitializationPending.store(true, std::memory_order_release);
+                break;
             case SKSEMenuFramework::Model::kBeforeRender:
+                if (menuEffectOverride.closeCleanupPending.exchange(false, std::memory_order_acq_rel))
+                {
+                    FinalizeClosedMenuState(menuFrameworkOpen.load(std::memory_order_acquire));
+                }
+                if (menuEffectOverride.openInitializationPending.exchange(false, std::memory_order_acq_rel))
+                {
+                    InitializeOpenedMenuState();
+                }
                 menuEffectOverride.lumaRenderedThisFrame = false;
-                if (menuFrameworkOpen)
+                if (menuFrameworkOpen.load(std::memory_order_acquire))
                 {
                     WeatherLock::Maintain();
                 }
                 break;
             case SKSEMenuFramework::Model::kAfterRender:
-                if (!menuEffectOverride.lumaRenderedThisFrame)
+                if (menuFrameworkOpen.load(std::memory_order_acquire) &&
+                    !menuEffectOverride.lumaRenderedThisFrame)
                 {
-                    RestoreFrameworkEffects(true);
+                    RestoreFrameworkEffects();
                 }
                 break;
             case SKSEMenuFramework::Model::kCloseMenu:
-                {
-                    DiscardAllLayoutEditSessions();
-                    if (lightPlacerCommitPending)
-                    {
-                        lightPlacerCommitPending = false;
-                        TuningUtil::ApplySettings(true);
-                    }
-                    const auto weatherLockWasEnabled = WeatherLock::IsEnabled();
-                    menuFrameworkOpen = false;
-                    WeatherLock::SetEnabled(false);
-                    WeatherLock::SetSelectedWeather(nullptr);
-                    activeWeatherLockProfile.clear();
-                    statusMessage.clear();
-                    settingsStatusMessage.clear();
-                    const auto reconcileEffects = menuEffectOverride.lumaVisitedThisSession;
-                    const auto expectedBlurCount = menuEffectOverride.expectedBlurCountAfterClose;
-                    ReleaseFrameworkEffectsAfterClose();
-                    menuEffectOverride.lumaRenderedThisFrame = false;
-                    menuEffectOverride.lumaVisitedThisSession = false;
-                    if (reconcileEffects || weatherLockWasEnabled)
-                    {
-                        ScheduleClosedMenuStateReconciliation(
-                            menuEffectOverride.freezeTimeEnabled,
-                            menuEffectOverride.backgroundBlurEnabled,
-                            expectedBlurCount);
-                    }
-                    break;
-                }
+                menuFrameworkOpen.store(false, std::memory_order_release);
+                menuEffectOverride.openInitializationPending.store(false, std::memory_order_release);
+                menuEffectOverride.closeCleanupPending.store(true, std::memory_order_release);
+                break;
             default:
                 break;
             }
@@ -1322,6 +1256,77 @@ namespace MPL::TuningMenu
             return std::clamp(a_minimum + (steps * a_step), a_minimum, a_maximum);
         }
 
+        std::optional<float> SliderNeutralValue(const std::string_view a_setting)
+        {
+            const auto neutralValue = SliderSettingCatalog::NeutralValue(a_setting);
+            if (!neutralValue || !std::isfinite(*neutralValue))
+            {
+                return std::nullopt;
+            }
+            return static_cast<float>(*neutralValue);
+        }
+
+        std::optional<float> ControlNeutralValue(const MenuControl& a_control)
+        {
+            if (a_control.invert)
+            {
+                return std::nullopt;
+            }
+            if (a_control.settings.empty())
+            {
+                return SliderNeutralValue(a_control.setting);
+            }
+
+            std::optional<float> result;
+            for (const auto& target : a_control.settings)
+            {
+                const auto neutral = SliderNeutralValue(SliderTargetPath(target));
+                if (!neutral || (result && std::abs(*result - *neutral) > 0.0001f))
+                {
+                    return std::nullopt;
+                }
+                result = neutral;
+            }
+            return result;
+        }
+
+        bool HasCenteredNeutral(
+            const std::optional<float> a_neutral,
+            const float a_minimum,
+            const float a_maximum)
+        {
+            return a_neutral && std::isfinite(*a_neutral) &&
+                   *a_neutral > a_minimum && *a_neutral < a_maximum;
+        }
+
+        float SliderPositionFromValue(
+            const float a_value,
+            const float a_minimum,
+            const float a_maximum,
+            const float a_neutral)
+        {
+            const auto value = std::clamp(a_value, a_minimum, a_maximum);
+            if (value <= a_neutral)
+            {
+                return 0.5f * (value - a_minimum) / (a_neutral - a_minimum);
+            }
+            return 0.5f + (0.5f * (value - a_neutral) / (a_maximum - a_neutral));
+        }
+
+        float SliderValueFromPosition(
+            const float a_position,
+            const float a_minimum,
+            const float a_maximum,
+            const float a_neutral)
+        {
+            const auto position = std::clamp(a_position, 0.0f, 1.0f);
+            if (position <= 0.5f)
+            {
+                return a_minimum + ((a_neutral - a_minimum) * position * 2.0f);
+            }
+            return a_neutral + ((a_maximum - a_neutral) * (position - 0.5f) * 2.0f);
+        }
+
         enum class SliderInputRange
         {
             standard,
@@ -1336,7 +1341,8 @@ namespace MPL::TuningMenu
             const float a_step,
             const char* a_format,
             const float a_width = 0.0f,
-            const SliderInputRange a_inputRange = SliderInputRange::standard)
+            const SliderInputRange a_inputRange = SliderInputRange::standard,
+            const std::optional<float> a_neutralValue = std::nullopt)
         {
             constexpr auto inputWidth = 80.0f;
             auto changed = false;
@@ -1346,9 +1352,32 @@ namespace MPL::TuningMenu
             const auto sliderID = "##Slider" + a_id;
             if (!visibleLabel.empty()) ImGuiMCP::TextUnformatted(visibleLabel.c_str());
             if (a_width != 0.0f) ImGuiMCP::SetNextItemWidth(a_width);
-            if (ImGuiMCP::SliderFloat(sliderID.c_str(), &sliderValue, a_minimum, a_maximum, ""))
+            const auto centered = HasCenteredNeutral(a_neutralValue, a_minimum, a_maximum);
+            auto sliderPosition = centered ?
+                                      SliderPositionFromValue(
+                                          sliderValue,
+                                          a_minimum,
+                                          a_maximum,
+                                          *a_neutralValue) :
+                                      sliderValue;
+            if (ImGuiMCP::SliderFloat(
+                    sliderID.c_str(),
+                    &sliderPosition,
+                    centered ? 0.0f : a_minimum,
+                    centered ? 1.0f : a_maximum,
+                    ""))
             {
-                a_value = SnapSliderValue(sliderValue, a_minimum, a_maximum, a_step);
+                const auto rawValue = centered ?
+                                          SliderValueFromPosition(
+                                              sliderPosition,
+                                              a_minimum,
+                                              a_maximum,
+                                              *a_neutralValue) :
+                                          sliderPosition;
+                a_value = centered && a_step > 0.0f &&
+                                  std::abs(rawValue - *a_neutralValue) <= a_step * 0.5f ?
+                              *a_neutralValue :
+                              SnapSliderValue(rawValue, a_minimum, a_maximum, a_step);
                 changed = true;
             }
 
@@ -1396,7 +1425,9 @@ namespace MPL::TuningMenu
                 a_maximum,
                 style.step,
                 format,
-                style.width);
+                style.width,
+                SliderInputRange::standard,
+                SliderNeutralValue(a_setting));
         }
 
         bool DrawDynamicAmbientRangeSlider(
@@ -1810,7 +1841,7 @@ namespace MPL::TuningMenu
                 return;
             }
 
-            const auto filteredRulesChanged = TuningUtil::ReloadFilteredWeatherRules();
+            const auto filteredRulesChanged = TuningUtil::ReloadFilteredRules();
 
             std::vector<LoadedMenu> loaded;
             const auto& tuningProfiles = TuningUtil::GetProfiles();
@@ -1820,9 +1851,12 @@ namespace MPL::TuningMenu
                     { return a_candidate.directory == file.path.parent_path(); });
                 if (profile == tuningProfiles.end())
                 {
-                    logger::warn(
-                        "Ignored SKSE profile menu definition {} because its folder has no profileSettings.json profile",
-                        file.path.string());
+                    if (!TuningUtil::IsProfilePluginFiltered(file.path.parent_path()))
+                    {
+                        logger::warn(
+                            "Ignored SKSE profile menu definition {} because its folder has no profileSettings.json profile",
+                            file.path.string());
+                    }
                     continue;
                 }
                 if (auto definition = ReadMenuDefinition(
@@ -1912,7 +1946,9 @@ namespace MPL::TuningMenu
                     maximum,
                     sliderDefaults.step,
                     format,
-                    sliderDefaults.width))
+                    sliderDefaults.width,
+                    SliderInputRange::standard,
+                    ControlNeutralValue(a_control)))
             {
                 setting->Set(a_control.invert ? -value : value);
                 ApplySliderChange(AffectsLightPlacer(settingPath));
@@ -1961,7 +1997,48 @@ namespace MPL::TuningMenu
                     maximum,
                     sliderDefaults.step,
                     format,
-                    sliderDefaults.width))
+                    sliderDefaults.width,
+                    SliderInputRange::standard,
+                    a_control.invert ? std::nullopt : SliderNeutralValue(styleSetting)))
+            {
+                entry->second = a_control.invert ? -value : value;
+                TuningUtil::ApplySettings();
+            }
+            return true;
+        }
+
+        bool DrawFilteredLightingTemplateSlider(
+            const MenuDefinition& a_menu,
+            const MenuControl& a_control,
+            const std::string& a_id)
+        {
+            auto profile = a_menu.profile;
+            const auto* rule = TuningUtil::FindFilteredLightingTemplateRule(profile, a_control.id);
+            if (!rule) return false;
+
+            auto& values = TuningUtil::GetSettings(profile).filteredLightingTemplateAdjustments;
+            auto [entry, inserted] = values.try_emplace(rule->id, rule->defaultValue);
+            (void)inserted;
+            auto value = static_cast<float>(a_control.invert ? -entry->second : entry->second);
+            const auto styleSetting = !rule->settings.empty() &&
+                                              rule->settings.front().operation ==
+                                                  TuningUtil::FilteredLightingTemplateOperation::fogStrength ?
+                                          "intFogMaxMultiplier" :
+                                          "intBrightnessMultiplier";
+            auto sliderDefaults = ResolveControlSliderDefaults(a_control, styleSetting);
+            const auto minimum = std::min(sliderDefaults.minimum, sliderDefaults.maximum);
+            const auto maximum = std::max(sliderDefaults.minimum, sliderDefaults.maximum);
+            const auto* format = IsSafeSliderFormat(sliderDefaults.format) ? sliderDefaults.format.c_str() : "%.2f";
+            if (DrawSliderWithInput(
+                    a_id,
+                    value,
+                    minimum,
+                    maximum,
+                    sliderDefaults.step,
+                    format,
+                    sliderDefaults.width,
+                    SliderInputRange::standard,
+                    a_control.invert ? std::nullopt : SliderNeutralValue(styleSetting)))
             {
                 entry->second = a_control.invert ? -value : value;
                 TuningUtil::ApplySettings();
@@ -2091,6 +2168,37 @@ namespace MPL::TuningMenu
                 });
             effectLightingMenuEntries = std::move(entries);
             return *effectLightingMenuEntries;
+        }
+
+        const std::vector<RecordMenuEntry>& GetRegionMenuEntries()
+        {
+            if (regionMenuEntries)
+            {
+                return *regionMenuEntries;
+            }
+
+            std::vector<RecordMenuEntry> entries;
+            if (auto* dataHandler = RE::TESDataHandler::GetSingleton())
+            {
+                for (auto* region : dataHandler->GetFormArray<RE::TESRegion>())
+                {
+                    if (region)
+                    {
+                        entries.push_back({ region, RecordFilter::DisplayName(region) });
+                    }
+                }
+            }
+            std::ranges::sort(
+                entries,
+                [](const RecordMenuEntry& a_left, const RecordMenuEntry& a_right)
+                {
+                    const auto leftName = Lowercase(a_left.label);
+                    const auto rightName = Lowercase(a_right.label);
+                    return leftName != rightName ? leftName < rightName :
+                                                  a_left.form->GetFormID() < a_right.form->GetFormID();
+                });
+            regionMenuEntries = std::move(entries);
+            return *regionMenuEntries;
         }
 
         RE::TESWeather* GetCurrentWeather()
@@ -2283,7 +2391,7 @@ namespace MPL::TuningMenu
             const auto* player = RE::PlayerCharacter::GetSingleton();
             auto* cell = player ? player->GetParentCell() : nullptr;
             auto* stat = Config::StatData::GetSingleton();
-            if (!stat->mmsfAPI) stat->mmsfAPI = API::RequestMMSFAPI();
+            if (!stat->mmsfAPI) stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
             const auto region = RegionRuntime::GetRegion(stat->mmsfAPI, cell);
             return region.empty() ? DisplayText("emptyList") : region;
         }
@@ -2327,10 +2435,11 @@ namespace MPL::TuningMenu
             auto profile = a_profile;
             const auto& settings = TuningUtil::GetSettings(profile);
             const auto lockEnabled =
-                settings.EnableProfile && weatherLockPreferences[profile] && menuFrameworkOpen;
+                settings.EnableProfile && weatherLockPreferences[profile] &&
+                menuFrameworkOpen.load(std::memory_order_acquire);
             WeatherLock::SetSelectedWeather(a_weather);
             WeatherLock::SetEnabled(lockEnabled);
-            WeatherSyncClient::SetWeatherInstant(
+            WeatherRuntime::SetWeatherInstant(
                 a_weather,
                 lockEnabled);
             statusMessage.clear();
@@ -2579,7 +2688,7 @@ namespace MPL::TuningMenu
 
         void ActivateWeatherLockPreference(const MenuDefinition& a_menu)
         {
-            if (!menuFrameworkOpen ||
+            if (!menuFrameworkOpen.load(std::memory_order_acquire) ||
                 (!HasModuleKind(a_menu, "weatherSelector") &&
                     !HasModuleKind(a_menu, "weatherControlCompact")) ||
                 a_menu.profile.empty() ||
@@ -2603,7 +2712,7 @@ namespace MPL::TuningMenu
             WeatherLock::SetEnabled(enable);
             if (enable)
             {
-                WeatherSyncClient::SetWeatherInstant(
+                WeatherRuntime::SetWeatherInstant(
                     selectedWeather,
                     true);
             }
@@ -2629,11 +2738,12 @@ namespace MPL::TuningMenu
                 WeatherLock::SetSelectedWeather(selectedWeather);
             }
 
-            const auto enable = menuFrameworkOpen && settings.EnableProfile && lockEnabled && selectedWeather;
+            const auto enable = menuFrameworkOpen.load(std::memory_order_acquire) &&
+                                settings.EnableProfile && lockEnabled && selectedWeather;
             WeatherLock::SetEnabled(enable);
             if (enable)
             {
-                WeatherSyncClient::SetWeatherInstant(
+                WeatherRuntime::SetWeatherInstant(
                     selectedWeather,
                     true);
                 statusMessage = StatusText(
@@ -2855,7 +2965,8 @@ namespace MPL::TuningMenu
             const MenuControl* a_styleControl = nullptr,
             double* a_directOverride = nullptr,
             const double a_unlinkedValue = 0.0,
-            const bool a_linksOnly = false)
+            const bool a_linksOnly = false,
+            const std::string_view a_catalogPrefix = {})
         {
             const auto& field = a_fields[a_index];
             auto parts = ReadLinkable(*field.value);
@@ -2962,6 +3073,13 @@ namespace MPL::TuningMenu
                 }
                 ImGuiMCP::BeginDisabled(parts.linked);
                 const auto* valueFormat = IsSafeSliderFormat(valueStyle.format) ? valueStyle.format.c_str() : fallbackFormat;
+                const auto neutralValue = a_styleControl ?
+                                              ControlNeutralValue(*a_styleControl) :
+                                          a_catalogPrefix.empty() ?
+                                              std::nullopt :
+                                              SliderNeutralValue(
+                                                  std::string(a_catalogPrefix) + "." +
+                                                  std::string(field.key));
                 if (DrawSliderWithInput(
                         valueId,
                         directValue,
@@ -2969,7 +3087,9 @@ namespace MPL::TuningMenu
                         a_maximum,
                         valueStyle.step,
                         valueFormat,
-                        valueStyle.width))
+                        valueStyle.width,
+                        SliderInputRange::standard,
+                        neutralValue))
                 {
                     if (a_directOverride) *a_directOverride = directValue;
                     else if (field.direct) *field.direct = static_cast<double>(directValue);
@@ -2989,7 +3109,8 @@ namespace MPL::TuningMenu
             const float a_step = 0.0f,
             const double a_linkNeutral = 0.0,
             const float a_scaleMaximum = 4.0f,
-            const bool a_linksOnly = false)
+            const bool a_linksOnly = false,
+            const std::string_view a_catalogPrefix = {})
         {
             auto changed = false;
             const auto resolved = ResolveLinkableValues(a_fields, a_linkNeutral);
@@ -3008,7 +3129,8 @@ namespace MPL::TuningMenu
                     nullptr,
                     nullptr,
                     a_linkNeutral,
-                    a_linksOnly);
+                    a_linksOnly,
+                    a_catalogPrefix);
             }
             return changed;
         }
@@ -3022,7 +3144,8 @@ namespace MPL::TuningMenu
             const std::string& a_idPrefix,
             const float a_step,
             const double a_neutral,
-            const float a_scaleMaximum)
+            const float a_scaleMaximum,
+            const std::string_view a_catalogPrefix)
         {
             auto profile = a_profile;
             auto& adjustments = TuningUtil::GetSettings(profile).filteredWeatherAdjustments;
@@ -3060,7 +3183,9 @@ namespace MPL::TuningMenu
                     {},
                     nullptr,
                     direct[index],
-                    a_neutral);
+                    a_neutral,
+                    false,
+                    a_catalogPrefix);
             }
             return changed;
         }
@@ -3070,7 +3195,8 @@ namespace MPL::TuningMenu
             const float a_minimum,
             const float a_maximum,
             const std::string& a_idPrefix,
-            const float a_step = 0.0f)
+            const float a_step = 0.0f,
+            const std::string_view a_catalogPrefix = {})
         {
             auto changed = false;
             for (const auto& field : a_fields)
@@ -3087,6 +3213,11 @@ namespace MPL::TuningMenu
                     a_step,
                     fallbackFormat);
                 const auto* valueFormat = IsSafeSliderFormat(valueStyle.format) ? valueStyle.format.c_str() : fallbackFormat;
+                const auto neutralValue = a_catalogPrefix.empty() ?
+                                              std::nullopt :
+                                              SliderNeutralValue(
+                                                  std::string(a_catalogPrefix) + "." +
+                                                  std::string(field.key));
                 if (DrawSliderWithInput(
                         valueId,
                         value,
@@ -3094,7 +3225,9 @@ namespace MPL::TuningMenu
                         a_maximum,
                         valueStyle.step,
                         valueFormat,
-                        valueStyle.width))
+                        valueStyle.width,
+                        SliderInputRange::standard,
+                        neutralValue))
                 {
                     *field.value = static_cast<double>(value);
                     changed = true;
@@ -3617,8 +3750,10 @@ namespace MPL::TuningMenu
         }
 
         bool DrawRecordFilterEditor(
-            TuningUtil::WeatherFilter& a_inclusions,
-            TuningUtil::WeatherFilter& a_exclusions,
+            std::vector<std::string>& a_includedForms,
+            std::vector<std::string>& a_excludedForms,
+            std::vector<std::string>* a_includedContains,
+            std::vector<std::string>* a_excludedContains,
             TuningUtil::PluginFilter& a_pluginInclusions,
             TuningUtil::PluginFilter& a_pluginExclusions,
             const std::span<const RecordMenuEntry> a_entries,
@@ -3626,8 +3761,12 @@ namespace MPL::TuningMenu
             const std::string_view a_selectorLabel,
             const std::string_view a_id)
         {
-            const auto originalInclusions = a_inclusions;
-            const auto originalExclusions = a_exclusions;
+            const auto originalIncludedForms = a_includedForms;
+            const auto originalExcludedForms = a_excludedForms;
+            const auto originalIncludedContains =
+                a_includedContains ? *a_includedContains : std::vector<std::string>{};
+            const auto originalExcludedContains =
+                a_excludedContains ? *a_excludedContains : std::vector<std::string>{};
             const auto originalPluginInclusions = a_pluginInclusions;
             const auto originalPluginExclusions = a_pluginExclusions;
             const auto id = std::string(a_id);
@@ -3662,8 +3801,8 @@ namespace MPL::TuningMenu
                                   "##RecordFilter" + id)
                         .c_str()))
             {
-                AddUniqueString(a_inclusions.formIDs, recordKey);
-                std::erase_if(a_exclusions.formIDs, [&](const auto& a_value)
+                AddUniqueString(a_includedForms, recordKey);
+                std::erase_if(a_excludedForms, [&](const auto& a_value)
                     { return Config::IEquals(a_value, recordKey); });
             }
             SameActionLine();
@@ -3671,33 +3810,39 @@ namespace MPL::TuningMenu
                                   "##RecordFilter" + id)
                         .c_str()))
             {
-                AddUniqueString(a_exclusions.formIDs, recordKey);
-                std::erase_if(a_inclusions.formIDs, [&](const auto& a_value)
+                AddUniqueString(a_excludedForms, recordKey);
+                std::erase_if(a_includedForms, [&](const auto& a_value)
                     { return Config::IEquals(a_value, recordKey); });
             }
             ImGuiMCP::EndDisabled();
 
             DrawHeader(SKSEMenuSettings::Label("includedRecords", "Included Records"));
             DrawCreatorRecordList(
-                a_inclusions.formIDs,
+                a_includedForms,
                 SKSEMenuSettings::Label("includedList", "Included List") + "##" + id,
                 a_kind);
-            DrawCreatorContainsList(
-                a_inclusions.contains,
-                state.includeContainsInput,
-                state.includeContainsSelection,
-                "RecordFilterInclude" + id);
+            if (a_includedContains)
+            {
+                DrawCreatorContainsList(
+                    *a_includedContains,
+                    state.includeContainsInput,
+                    state.includeContainsSelection,
+                    "RecordFilterInclude" + id);
+            }
 
             DrawHeader(SKSEMenuSettings::Label("excludedRecords", "Excluded Records"));
             DrawCreatorRecordList(
-                a_exclusions.formIDs,
+                a_excludedForms,
                 SKSEMenuSettings::Label("excludedList", "Excluded List") + "##" + id,
                 a_kind);
-            DrawCreatorContainsList(
-                a_exclusions.contains,
-                state.excludeContainsInput,
-                state.excludeContainsSelection,
-                "RecordFilterExclude" + id);
+            if (a_excludedContains)
+            {
+                DrawCreatorContainsList(
+                    *a_excludedContains,
+                    state.excludeContainsInput,
+                    state.excludeContainsSelection,
+                    "RecordFilterExclude" + id);
+            }
 
             DrawHeader(SKSEMenuSettings::Label("includedPlugins", "Included Plugins"));
             DrawCreatorPluginList(
@@ -3723,10 +3868,112 @@ namespace MPL::TuningMenu
                 state.plugins.excludeContains.selection,
                 "RecordPluginExcludeContains" + id);
 
-            return originalInclusions != a_inclusions ||
-                   originalExclusions != a_exclusions ||
+            return originalIncludedForms != a_includedForms ||
+                   originalExcludedForms != a_excludedForms ||
+                   (a_includedContains &&
+                    originalIncludedContains != *a_includedContains) ||
+                   (a_excludedContains &&
+                    originalExcludedContains != *a_excludedContains) ||
                    originalPluginInclusions != a_pluginInclusions ||
                    originalPluginExclusions != a_pluginExclusions;
+        }
+
+        bool DrawRecordFilterEditor(
+            TuningUtil::WeatherFilter& a_inclusions,
+            TuningUtil::WeatherFilter& a_exclusions,
+            TuningUtil::PluginFilter& a_pluginInclusions,
+            TuningUtil::PluginFilter& a_pluginExclusions,
+            const std::span<const RecordMenuEntry> a_entries,
+            const RecordFilterKind a_kind,
+            const std::string_view a_selectorLabel,
+            const std::string_view a_id)
+        {
+            return DrawRecordFilterEditor(
+                a_inclusions.formIDs,
+                a_exclusions.formIDs,
+                std::addressof(a_inclusions.contains),
+                std::addressof(a_exclusions.contains),
+                a_pluginInclusions,
+                a_pluginExclusions,
+                a_entries,
+                a_kind,
+                a_selectorLabel,
+                a_id);
+        }
+
+        bool DrawRecordFilterEditor(
+            std::vector<std::string>& a_inclusions,
+            std::vector<std::string>& a_exclusions,
+            TuningUtil::PluginFilter& a_pluginInclusions,
+            TuningUtil::PluginFilter& a_pluginExclusions,
+            const std::span<const RecordMenuEntry> a_entries,
+            const RecordFilterKind a_kind,
+            const std::string_view a_selectorLabel,
+            const std::string_view a_id)
+        {
+            return DrawRecordFilterEditor(
+                a_inclusions,
+                a_exclusions,
+                nullptr,
+                nullptr,
+                a_pluginInclusions,
+                a_pluginExclusions,
+                a_entries,
+                a_kind,
+                a_selectorLabel,
+                a_id);
+        }
+
+        bool DrawPointLightEffectLightingExclusions(
+            std::vector<std::string>& a_exclusions,
+            const std::span<const RecordMenuEntry> a_entries,
+            const std::string_view a_id)
+        {
+            const auto originalExclusions = a_exclusions;
+            const auto id = std::string(a_id);
+            auto& state = recordFilterEditorStates[id];
+            const auto selected = std::ranges::find(a_entries, state.selectedRecord, &RecordMenuEntry::form);
+            if (selected == a_entries.end()) state.selectedRecord = nullptr;
+
+            const auto recordPreview = state.selectedRecord ?
+                                           RecordFilter::DisplayName(state.selectedRecord) :
+                                           DisplayText("selectRecord");
+            const auto recordLabel = SKSEMenuSettings::Label("xemiRegion", "XEMI Region") +
+                                     "##PointLightEffectLighting" + id;
+            if (ImGuiMCP::BeginCombo(
+                    recordLabel.c_str(),
+                    recordPreview.c_str(),
+                    ImGuiMCP::ImGuiComboFlags_HeightLargest))
+            {
+                for (const auto& entry : a_entries)
+                {
+                    const auto label = entry.label + "##PointLightEffectLighting" + id +
+                                       std::format("{:08X}", entry.form->GetFormID());
+                    if (ImGuiMCP::Selectable(label.c_str(), entry.form == state.selectedRecord))
+                    {
+                        state.selectedRecord = entry.form;
+                    }
+                }
+                ImGuiMCP::EndCombo();
+            }
+
+            const auto recordKey = RecordFilter::FormKey(state.selectedRecord);
+            ImGuiMCP::BeginDisabled(recordKey.empty());
+            if (ImGuiMCP::Button(
+                    (SKSEMenuSettings::Label("treatAsSunlight", "Treat as Point Light") +
+                        "##PointLightEffectLighting" + id)
+                        .c_str()))
+            {
+                AddUniqueString(a_exclusions, recordKey);
+            }
+            ImGuiMCP::EndDisabled();
+
+            DrawHeader(SKSEMenuSettings::Label("sunlightRegions", "Point Light Regions"));
+            DrawCreatorRecordList(
+                a_exclusions,
+                SKSEMenuSettings::Label("excludedList", "Excluded List") + "##" + id,
+                RecordFilterKind::region);
+            return originalExclusions != a_exclusions;
         }
 
         void DrawSetupModule(
@@ -3793,7 +4040,8 @@ namespace MPL::TuningMenu
                             0.0f,
                             4.0f,
                             moduleID + "HueScales",
-                            0.1f);
+                            0.1f,
+                            "hueScales");
                     });
                 changed |= drawBox(
                     "HueRanges",
@@ -3841,7 +4089,8 @@ namespace MPL::TuningMenu
                             0.0f,
                             4.0f,
                             moduleID + "InteriorHueScales",
-                            0.1f);
+                            0.1f,
+                            "intAmbientHueScales");
                     });
                 const auto pointLightHueScalesChanged = drawBox(
                     "LightingBulbSaturationScales",
@@ -3856,7 +4105,8 @@ namespace MPL::TuningMenu
                             0.0f,
                             4.0f,
                             moduleID + "LightingBulbHueScales",
-                            0.1f);
+                            0.1f,
+                            "pointLights.hueScales");
                     });
                 changed |= pointLightHueScalesChanged;
                 const auto hueRangesChanged = drawBox(
@@ -3901,11 +4151,25 @@ namespace MPL::TuningMenu
                             SKSEMenuSettings::Label("fxWeather", "FX Weather"),
                             moduleID + "EffectLightingFilter");
                     });
+                const auto pointLightEffectLightingFilterChanged = drawBox(
+                    "PointLightEffectLightingFilter",
+                    SKSEMenuSettings::Label(
+                        "pointLightEffectLightingFilter",
+                        "Point Light Classification"),
+                    [&]
+                    {
+                        return DrawPointLightEffectLightingExclusions(
+                            settings.pointLightEffectLightingExclusions,
+                            GetRegionMenuEntries(),
+                            moduleID + "PointLightEffectLightingFilter");
+                    });
+                changed |= pointLightEffectLightingFilterChanged;
 
                 if (changed)
                 {
                     ApplySliderChange(
-                        pointLightHueScalesChanged || hueRangesChanged);
+                        pointLightHueScalesChanged || hueRangesChanged ||
+                        pointLightEffectLightingFilterChanged);
                 }
                 return;
             }
@@ -4067,6 +4331,8 @@ namespace MPL::TuningMenu
                 return SliderSetting{ .resolved = a_settings.fxEffectLighting.saturationMultiplier, .scalar = &a_settings.fxEffectLighting.saturationMultiplier };
             if (a_setting == "pointLights.fadeMultiplier")
                 return SliderSetting{ .resolved = a_settings.pointLights.fadeMultiplier, .scalar = &a_settings.pointLights.fadeMultiplier };
+            if (a_setting == "pointLights.sunlightFadeMultiplier")
+                return SliderSetting{ .resolved = a_settings.pointLights.sunlightFadeMultiplier, .scalar = &a_settings.pointLights.sunlightFadeMultiplier };
             if (a_setting == "pointLights.saturationMultiplier")
                 return SliderSetting{ .resolved = a_settings.pointLights.saturationMultiplier, .scalar = &a_settings.pointLights.saturationMultiplier };
             return std::nullopt;
@@ -4085,25 +4351,26 @@ namespace MPL::TuningMenu
 
             auto& profileSettings = TuningUtil::GetSettings(profile);
             std::vector<SliderSetting> settings;
-            const auto append = [&](const std::string_view a_path)
+            const auto append = [&](const std::string_view a_path, const bool a_ignoreLink)
             {
                 auto setting = FindSliderSetting(profileSettings, a_path);
                 if (!setting || (!a_control.link.empty() && !setting->link))
                 {
                     return false;
                 }
+                if (a_ignoreLink && a_control.link.empty()) setting->ResolveWithoutLink();
                 settings.push_back(*setting);
                 return true;
             };
             settings.reserve(std::max<std::size_t>(1, a_control.settings.size()));
             if (a_control.settings.empty())
             {
-                if (!append(a_control.setting)) return false;
+                if (!append(a_control.setting, false)) return false;
             }
             else
                 for (const auto& target : a_control.settings)
                 {
-                    if (!append(SliderTargetPath(target))) return false;
+                    if (!append(SliderTargetPath(target), SliderTargetIgnoresLink(target))) return false;
                 }
 
             auto mixed = false;
@@ -4149,7 +4416,9 @@ namespace MPL::TuningMenu
                     maximum,
                     sliderDefaults.step,
                     format,
-                    sliderDefaults.width))
+                    sliderDefaults.width,
+                    SliderInputRange::standard,
+                    a_control.link.empty() ? ControlNeutralValue(a_control) : std::nullopt))
             {
                 for (const auto& setting : settings)
                 {
@@ -4248,15 +4517,16 @@ namespace MPL::TuningMenu
 
         bool DrawImageSpaceSettings(
             WeatherPatcher::ImageSpaceSettings& a_settings,
-            const std::string& a_idPrefix)
+            const std::string& a_idPrefix,
+            const std::string_view a_catalogPrefix)
         {
             auto changed = false;
             constexpr std::array<std::pair<std::string_view, std::string_view>, 5> fields{
-                std::pair{ "saturation", "Saturation" },
-                std::pair{ "brightness", "Brightness" },
-                std::pair{ "contrast", "Contrast" },
-                std::pair{ "sunlightScale", "Sunlight Scale" },
-                std::pair{ "skyScale", "Sky Scale" },
+                std::pair{ "saturationMultiplier", "Saturation" },
+                std::pair{ "brightnessMultiplier", "Brightness" },
+                std::pair{ "contrastMultiplier", "Contrast" },
+                std::pair{ "sunlightScaleMultiplier", "Sunlight Scale" },
+                std::pair{ "skyScaleMultiplier", "Sky Scale" },
             };
             const std::array<double*, 5> values{
                 &a_settings.saturationMultiplier,
@@ -4283,7 +4553,11 @@ namespace MPL::TuningMenu
                         maximum,
                         sliderStyle.step,
                         sliderFormat,
-                        sliderStyle.width))
+                        sliderStyle.width,
+                        SliderInputRange::standard,
+                        SliderNeutralValue(
+                            std::string(a_catalogPrefix) + "." +
+                            std::string(fields[index].first))))
                 {
                     *values[index] = value;
                     changed = true;
@@ -4342,11 +4616,21 @@ namespace MPL::TuningMenu
                         prefix,
                         0.1f,
                         1.0,
-                        4.0f);
+                        4.0f,
+                        "brightnessMultiplier");
                 }
                 else
                 {
-                    changed |= DrawLinkableCategory(fields, 0.1f, 4.0f, prefix, 0.1f, 1.0);
+                    changed |= DrawLinkableCategory(
+                        fields,
+                        0.1f,
+                        4.0f,
+                        prefix,
+                        0.1f,
+                        1.0,
+                        4.0f,
+                        false,
+                        "brightnessMultiplier");
                     ImGuiMCP::TextUnformatted("Volumetric Lighting Intensity");
                     auto intensity = static_cast<float>(settings.volumetricLightingIntensityMultiplier);
                     if (DrawConfiguredSlider(
@@ -4377,17 +4661,27 @@ namespace MPL::TuningMenu
                         prefix,
                         0.1f,
                         1.0,
-                        6.0f);
+                        6.0f,
+                        "saturationMultiplier");
                 }
                 else
                 {
-                    changed |= DrawLinkableCategory(fields, 0.0f, 6.0f, prefix, 0.1f, 0.0, 6.0f);
+                    changed |= DrawLinkableCategory(
+                        fields,
+                        0.0f,
+                        6.0f,
+                        prefix,
+                        0.1f,
+                        0.0,
+                        6.0f,
+                        false,
+                        "saturationMultiplier");
                 }
             }
             else if (a_category == "hueScales")
             {
                 auto fields = HueScaleFields(settings.hueScales);
-                changed |= DrawValueOnlyCategory(fields, 0.0f, 4.0f, prefix, 0.1f);
+                changed |= DrawValueOnlyCategory(fields, 0.0f, 4.0f, prefix, 0.1f, "hueScales");
             }
             else if (a_category == "hueRanges")
             {
@@ -4417,7 +4711,7 @@ namespace MPL::TuningMenu
             }
             else if (a_category == "exteriorImageSpace")
             {
-                changed |= DrawImageSpaceSettings(settings.exteriorImageSpace, prefix);
+                changed |= DrawImageSpaceSettings(settings.exteriorImageSpace, prefix, "exteriorImageSpace");
             }
             else supported = false;
 
@@ -4440,7 +4734,16 @@ namespace MPL::TuningMenu
             if (a_category == "intBrightness")
             {
                 auto fields = InteriorColorFields(settings.intBrightnessMultiplier, settings.links.interior);
-                changed |= DrawLinkableCategory(fields, 0.0f, 10.0f, prefix, 0.1f);
+                changed |= DrawLinkableCategory(
+                    fields,
+                    0.0f,
+                    10.0f,
+                    prefix,
+                    0.1f,
+                    0.0,
+                    4.0f,
+                    false,
+                    "intBrightnessMultiplier");
                 ImGuiMCP::TextUnformatted("Fog Strength");
                 auto fogMax = static_cast<float>(settings.intFogMaxMultiplier);
                 if (DrawConfiguredSlider(
@@ -4459,7 +4762,16 @@ namespace MPL::TuningMenu
             else if (a_category == "intSaturation")
             {
                 auto fields = InteriorColorFields(settings.intSaturationMultiplier, settings.links.interior);
-                changed |= DrawLinkableCategory(fields, 0.0f, 6.0f, prefix, 0.1f, 0.0, 6.0f);
+                changed |= DrawLinkableCategory(
+                    fields,
+                    0.0f,
+                    6.0f,
+                    prefix,
+                    0.1f,
+                    0.0,
+                    6.0f,
+                    false,
+                    "intSaturationMultiplier");
             }
             else if (a_category == "intHueShift")
             {
@@ -4469,7 +4781,13 @@ namespace MPL::TuningMenu
             else if (a_category == "intHueScales")
             {
                 auto fields = HueScaleFields(settings.intAmbientHueScales);
-                changed |= DrawValueOnlyCategory(fields, 0.0f, 4.0f, prefix, 0.1f);
+                changed |= DrawValueOnlyCategory(
+                    fields,
+                    0.0f,
+                    4.0f,
+                    prefix,
+                    0.1f,
+                    "intAmbientHueScales");
             }
             else if (a_category == "intHueRanges")
             {
@@ -4536,12 +4854,23 @@ namespace MPL::TuningMenu
                     ImGuiMCP::Separator();
                 };
 
-                drawMultiplier("Fade", "fade", settings.pointLights.fadeMultiplier, 10.0f);
+                drawMultiplier("Brightness", "fade", settings.pointLights.fadeMultiplier, 10.0f);
+                drawMultiplier(
+                    "Sunlight",
+                    "sunlightFade",
+                    settings.pointLights.sunlightFadeMultiplier,
+                    10.0f);
                 drawMultiplier("Saturation", "saturation", settings.pointLights.saturationMultiplier, 6.0f);
 
-                DrawHeader("Hue Scales");
+                DrawHeader("Saturation Scales");
                 auto hueScales = HueScaleFields(settings.pointLights.hueScales);
-                changed |= DrawValueOnlyCategory(hueScales, 0.0f, 4.0f, prefix + "hueScales", 0.1f);
+                changed |= DrawValueOnlyCategory(
+                    hueScales,
+                    0.0f,
+                    4.0f,
+                    prefix + "hueScales",
+                    0.1f,
+                    "pointLights.hueScales");
 
                 DrawHeader("Hue Shift");
                 auto hueShift = HueShiftBandFields(settings.pointLights.hueShift);
@@ -4549,7 +4878,7 @@ namespace MPL::TuningMenu
             }
             else if (a_category == "intImageSpace")
             {
-                changed |= DrawImageSpaceSettings(settings.intImageSpace, prefix);
+                changed |= DrawImageSpaceSettings(settings.intImageSpace, prefix, "intImageSpace");
             }
             else supported = false;
 
@@ -5021,7 +5350,7 @@ namespace MPL::TuningMenu
             a_state.profile = std::move(a_profile);
             a_state.pageIndex = a_pageIndex;
             a_state.domain = a_domain;
-            a_state.filtered = true;
+            a_state.filtered = a_domain == SliderCreatorDomain::weather;
             a_state.defaultValue = 1.0f;
             a_state.minimum = 0.0f;
             a_state.maximum = 2.0f;
@@ -5036,8 +5365,10 @@ namespace MPL::TuningMenu
         {
             const auto profile = a_state.profile;
             const auto& definition = a_slider.definition;
-            auto domain = definition.filtered ?
+            auto domain = definition.filtered && definition.filterDomain == SliderCreator::FilterDomain::weather ?
                               SliderCreatorDomain::weather :
+                          definition.filtered ?
+                              SliderCreatorDomain::interior :
                               a_state.domain;
             for (const auto& target : definition.settings)
             {
@@ -5338,9 +5669,19 @@ namespace MPL::TuningMenu
                 for (std::size_t index = 0; index < a_values.size();)
                 {
                     const auto form = Config::LiteForm::FromString(a_values[index]);
-                    auto* record = a_kind == RecordFilterKind::lightingTemplate ?
-                                       static_cast<RE::TESForm*>(form.Get<RE::BGSLightingTemplate>()) :
-                                       static_cast<RE::TESForm*>(form.Get<RE::TESWeather>());
+                    auto* record = [&]() -> RE::TESForm*
+                    {
+                        switch (a_kind)
+                        {
+                        case RecordFilterKind::lightingTemplate:
+                            return form.Get<RE::BGSLightingTemplate>();
+                        case RecordFilterKind::effectLighting:
+                            return form.Get<RE::TESWeather>();
+                        case RecordFilterKind::region:
+                            return form.Get<RE::TESRegion>();
+                        }
+                        return nullptr;
+                    }();
                     const auto name = record ? RecordFilter::DisplayName(record) : a_values[index];
                     const auto label = name + "##" + a_id + std::to_string(index);
                     ImGuiMCP::Selectable(label.c_str(), false);
@@ -5520,14 +5861,18 @@ namespace MPL::TuningMenu
             const auto* selected = entries[static_cast<std::size_t>(a_state.catalogSetting)];
             ImGuiMCP::TextDisabled("%s", selected->path.c_str());
 
-            const auto filteredTarget = a_state.domain == SliderCreatorDomain::weather &&
-                                        a_state.filtered &&
+            const auto filteredTarget = a_state.filtered &&
                                         SliderSettingCatalog::IsFilteredOperation(selected->filterOperation);
+            const auto directInteriorLinkTarget =
+                !a_state.filtered && IsInteriorLinkableSliderSetting(selected->path);
             const auto scaleLabel = SKSEMenuSettings::Label("sliderCreatorScale", "Scale");
             const auto ignoreLinkLabel = SKSEMenuSettings::Label("sliderCreatorIgnoreLink", "Ignore Link");
             if (filteredTarget)
             {
                 ImGuiMCP::InputFloat((scaleLabel + "##Pending" + a_id).c_str(), &a_state.pendingScale, 0.1f, 1.0f, "%.2f");
+            }
+            if (filteredTarget || directInteriorLinkTarget)
+            {
                 ImGuiMCP::Checkbox((ignoreLinkLabel + "##Pending" + a_id).c_str(), &a_state.pendingIgnoreLink);
             }
             if (ImGuiMCP::Button((SKSEMenuSettings::Label("addSliderSetting", "Add Setting") + "##" + a_id).c_str()))
@@ -5584,6 +5929,8 @@ namespace MPL::TuningMenu
                 {
                     auto& target = a_state.settings[index];
                     ImGuiMCP::TextUnformatted(target.setting.c_str());
+                    const auto directInteriorLinkSetting =
+                        !a_state.filtered && IsInteriorLinkableSliderSetting(target.setting);
                     if (a_state.filtered)
                     {
                         auto scale = static_cast<float>(target.scale);
@@ -5595,7 +5942,10 @@ namespace MPL::TuningMenu
                                 1.0f,
                                 "%.2f"))
                             target.scale = scale;
-                        SameActionLine();
+                    }
+                    if (a_state.filtered || directInteriorLinkSetting)
+                    {
+                        if (a_state.filtered) SameActionLine();
                         ImGuiMCP::Checkbox(
                             (ignoreLinkLabel + "##" + a_id + std::to_string(index)).c_str(),
                             &target.ignoreLink);
@@ -5617,12 +5967,17 @@ namespace MPL::TuningMenu
             result.label = InputText(a_state.label);
             result.id = MakeSliderID(result.label);
             result.tooltip = InputText(a_state.tooltip);
-            const auto filtered = a_state.domain == SliderCreatorDomain::weather && a_state.filtered;
+            const auto filtered = a_state.filtered;
             result.link = filtered ? "" : InputText(a_state.link);
-            result.localLink = filtered ? InputText(a_state.localLink) : "";
+            result.localLink = filtered && a_state.domain == SliderCreatorDomain::weather ?
+                                   InputText(a_state.localLink) :
+                                   "";
             result.settings = a_state.settings;
             result.filtered = filtered;
-            if (filtered && a_state.useHueScales)
+            result.filterDomain = a_state.domain == SliderCreatorDomain::weather ?
+                                      SliderCreator::FilterDomain::weather :
+                                      SliderCreator::FilterDomain::lightingTemplate;
+            if (filtered && a_state.domain == SliderCreatorDomain::weather && a_state.useHueScales)
             {
                 result.hueScales = SliderCreator::HueScales{
                     a_state.hueScales[0],
@@ -5635,7 +5990,7 @@ namespace MPL::TuningMenu
                 };
             }
             result.invert = a_state.invert;
-            result.useTimes = filtered && a_state.useTimes;
+            result.useTimes = filtered && a_state.domain == SliderCreatorDomain::weather && a_state.useTimes;
             result.times = a_state.times;
             result.include = filtered ? a_state.include : SliderCreator::Filter{};
             result.exclude = filtered ? a_state.exclude : SliderCreator::Filter{};
@@ -5656,7 +6011,15 @@ namespace MPL::TuningMenu
             auto setting = a_state.settings.empty() ?
                                std::string("generic") :
                                a_state.settings.front().setting;
-            if (a_state.domain != SliderCreatorDomain::weather || !a_state.filtered) return setting;
+            if (!a_state.filtered) return setting;
+
+            if (a_state.domain == SliderCreatorDomain::interior)
+            {
+                const auto operation = CreatorFilteredOperation(a_state);
+                return operation && *operation == SliderSettingCatalog::FilterOperation::fogStrength ?
+                           "intFogMaxMultiplier" :
+                           "intBrightnessMultiplier";
+            }
 
             const auto operation = CreatorFilteredOperation(a_state);
             if (!operation) return setting;
@@ -5668,6 +6031,8 @@ namespace MPL::TuningMenu
                 return "saturationMultiplier";
             case SliderSettingCatalog::FilterOperation::hueShift:
                 return "hueShift";
+            case SliderSettingCatalog::FilterOperation::fogStrength:
+                return "intFogMaxMultiplier";
             default:
                 return setting;
             }
@@ -5686,7 +6051,7 @@ namespace MPL::TuningMenu
         float SliderCreatorPreviewInitialValue(const SliderCreatorState& a_state)
         {
             const auto operation = CreatorFilteredOperation(a_state);
-            const auto filtered = a_state.domain == SliderCreatorDomain::weather && a_state.filtered;
+            const auto filtered = a_state.filtered;
             if (filtered)
             {
                 if (a_state.useDefault) return a_state.defaultValue;
@@ -5714,7 +6079,7 @@ namespace MPL::TuningMenu
             const std::string& a_id)
         {
             const auto operation = CreatorFilteredOperation(a_state);
-            const auto filtered = a_state.domain == SliderCreatorDomain::weather && a_state.filtered;
+            const auto filtered = a_state.filtered;
             const auto firstSetting = a_state.settings.empty() ?
                                           std::string{} :
                                           a_state.settings.front().setting;
@@ -5760,6 +6125,9 @@ namespace MPL::TuningMenu
             const auto* format = IsSafeSliderFormat(defaults.format) ? defaults.format.c_str() : "%.2f";
             const auto inverted = a_state.invert && (filtered || InputText(a_state.link).empty());
             auto value = inverted ? -a_state.functionalPreviewValue : a_state.functionalPreviewValue;
+            const auto neutralValue = inverted || !InputText(a_state.link).empty() ?
+                                          std::nullopt :
+                                          SliderNeutralValue(firstSetting);
             auto label = InputText(a_state.label);
             if (label.empty()) label = DisplayText("sliderCreatorNewSlider");
 
@@ -5789,7 +6157,9 @@ namespace MPL::TuningMenu
                         maximum,
                         defaults.step,
                         format,
-                        defaults.width))
+                        defaults.width,
+                        SliderInputRange::standard,
+                        neutralValue))
                 {
                     a_state.functionalPreviewValue = inverted ? -value : value;
                 }
@@ -5806,10 +6176,10 @@ namespace MPL::TuningMenu
             const std::string& a_id,
             const std::optional<SliderSettingCatalog::FilterOperation> a_operation)
         {
-            const auto filteredFeatures = a_state.domain == SliderCreatorDomain::weather &&
-                                          a_state.filtered &&
-                                          a_operation.has_value();
-            const auto supportsHueScales = filteredFeatures &&
+            const auto filteredWeatherFeatures = a_state.domain == SliderCreatorDomain::weather &&
+                                                 a_state.filtered &&
+                                                 a_operation.has_value();
+            const auto supportsHueScales = filteredWeatherFeatures &&
                                            *a_operation == SliderSettingCatalog::FilterOperation::saturation;
             if (!supportsHueScales) a_state.useHueScales = false;
 
@@ -5837,7 +6207,7 @@ namespace MPL::TuningMenu
                 ImGuiMCP::Checkbox((invertLabel + "##" + a_id).c_str(), &a_state.invert);
             }
 
-            if (filteredFeatures)
+            if (filteredWeatherFeatures)
             {
                 auto localLinkPreview = InputText(a_state.localLink);
                 if (localLinkPreview.empty())
@@ -5884,7 +6254,7 @@ namespace MPL::TuningMenu
                 {
                     const auto hueScaleLabel = SKSEMenuSettings::Label(
                         "sliderCreatorUniqueHueScales",
-                        "Unique Hue Scales");
+                        "Unique Saturation Scales");
                     ImGuiMCP::Checkbox((hueScaleLabel + "##" + a_id).c_str(), &a_state.useHueScales);
                     if (a_state.useHueScales)
                     {
@@ -5902,6 +6272,10 @@ namespace MPL::TuningMenu
                     }
                 }
 
+            }
+
+            if (a_state.filtered)
+            {
                 const auto customDefaultLabel = SKSEMenuSettings::Label("sliderCreatorCustomDefault", "Custom Default");
                 ImGuiMCP::Checkbox((customDefaultLabel + "##" + a_id).c_str(), &a_state.useDefault);
                 if (a_state.useDefault)
@@ -6105,12 +6479,20 @@ namespace MPL::TuningMenu
             ImGuiMCP::InputTextWithHint(("Tooltip##" + stateKey).c_str(), "Optional hover description", state.tooltip.data(), state.tooltip.size());
             const auto filteredOperation = CreatorFilteredOperation(state);
             const auto supportsFiltering =
-                state.domain == SliderCreatorDomain::weather &&
                 (state.settings.empty() ||
                  filteredOperation.has_value());
             if (!supportsFiltering) state.filtered = false;
             if (supportsFiltering)
-                ImGuiMCP::Checkbox(("Filtered Weather Slider##" + stateKey).c_str(), &state.filtered);
+            {
+                const auto filterLabel = state.domain == SliderCreatorDomain::weather ?
+                                             SKSEMenuSettings::Label(
+                                                 "sliderCreatorFilteredWeather",
+                                                 "Filtered Weather Slider") :
+                                             SKSEMenuSettings::Label(
+                                                 "sliderCreatorFilteredLightingTemplate",
+                                                 "Filtered Lighting Template Slider");
+                ImGuiMCP::Checkbox((filterLabel + "##" + stateKey).c_str(), &state.filtered);
+            }
 
             DrawHeader(
                 SKSEMenuSettings::Label(
@@ -6121,13 +6503,12 @@ namespace MPL::TuningMenu
             const auto currentOperation = CreatorFilteredOperation(state);
             if (!state.settings.empty() && !currentOperation) state.filtered = false;
             const auto filteredFeatures =
-                state.domain == SliderCreatorDomain::weather &&
                 state.filtered &&
                 currentOperation.has_value();
 
             DrawSliderCreatorAdvancedSettings(state, stateKey, currentOperation);
 
-            if (filteredFeatures)
+            if (filteredFeatures && state.domain == SliderCreatorDomain::weather)
             {
                 DrawHeader("Time Filter");
                 ImGuiMCP::Checkbox(("Enable Time Filter##" + stateKey).c_str(), &state.useTimes);
@@ -6189,6 +6570,80 @@ namespace MPL::TuningMenu
                     state.excludeContainsInput,
                     state.excludeContainsSelection,
                     "Exclude" + stateKey);
+            }
+            else if (filteredFeatures)
+            {
+                DrawHeader(SKSEMenuSettings::Label("lightingTemplateFilter", "Lighting Template Filter"));
+                const auto& entries = GetLightingTemplateMenuEntries();
+                const auto selected = std::ranges::find(
+                    entries,
+                    state.selectedLightingTemplate,
+                    [](const RecordMenuEntry& a_entry) { return a_entry.form; });
+                if (selected == entries.end()) state.selectedLightingTemplate = nullptr;
+                const auto preview = selected != entries.end() ?
+                                         selected->label :
+                                         DisplayText("selectRecord");
+                const auto selectorLabel =
+                    SKSEMenuSettings::Label("lightingTemplate", "Lighting Template") +
+                    "##SliderCreator" + stateKey;
+                if (ImGuiMCP::BeginCombo(
+                        selectorLabel.c_str(),
+                        preview.c_str(),
+                        ImGuiMCP::ImGuiComboFlags_HeightLargest))
+                {
+                    for (const auto& entry : entries)
+                    {
+                        const auto label = entry.label + "##SliderCreatorLightingTemplate" + stateKey +
+                                           std::format("{:08X}", entry.form->GetFormID());
+                        if (ImGuiMCP::Selectable(label.c_str(), entry.form == state.selectedLightingTemplate))
+                        {
+                            state.selectedLightingTemplate = static_cast<RE::BGSLightingTemplate*>(entry.form);
+                        }
+                    }
+                    ImGuiMCP::EndCombo();
+                }
+
+                const auto templateKey = RecordFilter::FormKey(state.selectedLightingTemplate);
+                ImGuiMCP::BeginDisabled(templateKey.empty());
+                if (ImGuiMCP::Button((SKSEMenuSettings::Label("addToIncluded", "Add to Included") +
+                                      "##SliderCreatorLightingTemplate" + stateKey)
+                            .c_str()))
+                {
+                    AddUniqueString(state.include.formIDs, templateKey);
+                    std::erase_if(state.exclude.formIDs, [&](const auto& a_value)
+                        { return Config::IEquals(a_value, templateKey); });
+                }
+                SameActionLine();
+                if (ImGuiMCP::Button((SKSEMenuSettings::Label("addToExcluded", "Add to Excluded") +
+                                      "##SliderCreatorLightingTemplate" + stateKey)
+                            .c_str()))
+                {
+                    AddUniqueString(state.exclude.formIDs, templateKey);
+                    std::erase_if(state.include.formIDs, [&](const auto& a_value)
+                        { return Config::IEquals(a_value, templateKey); });
+                }
+                ImGuiMCP::EndDisabled();
+
+                DrawHeader(SKSEMenuSettings::Label("includedRecords", "Included Records"));
+                DrawCreatorRecordList(
+                    state.include.formIDs,
+                    "Included Lighting Templates##" + stateKey,
+                    RecordFilterKind::lightingTemplate);
+                DrawCreatorContainsList(
+                    state.include.contains,
+                    state.includeContainsInput,
+                    state.includeContainsSelection,
+                    "LightingTemplateInclude" + stateKey);
+                DrawHeader(SKSEMenuSettings::Label("excludedRecords", "Excluded Records"));
+                DrawCreatorRecordList(
+                    state.exclude.formIDs,
+                    "Excluded Lighting Templates##" + stateKey,
+                    RecordFilterKind::lightingTemplate);
+                DrawCreatorContainsList(
+                    state.exclude.contains,
+                    state.excludeContainsInput,
+                    state.excludeContainsSelection,
+                    "LightingTemplateExclude" + stateKey);
             }
 
             DrawSliderCreatorFunctionalPreview(state, stateKey);
@@ -6330,6 +6785,11 @@ namespace MPL::TuningMenu
                     {
                         addScope("filteredWeatherAdjustments." + control.id);
                     }
+                    else if (!control.id.empty() &&
+                             TuningUtil::FindFilteredLightingTemplateRule(a_menu.profile, control.id))
+                    {
+                        addScope("filteredLightingTemplateAdjustments." + control.id);
+                    }
                     else if (!control.settings.empty())
                     {
                         for (const auto& setting : control.settings) addScope(SliderTargetPath(setting));
@@ -6397,6 +6857,7 @@ namespace MPL::TuningMenu
                         "effectLightingExclusions",
                         "effectLightingPluginInclusions",
                         "effectLightingPluginExclusions",
+                        "pointLightEffectLightingExclusions",
                     };
                     for (const auto scope : scopes) addScope(scope);
                 }
@@ -6727,19 +7188,27 @@ namespace MPL::TuningMenu
                 const auto visibleLabel = a_module.label.empty() ? fallbackLabel : a_module.label;
                 const auto label = visibleLabel + "##" + a_menu.profile + "MenuModule" + std::to_string(a_index);
                 const auto& profile = a_menu.profile;
-                const auto filtered = !a_module.id.empty() && TuningUtil::FindFilteredWeatherRule(profile, a_module.id);
-                const auto drawn = filtered ?
+                const auto filteredWeather =
+                    !a_module.id.empty() && TuningUtil::FindFilteredWeatherRule(profile, a_module.id);
+                const auto filteredLightingTemplate =
+                    !a_module.id.empty() && TuningUtil::FindFilteredLightingTemplateRule(profile, a_module.id);
+                const auto drawn = filteredWeather ?
                                        DrawFilteredWeatherSlider(a_menu, a_module, label) :
-                                   a_module.settings.size() > 1 || !a_module.link.empty() ?
-                                       DrawGroupedSlider(a_menu, a_module, label) :
+                                   filteredLightingTemplate ?
+                                       DrawFilteredLightingTemplateSlider(a_menu, a_module, label) :
+                                   a_module.settings.size() > 1 || !a_module.link.empty() ||
+                                           std::ranges::any_of(a_module.settings, SliderTargetIgnoresLink) ?
+                                        DrawGroupedSlider(a_menu, a_module, label) :
                                        DrawSlider(a_menu, a_module, label);
                 if (!drawn)
                 {
                     DrawDisplayText(
                         "unsupportedSliderSetting",
                         false,
-                        { { "setting", filtered ?
+                        { { "setting", filteredWeather ?
                                            "filteredWeatherAdjustments." + a_module.id :
+                                       filteredLightingTemplate ?
+                                           "filteredLightingTemplateAdjustments." + a_module.id :
                                            fallbackLabel } });
                 }
                 return;
@@ -6854,16 +7323,54 @@ namespace MPL::TuningMenu
                         ImGuiMCP::ImVec4((*color)[0], (*color)[1], (*color)[2], (*color)[3]));
                     ++colorCount;
                 }
-                if (ImGuiMCP::BeginTooltip())
+                const auto visible = ImGuiMCP::BeginTooltip();
+                if (visible)
                 {
                     const auto scale = SKSEMenuSettings::GetTooltipFontScale();
                     if (scale != 1.0f) ImGuiMCP::SetWindowFontScale(scale);
-                    ImGuiMCP::TextWrapped("%s", a_tooltip.c_str());
+                    constexpr float tooltipWrapWidthInCharacters = 35.0f;
+                    ImGuiMCP::PushTextWrapPos(
+                        ImGuiMCP::GetCursorPosX() +
+                        ImGuiMCP::GetFontSize() * tooltipWrapWidthInCharacters);
+                    ImGuiMCP::TextUnformatted(a_tooltip.c_str());
+                    ImGuiMCP::PopTextWrapPos();
                     if (scale != 1.0f) ImGuiMCP::SetWindowFontScale(1.0f);
-                    ImGuiMCP::EndTooltip();
                 }
+                ImGuiMCP::EndTooltip();
                 if (colorCount > 0) ImGuiMCP::PopStyleColor(colorCount);
             }
+        }
+
+        float OverrideWarningSize()
+        {
+            return std::min(ImGuiMCP::GetFrameHeight(), 18.0f);
+        }
+
+        void DrawOverrideWarning(const std::string& a_profile, const std::string& a_id)
+        {
+            const auto size = OverrideWarningSize();
+            ImGuiMCP::InvisibleButton(a_id.c_str(), ImGuiMCP::ImVec2(size, size));
+            const auto minimum = ImGuiMCP::GetItemRectMin();
+            const auto maximum = ImGuiMCP::GetItemRectMax();
+            const auto centerX = (minimum.x + maximum.x) * 0.5f;
+            auto* drawList = ImGuiMCP::GetWindowDrawList();
+            const auto warningColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImVec4(1.0f, 0.72f, 0.18f, 1.0f));
+            const auto symbolColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImVec4(0.12f, 0.10f, 0.05f, 1.0f));
+            ImGuiMCP::ImDrawListManager::AddTriangleFilled(
+                drawList,
+                ImGuiMCP::ImVec2(centerX, minimum.y),
+                ImGuiMCP::ImVec2(minimum.x, maximum.y),
+                ImGuiMCP::ImVec2(maximum.x, maximum.y),
+                warningColor);
+            const auto symbolSize = ImGuiMCP::CalcTextSize("!");
+            ImGuiMCP::ImDrawListManager::AddText(
+                drawList,
+                ImGuiMCP::ImVec2(
+                    centerX - symbolSize.x * 0.5f,
+                    minimum.y + (size - symbolSize.y) * 0.65f),
+                symbolColor,
+                "!");
+            DrawItemTooltip(DisplayText("settingOverrideTooltip", { { "profile", a_profile } }));
         }
 
         void DrawModuleWithTooltip(
@@ -6872,10 +7379,42 @@ namespace MPL::TuningMenu
             const std::span<const MenuControl> a_pageModules,
             const std::size_t a_index)
         {
+            const std::span<const MenuControl> module(&a_module, 1);
+            const auto settingPaths = PageResetScopes(a_menu, module);
+            const auto revisionBefore = TuningUtil::GetSettingsRevision();
+            const auto overridingProfile = TuningUtil::GetOverridingProfile(a_menu.profile, settingPaths);
+
+            ImGuiMCP::BeginGroup();
+            if (!settingPaths.empty())
+            {
+                if (overridingProfile)
+                {
+                    DrawOverrideWarning(
+                        *overridingProfile,
+                        "##SettingOverride" + a_menu.profile + std::to_string(a_index));
+                }
+                else
+                {
+                    const auto size = OverrideWarningSize();
+                    ImGuiMCP::Dummy(ImGuiMCP::ImVec2(size, size));
+                }
+                ImGuiMCP::SameLine();
+            }
             ImGuiMCP::BeginGroup();
             DrawModule(a_menu, a_module, a_pageModules, a_index);
             ImGuiMCP::EndGroup();
             DrawItemTooltip(a_module.tooltip);
+            ImGuiMCP::EndGroup();
+
+            if (TuningUtil::GetSettingsRevision() != revisionBefore)
+            {
+                if (const auto currentOverride = TuningUtil::GetOverridingProfile(a_menu.profile, settingPaths))
+                {
+                    statusMessage = StatusText(
+                        "settingOverrideChanged",
+                        { { "profile", *currentOverride } });
+                }
+            }
         }
 
         void DrawPageModules(
@@ -6984,7 +7523,7 @@ namespace MPL::TuningMenu
             LayoutModuleChoice{ "Weather Selector", "weatherSelector", "", "" },
             LayoutModuleChoice{ "Weather Brightness", "settings", "brightness", "" },
             LayoutModuleChoice{ "Weather Saturation", "settings", "saturation", "" },
-            LayoutModuleChoice{ "Weather Hue Scales", "settings", "hueScales", "" },
+            LayoutModuleChoice{ "Weather Saturation Scales", "settings", "hueScales", "" },
             LayoutModuleChoice{ "Weather Hue Ranges", "settings", "hueRanges", "" },
             LayoutModuleChoice{ "Weather Hue Shift", "settings", "hueShift", "" },
             LayoutModuleChoice{ "Weather Compression Between", "settings", "betweenCompression", "" },
@@ -6998,7 +7537,7 @@ namespace MPL::TuningMenu
             LayoutModuleChoice{ "Lighting Effects", "settings", "fxEffectLighting", "" },
             LayoutModuleChoice{ "Lighting Bulbs", "settings", "pointLights", "" },
             LayoutModuleChoice{ "Interior Brightness", "settings", "intBrightness", "" },
-            LayoutModuleChoice{ "Interior Hue Scales", "settings", "intHueScales", "" },
+            LayoutModuleChoice{ "Interior Saturation Scales", "settings", "intHueScales", "" },
             LayoutModuleChoice{ "Interior Hue Shift", "settings", "intHueShift", "" },
             LayoutModuleChoice{ "Interior Image Space", "settings", "intImageSpace", "" },
             LayoutModuleChoice{ "Weather Links", "links", "weather", "" },
@@ -7297,6 +7836,70 @@ namespace MPL::TuningMenu
             bool customPadding = false;
         };
 
+        void DrawPromoteUserSettingsAction(const LoadedMenu& a_menu)
+        {
+            auto profile = a_menu.definition.profile;
+            const auto popupTitle =
+                SKSEMenuSettings::Label(
+                    "makeUserSettingsPermanentTitle",
+                    "Make User Settings Permanent?") +
+                "##" + profile;
+            {
+                const ButtonColorStyle color(
+                    SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
+                const auto label =
+                    SKSEMenuSettings::Label(
+                        "makeUserSettingsPermanent",
+                        "Make User Settings Permanent") +
+                    "##" + profile;
+                if (ImGuiMCP::Button(label.c_str())) ImGuiMCP::OpenPopup(popupTitle.c_str());
+            }
+
+            ImGuiMCP::SetNextWindowSize(
+                ImGuiMCP::ImVec2(480.0f, 0.0f),
+                ImGuiMCP::ImGuiCond_Appearing);
+            if (!ImGuiMCP::BeginPopupModal(
+                    popupTitle.c_str(),
+                    nullptr,
+                    ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize))
+                return;
+
+            ImGuiMCP::PushTextWrapPos(440.0f);
+            ImGuiMCP::TextWrapped("%s", DisplayText("promoteUserSettingsConfirmation").c_str());
+            ImGuiMCP::PopTextWrapPos();
+            {
+                const ButtonColorStyle color(
+                    SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
+                const auto confirmLabel =
+                    SKSEMenuSettings::Label(
+                        "confirmMakeUserSettingsPermanent",
+                        "Make Permanent") +
+                    "##" + profile;
+                if (ImGuiMCP::Button(confirmLabel.c_str()))
+                {
+                    std::string error;
+                    const auto promoted = TuningUtil::PromoteUserSettingsToProfile(profile, error);
+                    if (promoted)
+                    {
+                        profilePriorityInputs[profile] = TuningUtil::GetSettings(profile).profilePriority;
+                        RefreshProfileMenuState(a_menu.definition);
+                    }
+                    statusMessage = promoted ?
+                                        StatusText("userSettingsPromoted", { { "profile", a_menu.definition.title } }) :
+                                        StatusText("userSettingsPromoteFailure", { { "reason", error } });
+                    ImGuiMCP::CloseCurrentPopup();
+                }
+            }
+            SameActionLine();
+            const auto cancelLabel =
+                SKSEMenuSettings::Label(
+                    "cancelMakeUserSettingsPermanent",
+                    "Cancel") +
+                "##" + profile;
+            if (ImGuiMCP::Button(cancelLabel.c_str())) ImGuiMCP::CloseCurrentPopup();
+            ImGuiMCP::EndPopup();
+        }
+
         void DrawProfilePageEditor(const LoadedMenu& a_menu)
         {
             std::string error;
@@ -7314,6 +7917,8 @@ namespace MPL::TuningMenu
             if (!panel) return;
             DrawHeader(SKSEMenuSettings::Label("editPage", "Edit Page"));
             DrawProfileLayoutEditActions(a_menu, *editSession);
+            ImGuiMCP::Separator();
+            DrawPromoteUserSettingsAction(a_menu);
 
             ImGuiMCP::TextUnformatted(SKSEMenuSettings::Label("pageOrder", "Page Order").c_str());
             ImGuiMCP::BeginDisabled(profilePage.order == 0);
@@ -7886,6 +8491,11 @@ namespace MPL::TuningMenu
         }
         void RenderProfilePage(const std::size_t a_index)
         {
+            if (!menuFrameworkOpen.load(std::memory_order_acquire))
+            {
+                return;
+            }
+
             SKSEMenuSettings::ReloadIfChanged();
             if (a_index < profileMenus.size()) ObserveMenuPage(profileMenus[a_index].definition.profile);
             const ButtonFeedbackStyle buttonFeedback;

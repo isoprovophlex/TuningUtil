@@ -1,4 +1,3 @@
-#include <LightingPatcher.h>
 #include <LumaClient.h>
 #include <PointLightPatcher.h>
 
@@ -17,20 +16,33 @@ namespace MPL::LumaClient
             return runtimeReady.load(std::memory_order_acquire);
         }
 
-        void OnCellInitialized(RE::TESObjectCELL* a_cell)
-        {
-            if (IsRuntimeReady()) LightingPatcher::CaptureCellBaseline(a_cell);
-        }
-
         void OnReferenceInitialized(RE::TESObjectREFR* a_reference)
         {
-            if (IsRuntimeReady()) PointLightPatcher::InitializeReference(a_reference);
+            if (!IsRuntimeReady())
+            {
+                return;
+            }
+            PointLightPatcher::InitializeReference(a_reference);
+        }
+
+        void OnCellChanging(RE::TESObjectCELL* a_cell)
+        {
+            if (IsRuntimeReady())
+            {
+                PointLightPatcher::BeginCell(a_cell);
+            }
+        }
+
+        void OnCellChanged(const RE::TESObjectCELL*)
+        {
+            PointLightPatcher::RecordCellChangeThread();
         }
 
         const LumaAPI::ClientCallbacks callbacks{
             .id = "TuningUtil",
-            .OnCellInitialized = OnCellInitialized,
             .OnReferenceInitialized = OnReferenceInitialized,
+            .OnCellChanging = OnCellChanging,
+            .OnCellChanged = OnCellChanged,
         };
     }
 
@@ -44,33 +56,29 @@ namespace MPL::LumaClient
         api = request ? request(LumaAPI::kVersion) : nullptr;
         return api && api->version == LumaAPI::kVersion &&
                api->RegisterClient &&
-               api->GetProviderSettings &&
-               api->UpdateProviderSettings &&
+               api->GetProviderDetailedLogging &&
+               api->UpdateProviderDetailedLogging &&
                api->RegisterClient(&callbacks);
     }
 
-    bool GetProviderSettings(
+    bool GetProviderDetailedLogging(
         const char* a_id,
-        bool& a_detailedLogging,
-        bool& a_notifications)
+        bool& a_detailedLogging)
     {
-        return api && api->GetProviderSettings &&
-               api->GetProviderSettings(
+        return api && api->GetProviderDetailedLogging &&
+               api->GetProviderDetailedLogging(
                    a_id,
-                   std::addressof(a_detailedLogging),
-                   std::addressof(a_notifications));
+                   std::addressof(a_detailedLogging));
     }
 
-    bool UpdateProviderSettings(
+    bool UpdateProviderDetailedLogging(
         const char* a_id,
-        const std::int8_t a_detailedLogging,
-        const std::int8_t a_notifications)
+        const bool a_detailedLogging)
     {
-        return api && api->UpdateProviderSettings &&
-               api->UpdateProviderSettings(
+        return api && api->UpdateProviderDetailedLogging &&
+               api->UpdateProviderDetailedLogging(
                    a_id,
-                   a_detailedLogging,
-                   a_notifications);
+                   a_detailedLogging);
     }
 
     void SetRuntimeReady(const bool a_ready)

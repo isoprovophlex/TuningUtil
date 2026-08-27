@@ -2,6 +2,7 @@
 #include <SliderSettingCatalog.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -94,6 +95,7 @@ namespace MPL::SliderCreator
             return {
                 .formIDs = StringArray(a_object, "formIDs"),
                 .contains = StringArray(a_object, "contains"),
+                .locationTypes = StringArray(a_object, "locationTypes"),
             };
         }
 
@@ -128,6 +130,13 @@ namespace MPL::SliderCreator
                 .scale = NumberMember(a_value, "scale").value_or(1.0),
                 .ignoreLink = BooleanMember(a_value, "ignoreLink"),
             };
+        }
+
+        bool IsInteriorLinkableSetting(const std::string_view a_setting)
+        {
+            return a_setting.starts_with("intBrightnessMultiplier.") ||
+                   a_setting.starts_with("intSaturationMultiplier.") ||
+                   a_setting.starts_with("intHueShift.");
         }
 
         Definition ReadDefinition(yyjson_val* a_control)
@@ -183,7 +192,20 @@ namespace MPL::SliderCreator
                 result.include = ReadFilter(yyjson_obj_get(weatherFilter, "include"));
                 result.exclude = ReadFilter(yyjson_obj_get(weatherFilter, "exclude"));
             }
-            result.filtered = structured || result.useTimes || !result.localLink.empty() || result.hueScales ||
+            if (auto* lightingTemplateFilter = yyjson_obj_get(a_control, "lightingTemplateFilter");
+                yyjson_is_obj(lightingTemplateFilter))
+            {
+                result.filterDomain = FilterDomain::lightingTemplate;
+                result.include = ReadFilter(yyjson_obj_get(lightingTemplateFilter, "include"));
+                result.exclude = ReadFilter(yyjson_obj_get(lightingTemplateFilter, "exclude"));
+            }
+            const auto directInteriorLinkOverride = structured && !result.settings.empty() &&
+                                                    std::ranges::all_of(result.settings, [](const auto& a_target)
+                                                        { return IsInteriorLinkableSetting(a_target.setting); }) &&
+                                                    std::ranges::any_of(result.settings, &Target::ignoreLink);
+            result.filtered = (structured && !directInteriorLinkOverride) || result.useTimes ||
+                              !result.localLink.empty() || result.hueScales ||
+                              result.filterDomain == FilterDomain::lightingTemplate ||
                               !result.include.formIDs.empty() || !result.include.contains.empty() ||
                               !result.exclude.formIDs.empty() || !result.exclude.contains.empty();
             return result;
@@ -278,9 +300,12 @@ namespace MPL::SliderCreator
             auto* filter = yyjson_mut_obj(a_document);
             auto* formIDs = StringList(a_document, a_filter.formIDs);
             auto* contains = StringList(a_document, a_filter.contains);
-            return filter && formIDs && contains &&
+            auto* locationTypes = StringList(a_document, a_filter.locationTypes);
+            return filter && formIDs && contains && locationTypes &&
                    yyjson_mut_obj_add_val(a_document, filter, "formIDs", formIDs) &&
                    yyjson_mut_obj_add_val(a_document, filter, "contains", contains) &&
+                   (a_filter.locationTypes.empty() ||
+                       yyjson_mut_obj_add_val(a_document, filter, "locationTypes", locationTypes)) &&
                    yyjson_mut_obj_add_val(a_document, a_parent, a_name.data(), filter);
         }
 
@@ -296,7 +321,8 @@ namespace MPL::SliderCreator
             if (!a_definition.link.empty() && !AddString(a_document, control, "link", a_definition.link)) return nullptr;
             if (!a_definition.localLink.empty() && !AddString(a_document, control, "localLink", a_definition.localLink)) return nullptr;
 
-            if (!a_definition.filtered && a_definition.settings.size() == 1)
+            if (!a_definition.filtered && a_definition.settings.size() == 1 &&
+                !a_definition.settings.front().ignoreLink)
             {
                 if (!AddString(a_document, control, "setting", a_definition.settings.front().setting)) return nullptr;
             }
@@ -306,7 +332,7 @@ namespace MPL::SliderCreator
                 if (!settings) return nullptr;
                 for (const auto& target : a_definition.settings)
                 {
-                    if (!a_definition.filtered)
+                    if (!a_definition.filtered && !target.ignoreLink)
                     {
                         if (!yyjson_mut_arr_add_strncpy(
                                 a_document,
@@ -318,7 +344,8 @@ namespace MPL::SliderCreator
                     }
                     auto* setting = yyjson_mut_obj(a_document);
                     if (!setting || !AddString(a_document, setting, "setting", target.setting) ||
-                        !yyjson_mut_obj_add_real(a_document, setting, "scale", target.scale) ||
+                        (a_definition.filtered &&
+                            !yyjson_mut_obj_add_real(a_document, setting, "scale", target.scale)) ||
                         !yyjson_mut_obj_add_bool(a_document, setting, "ignoreLink", target.ignoreLink) ||
                         !yyjson_mut_arr_append(settings, setting))
                         return nullptr;
@@ -337,14 +364,23 @@ namespace MPL::SliderCreator
                 if (!yyjson_mut_obj_add_val(a_document, control, "times", times)) return nullptr;
             }
 
-            const auto hasWeatherFilter = !a_definition.include.formIDs.empty() || !a_definition.include.contains.empty() ||
-                                          !a_definition.exclude.formIDs.empty() || !a_definition.exclude.contains.empty();
-            if (hasWeatherFilter)
+            const auto hasRecordFilter =
+                (a_definition.filtered && a_definition.filterDomain == FilterDomain::lightingTemplate) ||
+                !a_definition.include.formIDs.empty() || !a_definition.include.contains.empty() ||
+                !a_definition.include.locationTypes.empty() || !a_definition.exclude.formIDs.empty() ||
+                !a_definition.exclude.contains.empty() || !a_definition.exclude.locationTypes.empty();
+            if (hasRecordFilter)
             {
                 auto* filter = yyjson_mut_obj(a_document);
                 if (!filter || !AddFilter(a_document, filter, "include", a_definition.include) ||
                     !AddFilter(a_document, filter, "exclude", a_definition.exclude) ||
-                    !yyjson_mut_obj_add_val(a_document, control, "weatherFilter", filter))
+                    !yyjson_mut_obj_add_val(
+                        a_document,
+                        control,
+                        a_definition.filterDomain == FilterDomain::lightingTemplate ?
+                            "lightingTemplateFilter" :
+                            "weatherFilter",
+                        filter))
                     return nullptr;
             }
 
@@ -431,42 +467,71 @@ namespace MPL::SliderCreator
             }
             if (a_definition.filtered)
             {
-                std::optional<SliderSettingCatalog::FilterOperation> operation;
-                for (const auto* entry : entries)
+                if (a_definition.filterDomain == FilterDomain::lightingTemplate)
                 {
-                    if (!SliderSettingCatalog::IsFilteredOperation(entry->filterOperation))
+                    std::optional<SliderSettingCatalog::FilterOperation> operation;
+                    for (const auto* entry : entries)
                     {
-                        a_error = "Filtered sliders support only weather brightness, saturation, and hue-shift settings.";
-                        return false;
-                    }
-                    if (operation && operation != entry->filterOperation)
-                    {
-                        a_error = "Every setting in a filtered slider must use the same operation.";
-                        return false;
-                    }
-                    operation = entry->filterOperation;
-                }
-                if (!a_definition.localLink.empty() && !std::ranges::any_of(
-                        SliderSettingCatalog::Entries(),
-                        [&](const auto& a_entry)
+                        if (entry->domain != SliderSettingCatalog::Domain::lighting ||
+                            (entry->filterOperation != SliderSettingCatalog::FilterOperation::brightness &&
+                                entry->filterOperation != SliderSettingCatalog::FilterOperation::fogStrength))
                         {
-                            return a_entry.domain == SliderSettingCatalog::Domain::weather &&
-                                   a_entry.filterOperation == *operation &&
-                                   IEquals(a_entry.target, Trim(a_definition.localLink));
-                        }))
-                {
-                    a_error = "The local link must name a target supported by this filtered operation.";
-                    return false;
+                            a_error = "Lighting Template filters support only interior brightness and Fog Strength settings.";
+                            return false;
+                        }
+                        if (operation && operation != entry->filterOperation)
+                        {
+                            a_error = "Every setting in a filtered slider must use the same operation.";
+                            return false;
+                        }
+                        operation = entry->filterOperation;
+                    }
+                    if (a_definition.useTimes || !a_definition.localLink.empty() || a_definition.hueScales)
+                    {
+                        a_error = "Time filters, local links, and saturation scales apply only to filtered weather sliders.";
+                        return false;
+                    }
                 }
-                if (a_definition.hueScales && *operation != SliderSettingCatalog::FilterOperation::saturation)
+                else
                 {
-                    a_error = "Slider-specific hue scales are supported only by filtered saturation sliders.";
-                    return false;
+                    std::optional<SliderSettingCatalog::FilterOperation> operation;
+                    for (const auto* entry : entries)
+                    {
+                        if (entry->domain != SliderSettingCatalog::Domain::weather ||
+                            !SliderSettingCatalog::IsFilteredOperation(entry->filterOperation))
+                        {
+                            a_error = "Filtered sliders support only weather brightness, saturation, and hue-shift settings.";
+                            return false;
+                        }
+                        if (operation && operation != entry->filterOperation)
+                        {
+                            a_error = "Every setting in a filtered slider must use the same operation.";
+                            return false;
+                        }
+                        operation = entry->filterOperation;
+                    }
+                    if (!a_definition.localLink.empty() && !std::ranges::any_of(
+                            SliderSettingCatalog::Entries(),
+                            [&](const auto& a_entry)
+                            {
+                                return a_entry.domain == SliderSettingCatalog::Domain::weather &&
+                                       a_entry.filterOperation == *operation &&
+                                       IEquals(a_entry.target, Trim(a_definition.localLink));
+                            }))
+                    {
+                        a_error = "The local link must name a target supported by this filtered operation.";
+                        return false;
+                    }
+                    if (a_definition.hueScales && *operation != SliderSettingCatalog::FilterOperation::saturation)
+                    {
+                        a_error = "Slider-specific saturation scales are supported only by filtered saturation sliders.";
+                        return false;
+                    }
                 }
             }
             else if (!a_definition.localLink.empty() || a_definition.hueScales)
             {
-                a_error = "Local links and slider-specific hue scales require a filtered weather slider.";
+                a_error = "Local links and slider-specific saturation scales require a filtered weather slider.";
                 return false;
             }
             if (a_definition.hueScales)
@@ -478,7 +543,7 @@ namespace MPL::SliderCreator
                 };
                 if (std::ranges::any_of(values, [](const double a_value) { return !std::isfinite(a_value); }))
                 {
-                    a_error = "Every slider-specific hue scale must be a finite number.";
+                    a_error = "Every slider-specific saturation scale must be a finite number.";
                     return false;
                 }
             }
@@ -510,6 +575,45 @@ namespace MPL::SliderCreator
             return text;
         }
 
+        bool CopyFileContents(
+            const std::filesystem::path& a_source,
+            const std::filesystem::path& a_destination,
+            std::string& a_error)
+        {
+            std::ifstream source(a_source, std::ios::binary);
+            if (!source)
+            {
+                a_error = std::format("The source profile file {} could not be opened.", a_source.string());
+                return false;
+            }
+            std::ofstream destination(a_destination, std::ios::binary | std::ios::trunc);
+            if (!destination)
+            {
+                a_error = std::format("The copied profile file {} could not be created.", a_destination.string());
+                return false;
+            }
+
+            std::array<char, 64 * 1024> buffer{};
+            while (source)
+            {
+                source.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                const auto length = source.gcount();
+                if (length > 0) destination.write(buffer.data(), length);
+            }
+            if (!source.eof())
+            {
+                a_error = std::format("The source profile file {} could not be read.", a_source.string());
+                return false;
+            }
+            destination.flush();
+            if (!destination)
+            {
+                a_error = std::format("The copied profile file {} could not be written.", a_destination.string());
+                return false;
+            }
+            return true;
+        }
+
         bool ValidProfileName(const std::string_view a_name)
         {
             if (a_name.empty() || a_name == "." || a_name == ".." ||
@@ -538,7 +642,7 @@ namespace MPL::SliderCreator
         {
             static constexpr std::array keys{
                 "kind", "id", "label", "tooltip", "link", "localLink", "hueScales", "setting", "settings",
-                "invert", "times", "weatherFilter", "default", "min", "max", "step", "width", "format",
+                "invert", "times", "weatherFilter", "lightingTemplateFilter", "default", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
         }
@@ -741,8 +845,9 @@ namespace MPL::SliderCreator
         }
         if (copying)
         {
-            std::error_code sourceError;
-            if (!std::filesystem::is_directory(a_sourceProfile, sourceError) || sourceError)
+            const auto sourceAttributes = ::GetFileAttributesW(a_sourceProfile.c_str());
+            if (sourceAttributes == INVALID_FILE_ATTRIBUTES ||
+                (sourceAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
             {
                 a_error = "The source profile folder is unavailable.";
                 return false;
@@ -763,12 +868,21 @@ namespace MPL::SliderCreator
 
         const auto profileDirectory = a_tuningRoot / profileName;
         std::error_code filesystemError;
-        if (std::filesystem::exists(profileDirectory, filesystemError))
+        const auto existingAttributes = ::GetFileAttributesW(profileDirectory.c_str());
+        if (existingAttributes != INVALID_FILE_ATTRIBUTES)
         {
             a_error = "A profile folder with that name already exists.";
             return false;
         }
-        if (filesystemError || !std::filesystem::create_directory(profileDirectory, filesystemError))
+        const auto attributeError = ::GetLastError();
+        if (attributeError != ERROR_FILE_NOT_FOUND && attributeError != ERROR_PATH_NOT_FOUND)
+        {
+            a_error = std::format(
+                "The profile folder could not be checked: {}",
+                std::system_category().message(static_cast<int>(attributeError)));
+            return false;
+        }
+        if (!std::filesystem::create_directory(profileDirectory, filesystemError))
         {
             a_error = filesystemError ?
                           std::format("The profile folder could not be created: {}", filesystemError.message()) :
@@ -802,23 +916,30 @@ namespace MPL::SliderCreator
                 {
                     continue;
                 }
-                const auto relative = std::filesystem::relative(iterator->path(), a_sourceProfile, filesystemError);
-                if (filesystemError) break;
+                const auto relative = iterator->path().lexically_relative(a_sourceProfile);
+                if (relative.empty() || *relative.begin() == "..")
+                {
+                    filesystemError = std::make_error_code(std::errc::invalid_argument);
+                    break;
+                }
                 const auto destination = profileDirectory / relative;
-                if (iterator->is_directory(filesystemError))
+                const auto attributes = ::GetFileAttributesW(iterator->path().c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES)
+                {
+                    filesystemError.assign(static_cast<int>(::GetLastError()), std::system_category());
+                    break;
+                }
+                if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
                 {
                     std::filesystem::create_directories(destination, filesystemError);
                 }
-                else if (iterator->is_regular_file(filesystemError))
+                else
                 {
                     std::filesystem::create_directories(destination.parent_path(), filesystemError);
-                    if (!filesystemError)
+                    if (!filesystemError && !CopyFileContents(iterator->path(), destination, a_error))
                     {
-                        std::filesystem::copy_file(
-                            iterator->path(),
-                            destination,
-                            std::filesystem::copy_options::overwrite_existing,
-                            filesystemError);
+                        const auto reason = a_error;
+                        return copyFailure(reason);
                     }
                 }
             }

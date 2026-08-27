@@ -68,7 +68,8 @@ namespace MPL::SliderSettingCatalog
             const FilterOperation a_filterOperation = FilterOperation::none,
             const bool a_linkable = false,
             const bool a_hueScales = false,
-            const bool a_aggregate = false)
+            const bool a_aggregate = false,
+            const std::optional<double> a_neutralValue = std::nullopt)
         {
             a_entries.push_back({
                 a_domain,
@@ -81,6 +82,7 @@ namespace MPL::SliderSettingCatalog
                 a_linkable,
                 a_hueScales,
                 a_aggregate,
+                a_neutralValue,
             });
         }
 
@@ -92,7 +94,8 @@ namespace MPL::SliderSettingCatalog
             const std::span<const NamedPath> a_colors,
             const FilterOperation a_operation,
             const bool a_linkable,
-            const bool a_hueScales = false)
+            const bool a_hueScales = false,
+            const std::optional<double> a_neutralValue = std::nullopt)
         {
             for (const auto& color : a_colors)
                 Add(
@@ -105,7 +108,9 @@ namespace MPL::SliderSettingCatalog
                     {},
                     a_operation,
                     a_linkable,
-                    a_hueScales);
+                    a_hueScales,
+                    false,
+                    a_neutralValue);
         }
 
         void AddHueShiftCategory(
@@ -149,10 +154,23 @@ namespace MPL::SliderSettingCatalog
             std::vector<Entry>& a_entries,
             const Domain a_domain,
             const std::string_view a_group,
-            const std::string_view a_prefix)
+            const std::string_view a_prefix,
+            const std::optional<double> a_neutralValue = std::nullopt)
         {
             for (const auto& hue : hues)
-                Add(a_entries, a_domain, a_group, hue.label, std::string(a_prefix) + "." + std::string(hue.key));
+                Add(
+                    a_entries,
+                    a_domain,
+                    a_group,
+                    hue.label,
+                    std::string(a_prefix) + "." + std::string(hue.key),
+                    {},
+                    {},
+                    FilterOperation::none,
+                    false,
+                    false,
+                    false,
+                    a_neutralValue);
         }
 
         void AddHueRanges(
@@ -178,7 +196,14 @@ namespace MPL::SliderSettingCatalog
         {
             for (const auto& value : imageSpaceValues)
                 Add(a_entries, a_domain, a_group, value.label,
-                    std::string(a_prefix) + "." + std::string(value.key));
+                    std::string(a_prefix) + "." + std::string(value.key),
+                    {},
+                    {},
+                    FilterOperation::none,
+                    false,
+                    false,
+                    false,
+                    1.0);
         }
 
         std::vector<Entry> BuildEntries()
@@ -187,9 +212,9 @@ namespace MPL::SliderSettingCatalog
             entries.reserve(320);
 
             AddColorCategory(entries, Domain::weather, "Brightness", "brightnessMultiplier",
-                std::span(weatherColors).first(15), FilterOperation::brightness, true);
+                std::span(weatherColors).first(15), FilterOperation::brightness, true, false, 1.0);
             AddColorCategory(entries, Domain::weather, "Saturation", "saturationMultiplier",
-                weatherColors, FilterOperation::saturation, true, true);
+                weatherColors, FilterOperation::saturation, true, true, 1.0);
             AddHueShiftCategory(entries, Domain::weather, "Hue Shift", "hueShift",
                 weatherColors, FilterOperation::hueShift, true);
             AddColorCategory(entries, Domain::weather, "Between Weather Compression", "betweenWeatherCompression",
@@ -198,35 +223,52 @@ namespace MPL::SliderSettingCatalog
                 compressionColors, FilterOperation::none, true);
             AddColorCategory(entries, Domain::weather, "Compression Anchors", "compressionAnchor",
                 compressionColors, FilterOperation::none, true);
-            AddHueValues(entries, Domain::weather, "Hue Scales", "hueScales");
+            AddHueValues(entries, Domain::weather, "Saturation Scales", "hueScales", 1.0);
             AddHueRanges(entries, Domain::weather, "Hue Ranges", "hueRanges");
             Add(entries, Domain::weather, "Volumetric Lighting", "Intensity",
-                "volumetricLightingIntensityMultiplier");
+                "volumetricLightingIntensityMultiplier", {}, {}, FilterOperation::none, false, false, false, 1.0);
             AddImageSpace(entries, Domain::weather, "Image Space", "exteriorImageSpace");
 
             AddColorCategory(entries, Domain::lighting, "Brightness", "intBrightnessMultiplier",
-                lightingColors, FilterOperation::none, true);
+                lightingColors, FilterOperation::brightness, true, false, 1.0);
             AddColorCategory(entries, Domain::lighting, "Saturation", "intSaturationMultiplier",
-                lightingColors, FilterOperation::none, true);
+                lightingColors, FilterOperation::none, true, false, 1.0);
             AddHueShiftCategory(entries, Domain::lighting, "Hue Shift", "intHueShift",
                 lightingColors, FilterOperation::none, true);
-            AddHueValues(entries, Domain::lighting, "Hue Scales", "intAmbientHueScales");
+            AddHueValues(entries, Domain::lighting, "Saturation Scales", "intAmbientHueScales", 1.0);
             AddHueRanges(entries, Domain::lighting, "Hue Ranges", "intHueRanges");
-            Add(entries, Domain::lighting, "Fog", "Fog Strength", "intFogMaxMultiplier");
+            Add(
+                entries,
+                Domain::lighting,
+                "Fog",
+                "Fog Strength",
+                "intFogMaxMultiplier",
+                {},
+                {},
+                FilterOperation::fogStrength,
+                false,
+                false,
+                false,
+                1.0);
             AddImageSpace(entries, Domain::lighting, "Image Space", "intImageSpace");
             Add(entries, Domain::lighting, "Effect Lighting", "Brightness",
-                "fxEffectLighting.brightnessMultiplier");
+                "fxEffectLighting.brightnessMultiplier", {}, {}, FilterOperation::none, false, false, false, 1.0);
             Add(entries, Domain::lighting, "Effect Lighting", "Saturation",
-                "fxEffectLighting.saturationMultiplier");
+                "fxEffectLighting.saturationMultiplier", {}, {}, FilterOperation::none, false, false, false, 1.0);
             for (const auto& hue : hues)
                 Add(entries, Domain::lighting, "Effect Lighting", std::string("Hue Shift / ") + std::string(hue.label),
                     "fxEffectLighting.hueShift." + std::string(hue.key));
-            Add(entries, Domain::lighting, "Point Lights", "Fade", "pointLights.fadeMultiplier");
-            Add(entries, Domain::lighting, "Point Lights", "Saturation", "pointLights.saturationMultiplier");
+            Add(entries, Domain::lighting, "Point Lights", "Brightness", "pointLights.fadeMultiplier",
+                {}, {}, FilterOperation::none, false, false, false, 1.0);
+            Add(entries, Domain::lighting, "Point Lights", "Sunlight", "pointLights.sunlightFadeMultiplier",
+                {}, {}, FilterOperation::none, false, false, false, 1.0);
+            Add(entries, Domain::lighting, "Point Lights", "Saturation", "pointLights.saturationMultiplier",
+                {}, {}, FilterOperation::none, false, false, false, 1.0);
             for (const auto& hue : hues)
             {
-                Add(entries, Domain::lighting, "Point Lights", std::string("Hue Scale / ") + std::string(hue.label),
-                    "pointLights.hueScales." + std::string(hue.key));
+                Add(entries, Domain::lighting, "Point Lights", std::string("Saturation Scale / ") + std::string(hue.label),
+                    "pointLights.hueScales." + std::string(hue.key),
+                    {}, {}, FilterOperation::none, false, false, false, 1.0);
                 Add(entries, Domain::lighting, "Point Lights", std::string("Hue Shift / ") + std::string(hue.label),
                     "pointLights.hueShift." + std::string(hue.key));
             }
@@ -262,6 +304,25 @@ namespace MPL::SliderSettingCatalog
         const auto found = std::ranges::find_if(Entries(), [&](const Entry& a_entry)
             { return IEquals(a_entry.path, a_path); });
         return found == Entries().end() ? nullptr : std::addressof(*found);
+    }
+
+    std::optional<double> NeutralValue(const std::string_view a_path)
+    {
+        if (const auto* entry = Find(a_path)) return entry->neutralValue;
+
+        const auto prefix = std::string(a_path) + ".";
+        std::optional<double> result;
+        auto found = false;
+        for (const auto& entry : Entries())
+        {
+            if (entry.path.size() <= prefix.size() ||
+                !IEquals(std::string_view(entry.path).substr(0, prefix.size()), prefix))
+                continue;
+            if (!entry.neutralValue || (result && *result != *entry.neutralValue)) return std::nullopt;
+            result = entry.neutralValue;
+            found = true;
+        }
+        return found ? result : std::nullopt;
     }
 
     bool IsFilteredOperation(const FilterOperation a_operation)

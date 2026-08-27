@@ -1,6 +1,6 @@
 #include <DetailedLogging.h>
 #include <WeatherLock.h>
-#include <WeatherSyncClient.h>
+#include <WeatherRuntime.h>
 #include <atomic>
 #include <cstring>
 #include <vector>
@@ -214,7 +214,7 @@ namespace MPL::WeatherLock
                 sky->overrideWeather ? sky->overrideWeather->GetFormID() : 0,
                 releasePending);
             const auto result =
-                WeatherSyncClient::SetWeatherInstant(locked, true);
+                WeatherRuntime::SetWeatherInstant(locked, true);
             DetailedLogging::Info(
                 "Weather lock reapplied weather {:08X}; status={}, processed {} native cell emittance light-map entry/entries",
                 locked->GetFormID(),

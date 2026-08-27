@@ -7,27 +7,32 @@
 #include <TuningSettings.h>
 #include <TuningUtil.h>
 #include <WeatherLock.h>
-#include <WeatherSyncClient.h>
 
 namespace
 {
     void OnSKSEMessage(SKSE::MessagingInterface::Message* a_message)
     {
-        if (!a_message) return;
-        if (a_message->type == SKSE::MessagingInterface::kPostLoad)
+        if (!a_message)
         {
-            MPL::TuningMenu::Register();
+            return;
         }
-        if (a_message->type == SKSE::MessagingInterface::kDataLoaded)
+        switch (a_message->type)
         {
-            MPL::PointLightPatcher::InstallRuntimeEvents();
-            if (!MPL::WeatherSyncClient::Load())
+        case SKSE::MessagingInterface::kDataLoaded:
             {
-                logger::warn(
-                    "WeatherSync API is unavailable; weather selection will "
-                    "use the engine fallback without an immediate emittance refresh");
+                MPL::PointLightPatcher::InstallRuntimeEvents();
+                MPL::TuningUtil::ApplyDataLoaded();
+                MPL::TuningMenu::Register();
+                break;
             }
-            MPL::TuningUtil::ApplyDataLoaded();
+        case SKSE::MessagingInterface::kPreLoadGame:
+            MPL::PointLightPatcher::ResetCellTracking();
+            break;
+        case SKSE::MessagingInterface::kNewGame:
+            MPL::PointLightPatcher::ResetCellTracking();
+            break;
+        default:
+            break;
         }
     }
 }  // namespace

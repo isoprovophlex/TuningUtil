@@ -57,7 +57,7 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/LumaUtil/include
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern/WeatherSync/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/extern/Heliosphan/include
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/XEMIUtil/include
 )
 

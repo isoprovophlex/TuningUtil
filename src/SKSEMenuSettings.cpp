@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <regex>
 #include <unordered_map>
 
 namespace MPL::SKSEMenuSettings
@@ -125,6 +126,7 @@ namespace MPL::SKSEMenuSettings
                 { "profileStateSaveFailure", "The profile state could not be saved, so it was not changed." },
                 { "profileEnabled", "Profile enabled and saved." },
                 { "profileDisabled", "Profile disabled and saved." },
+                { "settingOverrideChanged", "Changed locally, but {profile} overrides this setting." },
                 { "presetSelectionSaved", "Preset selection saved." },
                 { "presetSelectionSaveFailure", "The preset selection could not be saved. Check the TuningUtil log for details." },
                 { "presetControlSaved", "Preset changes saved." },
@@ -160,6 +162,8 @@ namespace MPL::SKSEMenuSettings
                 { "detailedLoggingSaveFailure", "The detailed-logging setting could not be saved." },
                 { "userSettingsDeleted", "User settings and Quick Select lists deleted. Preset selections cleared." },
                 { "userSettingsDeleteFailure", "Some user settings could not be deleted. Check the TuningUtil log for details." },
+                { "userSettingsPromoted", "Made {profile} user settings permanent in profileSettings.json." },
+                { "userSettingsPromoteFailure", "User settings could not be made permanent: {reason}" },
                 { "sliderSaved", "Saved {slider} to {profile} / {page}." },
                 { "sliderSaveFailure", "The slider could not be saved: {reason}" },
                 { "profileCreated", "Created profile {profile}. Restart Skyrim to load its menu." },
@@ -200,6 +204,7 @@ namespace MPL::SKSEMenuSettings
                 { "noQuickSelectWeathers", "No weathers added" },
                 { "currentTimeUnavailable", "The current game time is unavailable." },
                 { "mixedSliderValues", "Mixed values; moving the slider synchronizes this group." },
+                { "settingOverrideTooltip", "Overridden by {profile}." },
                 { "emptyList", "None" },
                 { "weatherUnavailableLabel", "Unavailable" },
                 { "weatherOverrideSuffix", " (Override)" },
@@ -231,11 +236,13 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorDirectAllHues", "All Hues is a creator shortcut; direct sliders must store its seven individual hue bands." },
                 { "sliderCreatorInvalidDirectLink", "A direct link requires only linkable, unfiltered settings." },
                 { "sliderCreatorFilteredUnsupportedSetting", "Filtered sliders support only weather brightness, saturation, and hue-shift settings." },
+                { "sliderCreatorFilteredLightingUnsupportedSetting", "Lighting Template filters support only interior brightness settings." },
+                { "sliderCreatorLightingWeatherFeatures", "Time filters, local links, and saturation scales apply only to filtered weather sliders." },
                 { "sliderCreatorMixedFilteredOperations", "Every setting in a filtered slider must use the same operation." },
                 { "sliderCreatorInvalidLocalLink", "The local link must name a target supported by this filtered operation." },
-                { "sliderCreatorHueScalesRequireSaturation", "Slider-specific hue scales are supported only by filtered saturation sliders." },
-                { "sliderCreatorLocalFeaturesRequireFilter", "Local links and slider-specific hue scales require a filtered weather slider." },
-                { "sliderCreatorInvalidHueScale", "Every slider-specific hue scale must be a finite number." },
+                { "sliderCreatorHueScalesRequireSaturation", "Slider-specific saturation scales are supported only by filtered saturation sliders." },
+                { "sliderCreatorLocalFeaturesRequireFilter", "Local links and slider-specific saturation scales require a filtered weather slider." },
+                { "sliderCreatorInvalidHueScale", "Every slider-specific saturation scale must be a finite number." },
                 { "sliderCreatorNoTimeSelected", "Select at least one time of day or disable the time filter." },
                 { "sliderCreatorInvalidRange", "The slider minimum must be lower than its maximum." },
                 { "sliderCreatorNegativeStep", "The slider step cannot be negative." },
@@ -270,6 +277,7 @@ namespace MPL::SKSEMenuSettings
                 { "layoutPageMoveFailure", "The page order could not be changed." },
                 { "layoutPageRemoveFailure", "The page could not be removed. A profile must keep at least one page." },
                 { "deleteUserSettingsConfirmation", "Are you sure you want to delete all user settings?" },
+                { "promoteUserSettingsConfirmation", "This writes the profile's current user overrides into profileSettings.json and removes its userSettings.json. TuningUtil cannot undo this operation. Continue?" },
             };
             return messages;
         }
@@ -317,7 +325,13 @@ namespace MPL::SKSEMenuSettings
                 { "weatherFilter", "Weather Filter" },
                 { "pluginFilter", "Plugin Filter" },
                 { "lightingTemplateFilter", "Lighting Template Filter" },
+                { "sliderCreatorFilteredWeather", "Filtered Weather Slider" },
+                { "sliderCreatorFilteredLightingTemplate", "Filtered Lighting Template Slider" },
                 { "effectLightingFilter", "Effect Lighting Filter" },
+                { "pointLightEffectLightingFilter", "Point Light Classification" },
+                { "xemiRegion", "XEMI Region" },
+                { "treatAsSunlight", "Treat as Point Light" },
+                { "sunlightRegions", "Point Light Regions" },
                 { "saturationScales", "Saturation Scales" },
                 { "hueRanges", "Hue Ranges" },
                 { "compressionAnchor", "Compression Anchor" },
@@ -373,6 +387,10 @@ namespace MPL::SKSEMenuSettings
                 { "deleteUserSettings", "Delete User Settings" },
                 { "confirmDeleteUserSettings", "Delete" },
                 { "cancelDeleteUserSettings", "Cancel" },
+                { "makeUserSettingsPermanent", "Make User Settings Permanent" },
+                { "makeUserSettingsPermanentTitle", "Make User Settings Permanent?" },
+                { "confirmMakeUserSettingsPermanent", "Make Permanent" },
+                { "cancelMakeUserSettingsPermanent", "Cancel" },
                 { "currentImageSpaceWhitePoint", "Current Image Space White Point" },
                 { "displayIniSection", "[Display]" },
                 { "unavailableValue", "Unavailable" },
@@ -406,7 +424,7 @@ namespace MPL::SKSEMenuSettings
                 { "addAllHues", "Add All Hues" },
                 { "sliderCreatorLocalLink", "Local Link" },
                 { "sliderCreatorNoLocalLink", "None" },
-                { "sliderCreatorUniqueHueScales", "Unique Hue Scales" },
+                { "sliderCreatorUniqueHueScales", "Unique Saturation Scales" },
                 { "editMode", "Edit Profile Mode" },
                 { "editPage", "Edit Page" },
                 { "newPage", "New Page" },
@@ -470,7 +488,7 @@ namespace MPL::SKSEMenuSettings
             return "generic";
         }
 
-        std::optional<std::string> ReadText()
+        std::optional<std::string> ReadText(const bool a_stripUtf8Bom = true)
         {
             std::ifstream file(kSettingsPath, std::ios::binary);
             if (!file)
@@ -479,8 +497,63 @@ namespace MPL::SKSEMenuSettings
             }
             std::string text(std::istreambuf_iterator<char>(file), {});
             constexpr std::string_view utf8Bom = "\xEF\xBB\xBF";
-            if (text.starts_with(utf8Bom)) text.erase(0, utf8Bom.size());
+            if (a_stripUtf8Bom && text.starts_with(utf8Bom)) text.erase(0, utf8Bom.size());
             return text;
+        }
+
+        bool WriteTuningMenuEnabled(const bool a_enabled)
+        {
+            auto text = ReadText(false);
+            if (!text)
+            {
+                logger::warn("Could not read SKSE menu settings {}", kSettingsPath.string());
+                return false;
+            }
+
+            static const std::regex pattern(
+                R"(("enableTuningMenu"\s*:\s*)(true|false))",
+                std::regex::icase);
+            std::smatch match;
+            if (std::regex_search(*text, match, pattern))
+            {
+                text->replace(
+                    static_cast<std::size_t>(match.position(2)),
+                    static_cast<std::size_t>(match.length(2)),
+                    a_enabled ? "true" : "false");
+            }
+            else
+            {
+                const auto object = text->find('{');
+                if (object == std::string::npos)
+                {
+                    logger::warn(
+                        "Could not save the Tuning menu setting because {} is not a JSON object",
+                        kSettingsPath.string());
+                    return false;
+                }
+                const auto content = text->find_first_not_of(
+                    " \t\r\n",
+                    object + 1);
+                const bool empty =
+                    content != std::string::npos && (*text)[content] == '}';
+                std::string setting = "\n    \"enableTuningMenu\": ";
+                setting += a_enabled ? "true" : "false";
+                setting += empty ? "\n" : ",";
+                text->insert(object + 1, setting);
+            }
+
+            std::ofstream file(
+                kSettingsPath,
+                std::ios::binary | std::ios::trunc);
+            file << *text;
+            if (!file)
+            {
+                logger::warn(
+                    "Could not save the Tuning menu setting {}",
+                    kSettingsPath.string());
+                return false;
+            }
+            return true;
         }
 
         void Load(const bool a_initialLoad)
@@ -667,6 +740,24 @@ namespace MPL::SKSEMenuSettings
         }
         nextCheck = now + std::chrono::seconds(1);
         Load(false);
+    }
+
+    bool GetTuningMenuEnabled()
+    {
+        Initialize();
+        return settings.enableTuningMenu;
+    }
+
+    bool SetTuningMenuEnabled(const bool a_enabled)
+    {
+        Initialize();
+        if (!WriteTuningMenuEnabled(a_enabled))
+        {
+            return false;
+        }
+        settings.enableTuningMenu = a_enabled;
+        Load(true);
+        return true;
     }
 
     StatusLocation GetStatusLocation()

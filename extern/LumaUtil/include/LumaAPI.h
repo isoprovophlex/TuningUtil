@@ -10,7 +10,7 @@ namespace RE
 
 namespace MPL::LumaAPI
 {
-    inline constexpr std::uint32_t kVersion = 4;
+    inline constexpr std::uint32_t kVersion = 5;
 
     struct ClientCallbacks
     {
@@ -31,11 +31,8 @@ namespace MPL::LumaAPI
     {
         std::uint32_t version = kVersion;
         bool (*RegisterClient)(const ClientCallbacks*) = nullptr;
-        bool (*GetProviderSettings)(const char*, bool*, bool*) = nullptr;
-        bool (*UpdateProviderSettings)(
-            const char*,
-            std::int8_t,
-            std::int8_t) = nullptr;
+        bool (*GetProviderDetailedLogging)(const char*, bool*) = nullptr;
+        bool (*UpdateProviderDetailedLogging)(const char*, bool) = nullptr;
     };
 
     using RequestInterface = const Interface* (*) (std::uint32_t);

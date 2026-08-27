@@ -1,109 +1,26 @@
 #include <DetailedLogging.h>
 #include <LumaClient.h>
+#include <SKSEMenuSettings.h>
 #include <TuningSettings.h>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <mutex>
-#include <regex>
 
 namespace MPL::TuningSettings
 {
     namespace
     {
-        const std::filesystem::path kMenuSettingsPath{
-            "./Data/Luma/Tuning/skseMenuSettings.json"
-        };
-
         std::mutex settingsLock;
         bool detailedLoggingConfigured = false;
         bool tuningMenuEnabledForSession = true;
         bool tuningMenuConfigured = true;
-
-        std::string ReadText(const std::filesystem::path& a_path)
-        {
-            std::ifstream file(a_path, std::ios::binary);
-            return file ?
-                       std::string(
-                           std::istreambuf_iterator<char>(file),
-                           std::istreambuf_iterator<char>()) :
-                       std::string{};
-        }
-
-        bool ReadTuningMenuEnabled()
-        {
-            const auto text = ReadText(kMenuSettingsPath);
-            static const std::regex pattern(
-                R"("enableTuningMenu"\s*:\s*(true|false))",
-                std::regex::icase);
-            std::smatch match;
-            return !std::regex_search(text, match, pattern) ||
-                   match[1].str() == "true" ||
-                   match[1].str() == "TRUE";
-        }
-
-        bool WriteTuningMenuEnabledLocked(const bool a_enabled)
-        {
-            auto text = ReadText(kMenuSettingsPath);
-            static const std::regex pattern(
-                R"(("enableTuningMenu"\s*:\s*)(true|false))",
-                std::regex::icase);
-            std::smatch match;
-            if (std::regex_search(text, match, pattern))
-            {
-                text.replace(
-                    static_cast<std::size_t>(match.position(2)),
-                    static_cast<std::size_t>(match.length(2)),
-                    a_enabled ? "true" : "false");
-            }
-            else
-            {
-                const auto object = text.find('{');
-                if (object == std::string::npos)
-                {
-                    logger::warn(
-                        "Could not save the Tuning menu setting because {} is not a JSON object",
-                        kMenuSettingsPath.string());
-                    return false;
-                }
-                const auto content = text.find_first_not_of(
-                    " \t\r\n",
-                    object + 1);
-                const bool empty =
-                    content != std::string::npos && text[content] == '}';
-                text.insert(
-                    object + 1,
-                    std::format(
-                        "\n    \"enableTuningMenu\": {}{}",
-                        a_enabled ? "true" : "false",
-                        empty ? "\n" : ","));
-            }
-
-            std::ofstream file(
-                kMenuSettingsPath,
-                std::ios::binary | std::ios::trunc);
-            file << text;
-            if (!file)
-            {
-                logger::warn(
-                    "Could not save the Tuning menu setting {}",
-                    kMenuSettingsPath.string());
-                return false;
-            }
-            return true;
-        }
-
     }  // namespace
 
     void Load()
     {
         bool detailedLogging = false;
-        bool notifications = false;
-        LumaClient::GetProviderSettings(
+        LumaClient::GetProviderDetailedLogging(
             "TuningUtil",
-            detailedLogging,
-            notifications);
-        const auto menuEnabled = ReadTuningMenuEnabled();
+            detailedLogging);
+        const auto menuEnabled = SKSEMenuSettings::GetTuningMenuEnabled();
         {
             std::scoped_lock lock(settingsLock);
             detailedLoggingConfigured = detailedLogging;
@@ -140,7 +57,7 @@ namespace MPL::TuningSettings
         std::scoped_lock lock(settingsLock);
         const auto previous = tuningMenuConfigured;
         tuningMenuConfigured = a_enabled;
-        if (WriteTuningMenuEnabledLocked(a_enabled))
+        if (SKSEMenuSettings::SetTuningMenuEnabled(a_enabled))
         {
             return true;
         }
@@ -154,10 +71,9 @@ namespace MPL::TuningSettings
             std::scoped_lock lock(settingsLock);
             const auto previous = detailedLoggingConfigured;
             detailedLoggingConfigured = a_enabled;
-            if (!LumaClient::UpdateProviderSettings(
+            if (!LumaClient::UpdateProviderDetailedLogging(
                     "TuningUtil",
-                    a_enabled ? 1 : 0,
-                    -1))
+                    a_enabled))
             {
                 detailedLoggingConfigured = previous;
                 return false;

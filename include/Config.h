@@ -11,7 +11,7 @@ namespace MPL::Config
     class StatData : public REX::Singleton<StatData>
     {
     public:
-        MPL::API::ServiceMap* mmsfAPI = nullptr;
+        MPL::API::MMSF::Interface* mmsfAPI = nullptr;
         std::unordered_map<RE::TESWeather*, MPL::WeatherPatcher::WeatherBaseline> weatherBaselines;
         std::unordered_map<RE::BGSVolumetricLighting*, float> volumetricLightingIntensityBaselines;
         std::unordered_map<RE::BGSVolumetricLighting*, RE::NiColor> volumetricLightingColorBaselines;

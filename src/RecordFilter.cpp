@@ -78,10 +78,10 @@ namespace MPL::RecordFilter
         }
 
         std::unordered_set<RE::FormID> ResolveFormIDs(
-            const TuningUtil::WeatherFilter& a_filter)
+            const std::span<const std::string> a_configuredFormIDs)
         {
             std::unordered_set<RE::FormID> result;
-            for (const auto& configured : a_filter.formIDs)
+            for (const auto& configured : a_configuredFormIDs)
             {
                 const auto formID = Config::LiteForm::FromString(configured).formID;
                 if (formID != 0)
@@ -100,10 +100,24 @@ namespace MPL::RecordFilter
         const TuningUtil::PluginFilter& a_excludedPlugins)
     {
         return {
-            .includedFormIDs = ResolveFormIDs(a_includedRecords),
-            .excludedFormIDs = ResolveFormIDs(a_excludedRecords),
+            .includedFormIDs = ResolveFormIDs(a_includedRecords.formIDs),
+            .excludedFormIDs = ResolveFormIDs(a_excludedRecords.formIDs),
             .includedEditorIDFragments = a_includedRecords.contains,
             .excludedEditorIDFragments = a_excludedRecords.contains,
+            .includedPlugins = a_includedPlugins,
+            .excludedPlugins = a_excludedPlugins,
+        };
+    }
+
+    Resolved Resolve(
+        const std::span<const std::string> a_includedFormIDs,
+        const std::span<const std::string> a_excludedFormIDs,
+        const TuningUtil::PluginFilter& a_includedPlugins,
+        const TuningUtil::PluginFilter& a_excludedPlugins)
+    {
+        return {
+            .includedFormIDs = ResolveFormIDs(a_includedFormIDs),
+            .excludedFormIDs = ResolveFormIDs(a_excludedFormIDs),
             .includedPlugins = a_includedPlugins,
             .excludedPlugins = a_excludedPlugins,
         };
@@ -141,7 +155,7 @@ namespace MPL::RecordFilter
         auto* stat = Config::StatData::GetSingleton();
         if (!stat->mmsfAPI)
         {
-            stat->mmsfAPI = API::RequestMMSFAPI();
+            stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
         }
         if (stat->mmsfAPI)
         {

@@ -38,6 +38,35 @@ namespace MPL::TuningUtil
         bool operator==(const FilteredWeatherRule&) const = default;
     };
 
+    enum class FilteredLightingTemplateOperation
+    {
+        brightness,
+        fogStrength,
+    };
+
+    struct FilteredLightingTemplateSetting
+    {
+        FilteredLightingTemplateOperation operation = FilteredLightingTemplateOperation::brightness;
+        std::string target;
+        double scale = 1.0;
+
+        bool operator==(const FilteredLightingTemplateSetting&) const = default;
+    };
+
+    struct FilteredLightingTemplateRule
+    {
+        std::string id;
+        std::string controlID;
+        std::vector<FilteredLightingTemplateSetting> settings;
+        WeatherFilter include;
+        WeatherFilter exclude;
+        std::vector<std::string> locationTypeInclusions;
+        std::vector<std::string> locationTypeExclusions;
+        double defaultValue = 1.0;
+
+        bool operator==(const FilteredLightingTemplateRule&) const = default;
+    };
+
     struct Profile
     {
         std::string name;
@@ -45,6 +74,9 @@ namespace MPL::TuningUtil
         std::filesystem::path directory;
         std::vector<std::string> defaultSettingRoots;
         std::vector<FilteredWeatherRule> filteredWeatherRules;
+        std::vector<FilteredLightingTemplateRule> filteredLightingTemplateRules;
+        std::vector<std::string> interiorSliderSettings;
+        std::vector<std::string> ignoredInteriorSliderLinks;
     };
 
     void ApplyDataLoaded();
@@ -52,18 +84,26 @@ namespace MPL::TuningUtil
     std::uint64_t GetSettingsRevision();
     void InvalidateDiscoveryCaches();
     const std::vector<Profile>& GetProfiles();
+    bool IsProfilePluginFiltered(const std::filesystem::path&);
     std::vector<std::string> GetProfilesWithSettings(std::span<const std::string_view>);
+    std::optional<std::string> GetOverridingProfile(
+        const std::string&,
+        std::span<const std::string>);
     int GetProfilePriority(const std::string&);
     std::filesystem::path ProfileDirectory(const std::string&);
     const std::vector<FilteredWeatherRule>& GetFilteredWeatherRules(const std::string&);
     const FilteredWeatherRule* FindFilteredWeatherRule(const std::string&, std::string_view);
-    bool ReloadFilteredWeatherRules();
+    const std::vector<FilteredLightingTemplateRule>& GetFilteredLightingTemplateRules(const std::string&);
+    const FilteredLightingTemplateRule* FindFilteredLightingTemplateRule(const std::string&, std::string_view);
+    bool IgnoresInteriorSliderLink(std::span<const std::string>, std::string_view);
+    bool ReloadFilteredRules();
     Settings& GetSettings(std::string&);
     Settings ResolveSettingsStack(std::span<const std::string>);
     std::optional<std::string> SerializePresetSettings(std::string&, std::string&);
     bool ApplyPresetPreview(std::string&, std::string_view, std::string_view, std::string&);
     bool ApplyPresetAndRemoveUserOverrides(std::string&, std::string_view, std::string&);
     bool SaveSettings(std::string&);
+    bool PromoteUserSettingsToProfile(std::string&, std::string&);
     bool SavePageSettings(std::string&, const std::vector<std::string>&);
     bool RestoreSettings(std::string&);
     bool RestorePageSettings(std::string&, const std::vector<std::string>&);

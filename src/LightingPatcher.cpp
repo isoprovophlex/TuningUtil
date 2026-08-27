@@ -15,6 +15,7 @@
 #include <optional>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace MPL::LightingPatcher
 {
@@ -22,9 +23,51 @@ namespace MPL::LightingPatcher
     {
         std::atomic_bool retainRuntimeState{ true };
         constexpr std::size_t kFieldCount = 5;
+        constexpr double kZeroFogMaxBaseline = 0.1;
         constexpr std::array<std::string_view, kFieldCount> kFieldNames{
             "ambient", "directional", "ambientColors", "fogFar", "fogNear"
         };
+        using TemplateInheritFlags = REX::EnumSet<RE::INTERIOR_DATA::Inherit, std::uint32_t>;
+        constexpr std::array<std::pair<std::string_view, RE::INTERIOR_DATA::Inherit>, 11> kTemplateInheritFlags{
+            std::pair{ "ambientColor", RE::INTERIOR_DATA::Inherit::kAmbientColor },
+            std::pair{ "directionalColor", RE::INTERIOR_DATA::Inherit::kDirectionalColor },
+            std::pair{ "fogColor", RE::INTERIOR_DATA::Inherit::kFogColor },
+            std::pair{ "fogNear", RE::INTERIOR_DATA::Inherit::kFogNear },
+            std::pair{ "fogFar", RE::INTERIOR_DATA::Inherit::kFogFar },
+            std::pair{ "directionalRotation", RE::INTERIOR_DATA::Inherit::kDirectionalRotation },
+            std::pair{ "directionalFade", RE::INTERIOR_DATA::Inherit::kDirectionalFade },
+            std::pair{ "clipDistance", RE::INTERIOR_DATA::Inherit::kClipDistance },
+            std::pair{ "fogPower", RE::INTERIOR_DATA::Inherit::kFogPower },
+            std::pair{ "fogMax", RE::INTERIOR_DATA::Inherit::kFogMax },
+            std::pair{ "lightFadeDistances", RE::INTERIOR_DATA::Inherit::kLightFadeDistances },
+        };
+        std::vector<std::string> startupTemplateDrivenProfiles;
+        std::unordered_map<std::string, std::unordered_set<RE::FormID>>
+            startupFilteredLocationTypeTemplateInclusions;
+        std::unordered_map<std::string, std::unordered_set<RE::FormID>>
+            startupFilteredLocationTypeTemplateExclusions;
+
+        std::string NormalizeProfileName(std::string_view a_name)
+        {
+            std::string result(a_name);
+            std::ranges::transform(
+                result,
+                result.begin(),
+                [](const unsigned char a_character)
+                {
+                    return static_cast<char>(std::tolower(a_character));
+                });
+            return result;
+        }
+
+        std::string FilteredLocationTypeFilterKey(
+            const std::string_view a_profileName,
+            const std::string_view a_ruleID)
+        {
+            return NormalizeProfileName(a_profileName)
+                .append("\x1F")
+                .append(NormalizeProfileName(a_ruleID));
+        }
 
         struct Resolution
         {
@@ -36,6 +79,22 @@ namespace MPL::LightingPatcher
         {
             std::array<WeatherPatcher::HueShiftBands, kFieldCount> values{};
         };
+
+        InteriorLinkTopology ResolveCategoryLinks(
+            const InteriorLinks& a_links,
+            const std::span<const std::string> a_profileNames,
+            const std::string_view a_settingRoot)
+        {
+            auto result = ResolveInteriorLinks(a_links);
+            for (std::size_t index = 0; index < kFieldCount; ++index)
+            {
+                if (TuningUtil::IgnoresInteriorSliderLink(
+                        a_profileNames,
+                        std::format("{}.{}", a_settingRoot, kFieldNames[index])))
+                    result[index].reset();
+            }
+            return result;
+        }
 
         Resolution ResolveCategory(
             const InteriorColorSettings& a_settings,
@@ -384,11 +443,17 @@ namespace MPL::LightingPatcher
         void ApplyFogMax(RE::INTERIOR_DATA& a_data, const double a_multiplier, const bool a_active)
         {
             const auto multiplier = std::max(0.0, a_multiplier);
-            if (!a_active || std::abs(multiplier - 1.0) <= 0.0001)
+            if (!a_active)
             {
                 return;
             }
-            const auto value = static_cast<double>(a_data.fogClamp) * multiplier;
+            const auto useZeroBaseline = a_data.fogClamp == 0.0f && multiplier > 0.0;
+            if (!useZeroBaseline && std::abs(multiplier - 1.0) <= 0.0001)
+            {
+                return;
+            }
+            const auto baseline = useZeroBaseline ? kZeroFogMaxBaseline : static_cast<double>(a_data.fogClamp);
+            const auto value = baseline * multiplier;
             a_data.fogClamp = static_cast<float>(std::clamp(
                 value,
                 -static_cast<double>(std::numeric_limits<float>::max()),
@@ -502,10 +567,12 @@ namespace MPL::LightingPatcher
         std::array<bool, kFieldCount> CellActiveFields(const RE::INTERIOR_DATA& a_data)
         {
             const auto& inherit = a_data.lightingTemplateInheritanceFlags;
+            const auto ambientActive =
+                (inherit & RE::INTERIOR_DATA::Inherit::kAmbientColor).underlying() == 0;
             return {
-                (inherit & RE::INTERIOR_DATA::Inherit::kAmbientColor).underlying() == 0,
+                ambientActive,
                 (inherit & RE::INTERIOR_DATA::Inherit::kDirectionalColor).underlying() == 0,
-                true,
+                ambientActive,
                 (inherit & RE::INTERIOR_DATA::Inherit::kFogColor).underlying() == 0,
                 (inherit & RE::INTERIOR_DATA::Inherit::kFogColor).underlying() == 0,
             };
@@ -516,9 +583,12 @@ namespace MPL::LightingPatcher
             return (a_data.lightingTemplateInheritanceFlags & RE::INTERIOR_DATA::Inherit::kFogMax).underlying() == 0;
         }
 
+        void BuildStartupFilteredLocationTypeFilters();
+        void ApplyStartupCellSettings();
+
     }  // namespace
 
-    void CaptureCellBaseline(RE::TESObjectCELL* a_cell)
+    static void CaptureCellBaseline(RE::TESObjectCELL* a_cell)
     {
         if (!retainRuntimeState.load(std::memory_order_relaxed) || !a_cell || !a_cell->IsInteriorCell())
         {
@@ -538,6 +608,8 @@ namespace MPL::LightingPatcher
     void ApplyDataLoaded()
     {
         retainRuntimeState.store(true, std::memory_order_relaxed);
+        BuildStartupFilteredLocationTypeFilters();
+        ApplyStartupCellSettings();
         ApplyAllSettings();
     }
 
@@ -547,20 +619,231 @@ namespace MPL::LightingPatcher
         auto* stat = Config::StatData::GetSingleton();
         stat->lightingTemplateBaselines = {};
         stat->cellLightingBaselines = {};
+        startupTemplateDrivenProfiles.clear();
+        startupFilteredLocationTypeTemplateInclusions.clear();
+        startupFilteredLocationTypeTemplateExclusions.clear();
         PointLightPatcher::ReleaseRuntimeState();
     }
 
     namespace
     {
+        struct FilteredLightingTemplateAdjustments
+        {
+            std::array<double, kFieldCount> brightness{ 1.0, 1.0, 1.0, 1.0, 1.0 };
+            double fogStrength = 1.0;
+        };
+
+        struct LocationTypeTemplateEvidence
+        {
+            RE::BGSLightingTemplate* lightingTemplate = nullptr;
+            RE::TESObjectCELL* cell = nullptr;
+            RE::BGSLocation* location = nullptr;
+            RE::BGSKeyword* keyword = nullptr;
+            std::size_t matchingCellCount = 1;
+        };
+
+        RecordFilter::Resolved ResolveFilteredLightingTemplateFilter(
+            const TuningUtil::FilteredLightingTemplateRule& a_rule,
+            const std::string_view a_profileName)
+        {
+            const TuningUtil::PluginFilter noPlugins;
+            auto result = RecordFilter::Resolve(a_rule.include, a_rule.exclude, noPlugins, noPlugins);
+            const auto key = FilteredLocationTypeFilterKey(a_profileName, a_rule.id);
+            if (const auto found = startupFilteredLocationTypeTemplateInclusions.find(key);
+                found != startupFilteredLocationTypeTemplateInclusions.end())
+            {
+                result.includedFormIDs.insert(found->second.begin(), found->second.end());
+            }
+            if (const auto found = startupFilteredLocationTypeTemplateExclusions.find(
+                    key);
+                found != startupFilteredLocationTypeTemplateExclusions.end())
+            {
+                result.excludedFormIDs.insert(found->second.begin(), found->second.end());
+            }
+            return result;
+        }
+
+        std::unordered_set<RE::FormID> BuildLocationTypeTemplateSet(
+            const std::string_view a_owner,
+            const std::span<const std::string> a_selectors,
+            RE::TESDataHandler* a_dataHandler,
+            const std::unordered_map<RE::FormID, std::size_t>& a_templateCellCounts,
+            const bool a_inclusion)
+        {
+            std::vector<RE::BGSKeyword*> keywords;
+            std::unordered_set<RE::FormID> keywordFormIDs;
+            for (const auto& selector : a_selectors)
+            {
+                const auto formID = Config::LiteForm::FromString(selector).formID;
+                auto* keyword = formID ? RE::TESForm::LookupByID<RE::BGSKeyword>(formID) : nullptr;
+                if (!keyword)
+                {
+                    logger::warn(
+                        "Lighting Template location-type {} for {} ignored invalid keyword selector '{}'",
+                        a_inclusion ? "inclusion" : "exclusion",
+                        a_owner,
+                        selector);
+                    continue;
+                }
+                if (keywordFormIDs.insert(formID).second)
+                {
+                    keywords.push_back(keyword);
+                }
+            }
+
+            std::unordered_map<RE::FormID, LocationTypeTemplateEvidence> evidenceByTemplate;
+            std::size_t matchingCellCount = 0;
+            for (auto* cell : a_dataHandler->interiorCells)
+            {
+                auto* lightingTemplate = cell ? cell->GetRuntimeData().lightingTemplate : nullptr;
+                auto* location = cell ? cell->GetLocation() : nullptr;
+                if (!lightingTemplate || !location)
+                {
+                    continue;
+                }
+                const auto matchedKeyword = std::ranges::find_if(
+                    keywords,
+                    [&](const RE::BGSKeyword* a_keyword)
+                    {
+                        return a_keyword && location->HasKeyword(a_keyword);
+                    });
+                if (matchedKeyword == keywords.end())
+                {
+                    continue;
+                }
+
+                ++matchingCellCount;
+                const auto templateFormID = lightingTemplate->GetFormID();
+                const auto [evidence, inserted] = evidenceByTemplate.try_emplace(
+                    templateFormID,
+                    LocationTypeTemplateEvidence{
+                        .lightingTemplate = lightingTemplate,
+                        .cell = cell,
+                        .location = location,
+                        .keyword = *matchedKeyword,
+                    });
+                if (!inserted)
+                {
+                    ++evidence->second.matchingCellCount;
+                }
+            }
+
+            std::unordered_set<RE::FormID> result;
+            for (const auto& [templateFormID, evidence] : evidenceByTemplate)
+            {
+                result.insert(templateFormID);
+                const auto total = a_templateCellCounts.find(templateFormID);
+                const auto totalCellCount = total != a_templateCellCounts.end() ? total->second : 0;
+                const auto otherCellCount = totalCellCount > evidence.matchingCellCount ?
+                                                totalCellCount - evidence.matchingCellCount :
+                                                0;
+                logger::info(
+                    "Lighting Template location-type {} for {} {} template {} ({}) because cell {} ({}) uses location {} ({}) with keyword {} ({}); matching cells={}, other cells={}",
+                    a_inclusion ? "inclusion" : "exclusion",
+                    a_owner,
+                    a_inclusion ? "included" : "excluded",
+                    RecordFilter::FormKey(evidence.lightingTemplate),
+                    RecordFilter::DisplayName(evidence.lightingTemplate),
+                    RecordFilter::FormKey(evidence.cell),
+                    RecordFilter::DisplayName(evidence.cell),
+                    RecordFilter::FormKey(evidence.location),
+                    RecordFilter::DisplayName(evidence.location),
+                    RecordFilter::FormKey(evidence.keyword),
+                    RecordFilter::DisplayName(evidence.keyword),
+                    evidence.matchingCellCount,
+                    otherCellCount);
+            }
+            logger::info(
+                "Lighting Template location-type {} for {} resolved {} keyword(s), matched {} interior CELL record(s), and selected {} template record(s)",
+                a_inclusion ? "inclusion" : "exclusion",
+                a_owner,
+                keywords.size(),
+                matchingCellCount,
+                result.size());
+            return result;
+        }
+
+        void BuildStartupFilteredLocationTypeFilters()
+        {
+            startupFilteredLocationTypeTemplateInclusions.clear();
+            startupFilteredLocationTypeTemplateExclusions.clear();
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            if (!dataHandler)
+            {
+                logger::warn(
+                    "TESDataHandler is unavailable; per-slider Lighting Template location-type filters were not resolved");
+                return;
+            }
+
+            std::unordered_map<RE::FormID, std::size_t> templateCellCounts;
+            for (auto* cell : dataHandler->interiorCells)
+            {
+                auto* lightingTemplate = cell ? cell->GetRuntimeData().lightingTemplate : nullptr;
+                if (lightingTemplate)
+                {
+                    ++templateCellCounts[lightingTemplate->GetFormID()];
+                }
+            }
+
+            for (const auto& discovered : TuningUtil::GetProfiles())
+            {
+                const auto& profileName = discovered.name;
+                for (const auto& rule : discovered.filteredLightingTemplateRules)
+                {
+                    const auto key = FilteredLocationTypeFilterKey(profileName, rule.id);
+                    const auto owner = "profile " + profileName + " slider " + rule.id;
+                    if (!rule.locationTypeInclusions.empty())
+                    {
+                        startupFilteredLocationTypeTemplateInclusions.insert_or_assign(
+                            key,
+                            BuildLocationTypeTemplateSet(
+                                owner,
+                                rule.locationTypeInclusions,
+                                dataHandler,
+                                templateCellCounts,
+                                true));
+                    }
+                    if (!rule.locationTypeExclusions.empty())
+                    {
+                        startupFilteredLocationTypeTemplateExclusions.insert_or_assign(
+                            key,
+                            BuildLocationTypeTemplateSet(
+                                owner,
+                                rule.locationTypeExclusions,
+                                dataHandler,
+                                templateCellCounts,
+                                false));
+                    }
+                }
+            }
+        }
+
         std::size_t ApplyLightingTemplates(
             const Settings& a_settings,
-            const std::span<RE::BGSLightingTemplate* const> a_templates)
+            const std::span<const std::string> a_profileNames,
+            const std::span<RE::BGSLightingTemplate* const> a_templates,
+            const FilteredLightingTemplateAdjustments& a_filtered)
         {
             auto* stat = Config::StatData::GetSingleton();
-            const auto links = ResolveInteriorLinks(a_settings.links.interior);
-            const auto brightness = ResolveCategory(a_settings.intBrightnessMultiplier, links);
-            const auto saturation = ResolveCategory(a_settings.intSaturationMultiplier, links);
-            const auto hueShift = ResolveHueShiftCategory(a_settings.intHueShift, links);
+            const auto brightnessLinks = ResolveCategoryLinks(
+                a_settings.links.interior,
+                a_profileNames,
+                "intBrightnessMultiplier");
+            const auto saturationLinks = ResolveCategoryLinks(
+                a_settings.links.interior,
+                a_profileNames,
+                "intSaturationMultiplier");
+            const auto hueShiftLinks = ResolveCategoryLinks(
+                a_settings.links.interior,
+                a_profileNames,
+                "intHueShift");
+            auto brightness = ResolveCategory(a_settings.intBrightnessMultiplier, brightnessLinks);
+            for (std::size_t field = 0; field < brightness.values.size(); ++field)
+            {
+                brightness.values[field] *= a_filtered.brightness[field];
+            }
+            const auto saturation = ResolveCategory(a_settings.intSaturationMultiplier, saturationLinks);
+            const auto hueShift = ResolveHueShiftCategory(a_settings.intHueShift, hueShiftLinks);
             const auto hueScales = WeatherPatcher::ResolveHueScales(a_settings.intAmbientHueScales);
             constexpr std::array<bool, kFieldCount> allFields{ true, true, true, true, true };
 
@@ -587,7 +870,10 @@ namespace MPL::LightingPatcher
                     lightingTemplate->directionalAmbientLightingColors,
                     brightness,
                     allFields);
-                ApplyFogMax(lightingTemplate->data, a_settings.intFogMaxMultiplier, true);
+                ApplyFogMax(
+                    lightingTemplate->data,
+                    a_settings.intFogMaxMultiplier * a_filtered.fogStrength,
+                    true);
                 ApplySaturation(
                     lightingTemplate->data,
                     lightingTemplate->directionalAmbientLightingColors,
@@ -606,13 +892,20 @@ namespace MPL::LightingPatcher
             return count;
         }
 
-        std::size_t ApplyInteriorCells(const Settings& a_settings)
+        std::size_t ApplyInteriorCells(
+            const Settings& a_settings,
+            const std::span<const std::string> a_profileNames)
         {
             auto* stat = Config::StatData::GetSingleton();
-            const auto links = ResolveInteriorLinks(a_settings.links.interior);
-            const auto brightness = ResolveCategory(a_settings.intBrightnessMultiplier, links);
-            const auto saturation = ResolveCategory(a_settings.intSaturationMultiplier, links);
-            const auto hueShift = ResolveHueShiftCategory(a_settings.intHueShift, links);
+            const auto brightness = ResolveCategory(
+                a_settings.intBrightnessMultiplier,
+                ResolveCategoryLinks(a_settings.links.interior, a_profileNames, "intBrightnessMultiplier"));
+            const auto saturation = ResolveCategory(
+                a_settings.intSaturationMultiplier,
+                ResolveCategoryLinks(a_settings.links.interior, a_profileNames, "intSaturationMultiplier"));
+            const auto hueShift = ResolveHueShiftCategory(
+                a_settings.intHueShift,
+                ResolveCategoryLinks(a_settings.links.interior, a_profileNames, "intHueShift"));
             const auto hueScales = WeatherPatcher::ResolveHueScales(a_settings.intAmbientHueScales);
 
             std::size_t count = 0;
@@ -650,11 +943,238 @@ namespace MPL::LightingPatcher
             return count;
         }
 
+        TemplateInheritFlags ResolveTemplateInheritFlags(
+            const std::span<const std::string> a_names,
+            const std::string_view a_profileName)
+        {
+            TemplateInheritFlags result;
+            for (const auto& name : a_names)
+            {
+                const auto match = std::ranges::find_if(
+                    kTemplateInheritFlags,
+                    [&](const auto& a_entry) { return Config::IEquals(name, a_entry.first); });
+                if (match == kTemplateInheritFlags.end())
+                {
+                    logger::warn(
+                        "TuningUtil profile {} ignored unknown template inheritance flag {}",
+                        a_profileName,
+                        name);
+                    continue;
+                }
+                result |= match->second;
+            }
+            return result;
+        }
+
+        struct ActiveTemplateInheritProfile
+        {
+            std::string name;
+            TemplateInheritFlags flags;
+            std::unordered_set<RE::FormID> excludedCellFormIDs;
+            RecordFilter::Resolved lightingTemplateFilter;
+        };
+
+        std::unordered_set<RE::FormID> ResolveConfiguredFormIDs(
+            const std::span<const std::string> a_configuredFormIDs)
+        {
+            std::unordered_set<RE::FormID> result;
+            for (const auto& configured : a_configuredFormIDs)
+            {
+                const auto formID = Config::LiteForm::FromString(configured).formID;
+                if (formID != 0)
+                {
+                    result.insert(formID);
+                }
+            }
+            return result;
+        }
+
+        std::vector<ActiveTemplateInheritProfile> GetStartupTemplateInheritProfiles()
+        {
+            static constexpr std::array roots{ std::string_view{ "enableTemplateInherit" } };
+            std::vector<ActiveTemplateInheritProfile> result;
+            startupTemplateDrivenProfiles.clear();
+            for (auto profile : TuningUtil::GetProfilesWithSettings(roots))
+            {
+                const auto& settings = TuningUtil::GetSettings(profile);
+                const auto flags = ResolveTemplateInheritFlags(settings.enableTemplateInherit, profile);
+                if (!flags)
+                {
+                    continue;
+                }
+                startupTemplateDrivenProfiles.push_back(profile);
+                if (!settings.EnableProfile)
+                {
+                    continue;
+                }
+                result.push_back({
+                    .name = std::move(profile),
+                    .flags = flags,
+                    .excludedCellFormIDs = ResolveConfiguredFormIDs(settings.cellExclusions),
+                    .lightingTemplateFilter = RecordFilter::Resolve(
+                        settings.lightingTemplateInclusions,
+                        settings.lightingTemplateExclusions,
+                        settings.lightingTemplatePluginInclusions,
+                        settings.lightingTemplatePluginExclusions),
+                });
+            }
+            return result;
+        }
+
+        void LogTemplateInheritExclusion(
+            const ActiveTemplateInheritProfile& a_profile,
+            const RE::TESObjectCELL* a_cell)
+        {
+            if (!DetailedLogging::IsEnabled())
+            {
+                return;
+            }
+            DetailedLogging::Info(
+                "Template inheritance for profile {} excluded cell {:08X};{} through cellExclusions",
+                a_profile.name,
+                a_cell->GetFormID(),
+                RecordFilter::DisplayName(a_cell));
+        }
+
+        bool UsesTemplateInheritance(const std::string_view a_profileName)
+        {
+            return std::ranges::any_of(startupTemplateDrivenProfiles, [&](const auto& a_profile)
+                { return Config::IEquals(a_profileName, a_profile); });
+        }
+
+        std::vector<std::string> GetActiveDirectCellProfiles()
+        {
+            static constexpr std::array roots{
+                std::string_view{ "intBrightnessMultiplier" },
+                std::string_view{ "intSaturationMultiplier" },
+                std::string_view{ "intHueShift" },
+                std::string_view{ "intAmbientHueScales" },
+                std::string_view{ "intHueRanges" },
+                std::string_view{ "intFogMaxMultiplier" },
+            };
+            std::vector<std::string> result;
+            for (auto profile : TuningUtil::GetProfilesWithSettings(roots))
+            {
+                if (TuningUtil::GetSettings(profile).EnableProfile &&
+                    !UsesTemplateInheritance(profile))
+                {
+                    result.push_back(std::move(profile));
+                }
+            }
+            return result;
+        }
+
+        void ApplyTemplateInherit(
+            RE::TESObjectCELL* a_cell,
+            const std::span<const ActiveTemplateInheritProfile> a_profiles,
+            std::unordered_map<std::string, std::size_t>* a_profileTargetCounts = nullptr)
+        {
+            if (!a_cell || !a_cell->IsInteriorCell())
+            {
+                return;
+            }
+            auto* interior = a_cell->GetRuntimeData().cellData.interior;
+            auto* lightingTemplate = a_cell->GetRuntimeData().lightingTemplate;
+            if (!interior || !lightingTemplate)
+            {
+                return;
+            }
+
+            for (const auto& profile : a_profiles)
+            {
+                if (profile.excludedCellFormIDs.contains(a_cell->GetFormID()))
+                {
+                    LogTemplateInheritExclusion(profile, a_cell);
+                    continue;
+                }
+                if (!RecordFilter::Matches(lightingTemplate, profile.lightingTemplateFilter))
+                {
+                    continue;
+                }
+                interior->lightingTemplateInheritanceFlags |= profile.flags;
+                if (a_profileTargetCounts)
+                {
+                    ++(*a_profileTargetCounts)[profile.name];
+                }
+            }
+        }
+
+        void ApplyStartupCellSettings()
+        {
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            if (!dataHandler)
+            {
+                logger::warn("TESDataHandler is unavailable; startup CELL settings were not applied");
+                return;
+            }
+
+            const auto inheritProfiles = GetStartupTemplateInheritProfiles();
+            std::unordered_map<std::string, std::size_t> inheritTargetCounts;
+            for (auto* cell : dataHandler->interiorCells)
+            {
+                CaptureCellBaseline(cell);
+                ApplyTemplateInherit(cell, inheritProfiles, std::addressof(inheritTargetCounts));
+            }
+            for (const auto& profile : inheritProfiles)
+            {
+                DetailedLogging::Info(
+                    "Startup template inheritance for profile {} matched {} interior CELL record(s)",
+                    profile.name,
+                    inheritTargetCounts[profile.name]);
+            }
+        }
+
         struct ActiveTemplateProfile
         {
             std::string name;
+            Settings settings;
             RecordFilter::Resolved filter;
+            struct FilteredRule
+            {
+                const TuningUtil::FilteredLightingTemplateRule* rule = nullptr;
+                RecordFilter::Resolved filter;
+            };
+            std::vector<FilteredRule> filteredRules;
         };
+
+        double FilteredLightingTemplateValue(
+            const Settings& a_settings,
+            const TuningUtil::FilteredLightingTemplateRule& a_rule)
+        {
+            if (const auto exact = a_settings.filteredLightingTemplateAdjustments.find(a_rule.id);
+                exact != a_settings.filteredLightingTemplateAdjustments.end())
+            {
+                return exact->second;
+            }
+            const auto insensitive = std::ranges::find_if(
+                a_settings.filteredLightingTemplateAdjustments,
+                [&](const auto& a_entry) { return Config::IEquals(a_entry.first, a_rule.id); });
+            return insensitive != a_settings.filteredLightingTemplateAdjustments.end() ?
+                       insensitive->second :
+                       a_rule.defaultValue;
+        }
+
+        void AccumulateFilteredLightingTemplateAdjustments(
+            FilteredLightingTemplateAdjustments& a_adjustments,
+            const Settings& a_settings,
+            const TuningUtil::FilteredLightingTemplateRule& a_rule)
+        {
+            const auto value = FilteredLightingTemplateValue(a_settings, a_rule);
+            for (const auto& setting : a_rule.settings)
+            {
+                const auto multiplier = std::max(0.0, 1.0 + ((value - 1.0) * setting.scale));
+                if (setting.operation == TuningUtil::FilteredLightingTemplateOperation::fogStrength)
+                {
+                    a_adjustments.fogStrength *= multiplier;
+                    continue;
+                }
+                const auto field = std::ranges::find_if(kFieldNames, [&](const auto a_name)
+                    { return Config::IEquals(a_name, setting.target); });
+                if (field == kFieldNames.end()) continue;
+                const auto index = static_cast<std::size_t>(std::distance(kFieldNames.begin(), field));
+                a_adjustments.brightness[index] *= multiplier;
+            }
+        }
 
         std::vector<ActiveTemplateProfile> GetActiveTemplateProfiles()
         {
@@ -671,21 +1191,37 @@ namespace MPL::LightingPatcher
                 std::string_view{ "lightingTemplatePluginExclusions" },
             };
             std::vector<ActiveTemplateProfile> result;
-            for (auto profile : TuningUtil::GetProfilesWithSettings(roots))
+            auto directProfiles = TuningUtil::GetProfilesWithSettings(roots);
+            for (const auto& discovered : TuningUtil::GetProfiles())
             {
+                const auto ownsDirectSettings = std::ranges::any_of(directProfiles, [&](const auto& a_profile)
+                    { return Config::IEquals(a_profile, discovered.name); });
+                const auto& filteredRules = TuningUtil::GetFilteredLightingTemplateRules(discovered.name);
+                if (!ownsDirectSettings && filteredRules.empty()) continue;
+
+                auto profile = discovered.name;
                 const auto& settings = TuningUtil::GetSettings(profile);
                 if (!settings.EnableProfile)
                 {
                     continue;
                 }
-                result.push_back({
-                    std::move(profile),
-                    RecordFilter::Resolve(
+                ActiveTemplateProfile active{
+                    .name = std::move(profile),
+                    .settings = settings,
+                    .filter = RecordFilter::Resolve(
                         settings.lightingTemplateInclusions,
                         settings.lightingTemplateExclusions,
                         settings.lightingTemplatePluginInclusions,
                         settings.lightingTemplatePluginExclusions),
-                });
+                };
+                for (const auto& rule : filteredRules)
+                {
+                    active.filteredRules.push_back({
+                        .rule = std::addressof(rule),
+                        .filter = ResolveFilteredLightingTemplateFilter(rule, active.name),
+                    });
+                }
+                result.push_back(std::move(active));
             }
             return result;
         }
@@ -701,26 +1237,12 @@ namespace MPL::LightingPatcher
             return;
         }
 
-        static constexpr std::array cellRoots{
-            std::string_view{ "intBrightnessMultiplier" },
-            std::string_view{ "intSaturationMultiplier" },
-            std::string_view{ "intHueShift" },
-            std::string_view{ "intAmbientHueScales" },
-            std::string_view{ "intHueRanges" },
-            std::string_view{ "intFogMaxMultiplier" },
-        };
-        std::vector<std::string> activeCellProfiles;
-        for (auto profile : TuningUtil::GetProfilesWithSettings(cellRoots))
-        {
-            if (TuningUtil::GetSettings(profile).EnableProfile)
-            {
-                activeCellProfiles.push_back(std::move(profile));
-            }
-        }
+        const auto activeCellProfiles = GetActiveDirectCellProfiles();
         if (!activeCellProfiles.empty())
         {
             const auto cellCount = ApplyInteriorCells(
-                TuningUtil::ResolveSettingsStack(activeCellProfiles));
+                TuningUtil::ResolveSettingsStack(activeCellProfiles),
+                activeCellProfiles);
             DetailedLogging::Info(
                 "Applied {} stacked Lighting profile(s) to {} direct interior cell record(s)",
                 activeCellProfiles.size(),
@@ -730,6 +1252,7 @@ namespace MPL::LightingPatcher
         const auto templateProfiles = GetActiveTemplateProfiles();
         std::unordered_map<std::string, std::vector<RE::BGSLightingTemplate*>> templateGroups;
         std::unordered_map<std::string, std::vector<std::string>> groupProfiles;
+        std::unordered_map<std::string, FilteredLightingTemplateAdjustments> groupFilteredAdjustments;
         std::unordered_map<std::string, std::size_t> profileTargetCounts;
         for (auto* lightingTemplate : dataHandler->GetFormArray<RE::BGSLightingTemplate>())
         {
@@ -739,6 +1262,7 @@ namespace MPL::LightingPatcher
             }
             std::string signature;
             std::vector<std::string> matchingProfiles;
+            FilteredLightingTemplateAdjustments filteredAdjustments;
             for (const auto& profile : templateProfiles)
             {
                 if (RecordFilter::Matches(lightingTemplate, profile.filter))
@@ -746,12 +1270,25 @@ namespace MPL::LightingPatcher
                     matchingProfiles.push_back(profile.name);
                     signature.append(profile.name).push_back('\x1F');
                     ++profileTargetCounts[profile.name];
+                    for (const auto& filtered : profile.filteredRules)
+                    {
+                        if (!filtered.rule || !RecordFilter::Matches(lightingTemplate, filtered.filter)) continue;
+                        AccumulateFilteredLightingTemplateAdjustments(
+                            filteredAdjustments,
+                            profile.settings,
+                            *filtered.rule);
+                        signature.append(profile.name)
+                            .append("\x1E")
+                            .append(filtered.rule->id)
+                            .push_back('\x1F');
+                    }
                 }
             }
             if (!matchingProfiles.empty())
             {
                 templateGroups[signature].push_back(lightingTemplate);
                 groupProfiles.try_emplace(signature, std::move(matchingProfiles));
+                groupFilteredAdjustments.try_emplace(signature, filteredAdjustments);
             }
         }
 
@@ -760,7 +1297,9 @@ namespace MPL::LightingPatcher
         {
             templateCount += ApplyLightingTemplates(
                 TuningUtil::ResolveSettingsStack(groupProfiles[signature]),
-                templates);
+                groupProfiles[signature],
+                templates,
+                groupFilteredAdjustments[signature]);
         }
         for (const auto& profile : templateProfiles)
         {
@@ -777,12 +1316,27 @@ namespace MPL::LightingPatcher
         static constexpr std::array pointLightRoots{
             std::string_view{ "pointLights" },
             std::string_view{ "intHueRanges" },
+            std::string_view{ "pointLightEffectLightingExclusions" },
         };
         std::vector<std::string> pointLightProfiles;
+        std::vector<std::string> pointLightRegionExclusions;
         for (auto profile : TuningUtil::GetProfilesWithSettings(pointLightRoots))
         {
-            if (TuningUtil::GetSettings(profile).EnableProfile)
+            const auto& settings = TuningUtil::GetSettings(profile);
+            if (settings.EnableProfile)
             {
+                for (const auto& configured : settings.pointLightEffectLightingExclusions)
+                {
+                    if (std::ranges::none_of(
+                            pointLightRegionExclusions,
+                            [&](const std::string& a_existing)
+                            {
+                                return Config::IEquals(a_existing, configured);
+                            }))
+                    {
+                        pointLightRegionExclusions.push_back(configured);
+                    }
+                }
                 pointLightProfiles.push_back(std::move(profile));
             }
         }
@@ -790,7 +1344,77 @@ namespace MPL::LightingPatcher
         PointLightPatcher::Apply(
             pointLightSettings.pointLights,
             pointLightSettings.intHueRanges,
+            pointLightRegionExclusions,
             a_commitLightPlacer);
+    }
+
+    bool ProfilesShareInteriorTarget(
+        const std::string& a_leftProfile,
+        const std::string& a_rightProfile)
+    {
+        if (!UsesTemplateInheritance(a_leftProfile) || !UsesTemplateInheritance(a_rightProfile)) return true;
+
+        const auto targetsFor = [](std::string a_profileName)
+        {
+            std::unordered_set<RE::FormID> result;
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            if (!dataHandler) return result;
+            const auto& settings = TuningUtil::GetSettings(a_profileName);
+            const auto filter = RecordFilter::Resolve(
+                settings.lightingTemplateInclusions,
+                settings.lightingTemplateExclusions,
+                settings.lightingTemplatePluginInclusions,
+                settings.lightingTemplatePluginExclusions);
+            for (auto* lightingTemplate : dataHandler->GetFormArray<RE::BGSLightingTemplate>())
+            {
+                if (RecordFilter::Matches(lightingTemplate, filter))
+                {
+                    result.insert(lightingTemplate->GetFormID());
+                }
+            }
+            return result;
+        };
+
+        const auto leftTargets = targetsFor(a_leftProfile);
+        const auto rightTargets = targetsFor(a_rightProfile);
+        return std::ranges::any_of(rightTargets, [&](const auto a_formID)
+            { return leftTargets.contains(a_formID); });
+    }
+
+    bool ProfilesShareFilteredLightingTemplateTarget(
+        const std::string& a_leftProfile,
+        const std::string& a_rightProfile,
+        const std::string_view a_ruleID)
+    {
+        const auto targetsFor = [&](std::string a_profileName)
+        {
+            std::unordered_set<RE::FormID> result;
+            const auto* rule = TuningUtil::FindFilteredLightingTemplateRule(a_profileName, a_ruleID);
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            if (!rule || !dataHandler) return result;
+
+            const auto& settings = TuningUtil::GetSettings(a_profileName);
+            const auto profileFilter = RecordFilter::Resolve(
+                settings.lightingTemplateInclusions,
+                settings.lightingTemplateExclusions,
+                settings.lightingTemplatePluginInclusions,
+                settings.lightingTemplatePluginExclusions);
+            const auto ruleFilter = ResolveFilteredLightingTemplateFilter(*rule, a_profileName);
+            for (auto* lightingTemplate : dataHandler->GetFormArray<RE::BGSLightingTemplate>())
+            {
+                if (RecordFilter::Matches(lightingTemplate, profileFilter) &&
+                    RecordFilter::Matches(lightingTemplate, ruleFilter))
+                {
+                    result.insert(lightingTemplate->GetFormID());
+                }
+            }
+            return result;
+        };
+
+        const auto leftTargets = targetsFor(a_leftProfile);
+        const auto rightTargets = targetsFor(a_rightProfile);
+        return std::ranges::any_of(rightTargets, [&](const auto a_formID)
+            { return leftTargets.contains(a_formID); });
     }
 
 }  // namespace MPL::LightingPatcher

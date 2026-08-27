@@ -27,6 +27,9 @@ namespace MPL::WeatherPatcher
     SourceWeatherSet GetSelectableWeathers(std::string&);
     SourceWeatherSet GetFilterableWeathers(std::string&);
     SourceWeatherSet GetFXWeathers();
+    bool ProfilesShareWeatherTarget(const std::string&, const std::string&);
+    bool ProfilesShareFilteredWeatherTarget(const std::string&, const std::string&, std::string_view);
+    bool ProfilesShareEffectLightingTarget(const std::string&, const std::string&);
     DynamicAmbientRange GetDynamicAmbientRange(std::string&, DynamicAmbientMode, DynamicBrightnessField);
     std::optional<DynamicBrightnessStatus> GetDynamicBrightnessStatus(
         std::string&,

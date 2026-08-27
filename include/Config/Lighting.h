@@ -36,6 +36,7 @@ namespace MPL::LightingPatcher
     struct PointLightSettings
     {
         double fadeMultiplier = 1.0;
+        double sunlightFadeMultiplier = 1.0;
         double saturationMultiplier = 1.0;
         WeatherPatcher::AmbientHueScales hueScales;
         WeatherPatcher::HueShiftBands hueShift;

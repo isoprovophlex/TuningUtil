@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +19,7 @@ namespace MPL::SliderSettingCatalog
         brightness,
         saturation,
         hueShift,
+        fogStrength,
     };
 
     struct Entry
@@ -32,11 +34,13 @@ namespace MPL::SliderSettingCatalog
         bool linkable = false;
         bool hueScales = false;
         bool aggregate = false;
+        std::optional<double> neutralValue;
     };
 
     const std::vector<Entry>& Entries();
     std::vector<std::string_view> Groups(Domain);
     std::vector<const Entry*> Entries(Domain, std::string_view);
     const Entry* Find(std::string_view);
+    std::optional<double> NeutralValue(std::string_view);
     bool IsFilteredOperation(FilterOperation);
 }  // namespace MPL::SliderSettingCatalog

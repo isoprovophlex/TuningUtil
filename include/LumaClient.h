@@ -5,10 +5,7 @@
 namespace MPL::LumaClient
 {
     bool Load();
-    bool GetProviderSettings(const char*, bool&, bool&);
-    bool UpdateProviderSettings(
-        const char*,
-        std::int8_t,
-        std::int8_t);
+    bool GetProviderDetailedLogging(const char*, bool&);
+    bool UpdateProviderDetailedLogging(const char*, bool);
     void SetRuntimeReady(bool);
 }
