@@ -1,5 +1,6 @@
 #include <SliderCreator.h>
 #include <SliderSettingCatalog.h>
+#include <PresetCatalog.h>
 
 #include <algorithm>
 #include <array>
@@ -297,6 +298,7 @@ namespace MPL::SliderCreator
             static constexpr std::array kinds{
                 std::string_view("slider"),
                 std::string_view("text"),
+                std::string_view("description"),
                 std::string_view("separatorText"),
                 std::string_view("boxStart"),
                 std::string_view("ambientWithinGauge"),
@@ -336,6 +338,19 @@ namespace MPL::SliderCreator
                 return false;
             }
             return true;
+        }
+
+        bool AddDescriptionFields(
+            yyjson_mut_doc* a_document,
+            yyjson_mut_val* a_module,
+            const std::string_view a_header,
+            const std::string_view a_text,
+            const bool a_defaultOpen)
+        {
+            return AddString(a_document, a_module, "type", "description") &&
+                   (a_header.empty() || AddString(a_document, a_module, "header", a_header)) &&
+                   AddString(a_document, a_module, "text", a_text) &&
+                   (!a_defaultOpen || yyjson_mut_obj_add_bool(a_document, a_module, "defaultOpen", true));
         }
 
         yyjson_mut_val* StringList(yyjson_mut_doc* a_document, const std::vector<std::string>& a_values)
@@ -977,6 +992,12 @@ namespace MPL::SliderCreator
                 a_error = "The source profile does not contain a valid profileSettings.json.";
                 return false;
             }
+            std::string presetError;
+            if (!PresetCatalog::Read(a_sourceProfile / PresetCatalog::kFileName, presetError))
+            {
+                a_error = "The source profile does not contain a valid presets.json.";
+                return false;
+            }
         }
 
         const auto profileDirectory = a_tuningRoot / profileName;
@@ -1099,6 +1120,14 @@ namespace MPL::SliderCreator
                 return false;
             }
         }
+        if (!PresetCatalog::Write(
+                profileDirectory / PresetCatalog::kFileName,
+                PresetCatalog::Catalog{},
+                a_error))
+        {
+            removeIncompleteProfile();
+            return false;
+        }
         return true;
     }
 
@@ -1210,6 +1239,48 @@ namespace MPL::SliderCreator
             !yyjson_mut_arr_append(modules, module))
         {
             a_error = "The module could not be added to this page.";
+            return false;
+        }
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
+    bool AddDescriptionModule(
+        const std::filesystem::path& a_path,
+        const std::size_t a_pageIndex,
+        const std::string& a_header,
+        const std::string& a_text,
+        const bool a_defaultOpen,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto header = Trim(a_header);
+        const auto description = Trim(a_text);
+        if (description.empty())
+        {
+            a_error = "Enter a description.";
+            return false;
+        }
+
+        const auto text = ReadText(a_path);
+        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        if (!root)
+        {
+            a_error = "The menu layout could not be read.";
+            return false;
+        }
+        yyjson_mut_doc_set_root(document.get(), root);
+        auto* pages = yyjson_mut_obj_get(root, "pages");
+        auto* page = yyjson_mut_is_arr(pages) ? yyjson_mut_arr_get(pages, a_pageIndex) : nullptr;
+        auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
+        auto* module = yyjson_mut_obj(document.get());
+        if (!yyjson_mut_is_arr(modules) || !module ||
+            !AddDescriptionFields(document.get(), module, header, description, a_defaultOpen) ||
+            !yyjson_mut_arr_append(modules, module))
+        {
+            a_error = "The description could not be added to this page.";
             return false;
         }
         return WriteDocument(a_path, document.get(), a_error);
@@ -1348,6 +1419,45 @@ namespace MPL::SliderCreator
             !yyjson_mut_arr_append(modules, module))
         {
             a_error = "The element could not be added to the Profile page.";
+            return false;
+        }
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
+    bool AddProfileDescription(
+        const std::filesystem::path& a_path,
+        const std::string& a_header,
+        const std::string& a_text,
+        const bool a_defaultOpen,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto header = Trim(a_header);
+        const auto description = Trim(a_text);
+        if (description.empty())
+        {
+            a_error = "Enter a description.";
+            return false;
+        }
+
+        const auto text = ReadText(a_path);
+        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        if (!root)
+        {
+            a_error = "The menu layout could not be read.";
+            return false;
+        }
+        yyjson_mut_doc_set_root(document.get(), root);
+        auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
+        auto* module = yyjson_mut_obj(document.get());
+        if (!modules || !module ||
+            !AddDescriptionFields(document.get(), module, header, description, a_defaultOpen) ||
+            !yyjson_mut_arr_append(modules, module))
+        {
+            a_error = "The description could not be added to the Profile page.";
             return false;
         }
         return WriteDocument(a_path, document.get(), a_error);

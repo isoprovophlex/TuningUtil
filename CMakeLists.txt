@@ -108,6 +108,8 @@ if(TUNINGUTIL_BUILD_TESTS)
     JsonOverlayTests
     tests/JsonOverlayTests.cpp
     src/JsonOverlay.cpp
+    src/PresetCatalog.cpp
+    src/UserSettings.cpp
   )
   target_compile_features(JsonOverlayTests PRIVATE cxx_std_23)
   target_include_directories(JsonOverlayTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -116,6 +118,7 @@ if(TUNINGUTIL_BUILD_TESTS)
   add_executable(
     SliderCreatorTests
     tests/SliderCreatorTests.cpp
+    src/PresetCatalog.cpp
     src/SliderCreator.cpp
     src/SliderSettingCatalog.cpp
   )

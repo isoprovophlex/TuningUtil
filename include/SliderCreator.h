@@ -108,6 +108,13 @@ namespace MPL::SliderCreator
         const std::string&,
         bool,
         std::string&);
+    bool AddDescriptionModule(
+        const std::filesystem::path&,
+        std::size_t,
+        const std::string&,
+        const std::string&,
+        bool,
+        std::string&);
     bool MoveModule(
         const std::filesystem::path&,
         std::size_t,
@@ -129,6 +136,12 @@ namespace MPL::SliderCreator
         const std::filesystem::path&,
         const std::string&,
         const std::string&,
+        std::string&);
+    bool AddProfileDescription(
+        const std::filesystem::path&,
+        const std::string&,
+        const std::string&,
+        bool,
         std::string&);
     bool MoveProfileModule(
         const std::filesystem::path&,

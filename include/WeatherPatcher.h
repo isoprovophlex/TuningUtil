@@ -22,6 +22,7 @@ namespace MPL::WeatherPatcher
 
     void ApplyAllSettings();
     void ApplyDataLoaded();
+    std::optional<double> ReadWeatherAmbientAnchor(std::string_view);
     void ReleaseRuntimeState();
     void InvalidatePresetCache();
     SourceWeatherSet GetSelectableWeathers(std::string&);
@@ -47,7 +48,8 @@ namespace MPL::WeatherPatcher
     std::vector<ActivePreset> GetActivePresets(std::string&, std::string&);
     std::optional<std::string> GetActivePresetSettings(std::string&, std::string&);
     void DiscardPresetPreview(std::string&);
-    bool SavePreset(std::string&, const std::string&, const std::string&, std::string&);
+    void DiscardPresetCatalogChanges(std::string&);
+    bool StagePreset(std::string&, const std::string&, const std::string&, std::string&);
     bool UpdatePreset(std::string&, const std::string&, const std::string&, std::string&);
     bool MovePreset(std::string&, const std::string&, const std::string&, int, std::string&);
     bool RenamePreset(
@@ -64,7 +66,6 @@ namespace MPL::WeatherPatcher
     bool PreviewPreset(std::string&, const std::string&, const std::string&, std::string&);
     bool PreviewPresetDefault(std::string&, const std::string&, std::string&);
     bool CommitPresetPreviews(std::string&, std::string&);
-    bool DisableAllAutoLoadPresets(std::size_t&, std::string&);
     bool RemovePresets(
         std::string&,
         const std::vector<std::string>&,

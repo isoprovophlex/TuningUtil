@@ -1,7 +1,9 @@
 #include <Config.h>
 #include <Config/Forms.h>
+#include <CompressionMath.h>
 #include <DetailedLogging.h>
 #include <JsonOverlay.h>
+#include <PresetCatalog.h>
 #include <RecordFilter.h>
 #include <TuningSettings.h>
 #include <SettingLinks.h>
@@ -10,7 +12,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <fstream>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -641,18 +642,6 @@ namespace MPL::WeatherPatcher
         a_fn(a_dalc.directional.z.min);
     }
 
-    double PeakDALCHSVValue(const RE::BGSDirectionalAmbientLightingColors& a_dalc)
-    {
-        return std::max({
-            GainHSVValue(a_dalc.directional.x.max),
-            GainHSVValue(a_dalc.directional.x.min),
-            GainHSVValue(a_dalc.directional.y.max),
-            GainHSVValue(a_dalc.directional.y.min),
-            GainHSVValue(a_dalc.directional.z.max),
-            GainHSVValue(a_dalc.directional.z.min),
-        });
-    }
-
     bool ComputeStaticWeather(const RE::TESWeather* a_weather)
     {
         if (!a_weather)
@@ -699,6 +688,7 @@ namespace MPL::WeatherPatcher
     }
 
     bool IsStaticWeather(const RE::TESWeather* a_weather);
+    void CaptureBaselineIfNeeded(RE::TESWeather* a_weather);
 
     constexpr std::size_t kBrightnessFieldCount = 15;
     constexpr std::size_t kAmbientBrightnessField = 0;
@@ -742,13 +732,6 @@ namespace MPL::WeatherPatcher
         a_fn(a_weather->colorData[kWeatherColorTypes[a_field - 1]][a_time]);
     }
 
-    double PeakAmbientFieldHSVValue(RE::TESWeather* a_weather, const std::uint32_t a_time)
-    {
-        return std::max(
-            PeakDALCHSVValue(a_weather->directionalAmbientLightingColors[a_time]),
-            GainHSVValue(a_weather->colorData[RE::TESWeather::ColorType::kAmbient][a_time]));
-    }
-
     double AmbientZMinusHSVValue(const RE::TESWeather* a_weather, const std::uint32_t a_time)
     {
         return HSVValue(a_weather->directionalAmbientLightingColors[a_time].directional.z.min);
@@ -790,6 +773,79 @@ namespace MPL::WeatherPatcher
         return result;
     }
 
+    double BetweenWeatherBrightnessValue(
+        const RE::TESWeather* a_weather,
+        const DynamicBrightnessField a_field)
+    {
+        if (!a_weather)
+        {
+            return 0.0;
+        }
+        if (a_field == DynamicBrightnessField::ambient)
+        {
+            return AmbientZMinusHSVValue(a_weather, RE::TESWeather::ColorTime::kDay);
+        }
+        return AnalyzeDynamicWeatherRange(a_weather, a_field).bright;
+    }
+
+    std::optional<double> ReadWeatherAmbientAnchor(const std::string_view a_weatherEditorID)
+    {
+        RE::TESWeather* weather = nullptr;
+        auto* stat = Config::StatData::GetSingleton();
+        if (!stat->mmsfAPI)
+        {
+            stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
+        }
+        if (stat->mmsfAPI)
+        {
+            const std::string editorID(a_weatherEditorID);
+            if (auto* cached = stat->mmsfAPI->LookupCachedForm(editorID))
+            {
+                weather = cached->As<RE::TESWeather>();
+            }
+            if (!weather)
+            {
+                const auto formID = stat->mmsfAPI->LookupFormIDForEDID(editorID);
+                weather = formID ? RE::TESForm::LookupByID<RE::TESWeather>(formID) : nullptr;
+            }
+        }
+        if (!weather && Config::IEquals(a_weatherEditorID, "SkyrimClear"))
+        {
+            constexpr RE::FormID skyrimClearLocalFormID = 0x00081A;
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            weather = dataHandler ?
+                          dataHandler->LookupForm<RE::TESWeather>(skyrimClearLocalFormID, "Skyrim.esm") :
+                          nullptr;
+        }
+        if (!weather)
+        {
+            logger::warn(
+                "[Weather] ambient anchor | originalEditorID={} | status=unavailable",
+                a_weatherEditorID);
+            return std::nullopt;
+        }
+
+        CaptureBaselineIfNeeded(weather);
+        const auto baseline = stat->weatherBaselines.find(weather);
+        if (baseline == stat->weatherBaselines.end())
+        {
+            logger::warn(
+                "[Weather] ambient anchor | originalEditorID={} | status=baseline unavailable",
+                a_weatherEditorID);
+            return std::nullopt;
+        }
+        const auto anchor = std::clamp(
+            HSVValue(baseline->second.dalc[RE::TESWeather::ColorTime::kDay].directional.z.min),
+            1.0,
+            255.0);
+        logger::info(
+            "[Weather] ambient anchor | originalEditorID={} | form={:08X} | baselineDayZMinus={:.0f}",
+            a_weatherEditorID,
+            weather->GetFormID(),
+            anchor);
+        return anchor;
+    }
+
     DynamicAmbientRange AnalyzeDynamicAmbientRange(
         const SourceWeatherSet& a_weatherSet,
         const DynamicAmbientMode a_mode,
@@ -803,25 +859,30 @@ namespace MPL::WeatherPatcher
                 continue;
             }
 
-            const auto weatherRange = AnalyzeDynamicWeatherRange(weather, a_field);
-            if (!weatherRange.available || weatherRange.bright <= 0.0001)
-            {
-                continue;
-            }
-
             if (a_mode == DynamicAmbientMode::between)
             {
-                if (!result.available || weatherRange.bright < result.darkLimit)
+                const double brightness = BetweenWeatherBrightnessValue(weather, a_field);
+                if (brightness <= 0.0001)
+                {
+                    continue;
+                }
+                if (!result.available || brightness < result.darkLimit)
                 {
                     result.darkWeather = weather;
                 }
-                if (!result.available || weatherRange.bright > result.brightLimit)
+                if (!result.available || brightness > result.brightLimit)
                 {
                     result.brightWeather = weather;
                 }
-                result.darkLimit = std::min(result.darkLimit, weatherRange.bright);
-                result.brightLimit = std::max(result.brightLimit, weatherRange.bright);
+                result.darkLimit = std::min(result.darkLimit, brightness);
+                result.brightLimit = std::max(result.brightLimit, brightness);
                 result.available = true;
+                continue;
+            }
+
+            const auto weatherRange = AnalyzeDynamicWeatherRange(weather, a_field);
+            if (!weatherRange.available || weatherRange.bright <= 0.0001)
+            {
                 continue;
             }
 
@@ -861,8 +922,7 @@ namespace MPL::WeatherPatcher
         result.weatherPeaks.reserve(a_weatherSet.size());
         for (const auto* weather : a_weatherSet)
         {
-            const auto range = AnalyzeDynamicWeatherRange(weather, a_field);
-            result.weatherPeaks.push_back(range.available ? range.bright : 0.0);
+            result.weatherPeaks.push_back(BetweenWeatherBrightnessValue(weather, a_field));
         }
         return result;
     }
@@ -871,7 +931,8 @@ namespace MPL::WeatherPatcher
         const DynamicAmbientRange& a_source,
         const double a_compressionPercent,
         const double a_anchor,
-        const double a_brightnessGain)
+        const double a_brightnessGain,
+        const bool a_betweenCompression)
     {
         DynamicBrightnessStatus status{
             .source = a_source,
@@ -892,18 +953,19 @@ namespace MPL::WeatherPatcher
         }
         if (sourceSpan > 0.0001 && std::abs(compression) > 0.0001)
         {
+            const auto compressValue = [&](const double a_value)
+            {
+                const auto value = std::max(1.0, a_value);
+                return a_betweenCompression ?
+                           CompressionMath::BetweenCompressionValue(value, compression, a_anchor) :
+                           CompressedBrightnessValue(value, compression, a_anchor);
+            };
             status.result.darkLimit = std::clamp(
-                CompressedBrightnessValue(
-                    std::max(1.0, a_source.darkLimit),
-                    compression,
-                    a_anchor),
+                compressValue(a_source.darkLimit),
                 0.0,
                 255.0);
             status.result.brightLimit = std::clamp(
-                CompressedBrightnessValue(
-                    std::max(1.0, a_source.brightLimit),
-                    compression,
-                    a_anchor),
+                compressValue(a_source.brightLimit),
                 status.result.darkLimit,
                 255.0);
         }
@@ -1143,7 +1205,7 @@ namespace MPL::WeatherPatcher
                 continue;
             }
             const double baselinePeak = a_baseline.weatherPeaks[index];
-            const double currentPeak = AnalyzeDynamicWeatherRange(weather, a_field).bright;
+            const double currentPeak = BetweenWeatherBrightnessValue(weather, a_field);
             if (baselinePeak <= 0.0001)
             {
                 continue;
@@ -1360,22 +1422,36 @@ namespace MPL::WeatherPatcher
             {
                 applyField(link->index);
             }
-            else if (std::abs(compression[a_index]) > 0.0001)
+
+            double peak = 1.0;
+            if (a_index == kAmbientBrightnessField)
             {
-                double peak = 1.0;
+                peak = std::max(
+                    peak,
+                    BetweenWeatherBrightnessValue(a_weather, DynamicBrightnessField::ambient));
+            }
+            else
+            {
                 for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
                 {
                     ForEachFieldColor(a_weather, a_index, time, [&](const RE::Color& a_color)
                         { peak = std::max(peak, GainHSVValue(a_color)); });
                 }
-                gains[a_index] =
-                    CompressedBrightnessValue(peak, compression[a_index], anchors[a_index]) /
-                    peak;
             }
 
-            const double gain = link ?
-                                    1.0 + ((gains[link->index] - 1.0) * link->scale) :
-                                    gains[a_index];
+            const double requestedGain = link ?
+                                             1.0 + ((gains[link->index] - 1.0) * link->scale) :
+                                         std::abs(compression[a_index]) > 0.0001 ?
+                                             CompressionMath::BetweenCompressionValue(
+                                                 peak,
+                                                 compression[a_index],
+                                                 anchors[a_index]) /
+                                                 peak :
+                                             1.0;
+            const double gain = CompressionMath::BetweenCompressionGain(
+                peak,
+                anchors[a_index],
+                requestedGain);
             for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
             {
                 if (std::abs(gain - 1.0) > 0.0001)
@@ -1435,6 +1511,13 @@ namespace MPL::WeatherPatcher
         {
             compression[field] = std::clamp(rawAmounts[field] / 100.0, -2.0, 1.0);
             anchors[field] = 1.0;
+            if (field == kAmbientBrightnessField)
+            {
+                anchors[field] = std::max(
+                    anchors[field],
+                    AnalyzeDynamicWeatherRange(a_weather, DynamicBrightnessField::ambient).bright);
+                continue;
+            }
             for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
             {
                 anchors[field] = std::max(anchors[field], FieldPeakHSVValue(a_weather, field, time));
@@ -1468,25 +1551,24 @@ namespace MPL::WeatherPatcher
 
             for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
             {
-                if (a_field == 0)
+                if (a_field == kAmbientBrightnessField)
                 {
                     auto& dalc = a_weather->directionalAmbientLightingColors[time];
                     auto& ambient = a_weather->colorData[RE::TESWeather::ColorType::kAmbient][time];
-                    const double before = PeakAmbientFieldHSVValue(a_weather, time);
+                    const double before = AmbientZMinusHSVValue(a_weather, time);
+                    double gain = 1.0;
                     if (link)
                     {
-                        const double sourceGain = 1.0 + ((gains[link->index][time] - 1.0) * link->scale);
-                        ForEachDALCColor(dalc, [&](RE::Color& a_color)
-                            { ApplyCompressionGain(a_color, sourceGain); });
-                        ApplyCompressionGain(ambient, sourceGain);
+                        gain = 1.0 + ((gains[link->index][time] - 1.0) * link->scale);
                     }
-                    else
+                    else if (before > 0.0001)
                     {
-                        ForEachDALCColor(dalc, [&](RE::Color& a_color)
-                            { CompressColor(a_color, compression[a_field], anchors[a_field]); });
-                        CompressColor(ambient, compression[a_field], anchors[a_field]);
+                        gain = CompressedBrightnessValue(before, compression[a_field], anchors[a_field]) / before;
                     }
-                    gains[a_field][time] = PeakAmbientFieldHSVValue(a_weather, time) / before;
+                    ForEachDALCColor(dalc, [&](RE::Color& a_color)
+                        { ApplyCompressionGain(a_color, gain); });
+                    ApplyCompressionGain(ambient, gain);
+                    gains[a_field][time] = before > 0.0001 ? AmbientZMinusHSVValue(a_weather, time) / before : 1.0;
                     continue;
                 }
 
@@ -1810,37 +1892,6 @@ namespace MPL::WeatherPatcher
         return editorID.empty() ? "<no editor ID>" : std::move(editorID);
     }
 
-    std::optional<std::string> ReadJsonText(const std::filesystem::path& a_fileName)
-    {
-        std::ifstream file(a_fileName, std::ios::binary);
-        if (!file)
-        {
-            logger::warn("[Weather] JSON open failed | file={}", a_fileName.string());
-            return std::nullopt;
-        }
-
-        std::string text(std::istreambuf_iterator<char>(file), {});
-        constexpr std::string_view utf8Bom = "\xEF\xBB\xBF";
-        if (text.starts_with(utf8Bom))
-        {
-            text.erase(0, utf8Bom.size());
-            logger::warn("[Weather] JSON | file={} | UTF-8 BOM ignored", a_fileName.string());
-        }
-        return text;
-    }
-
-    const std::array<std::string, 2> kPresetMetadataPaths{
-        "autoLoadOnStartup",
-        "presetOrder",
-    };
-
-    std::optional<std::string> PresetSettingsOnly(
-        const std::string_view a_text,
-        std::string& a_error)
-    {
-        return JsonOverlay::RemovePaths(a_text, kPresetMetadataPaths, a_error);
-    }
-
     std::string ProfileNameFromKey(const std::string& a_profileName)
     {
         auto profileName = std::filesystem::path(a_profileName).filename().string();
@@ -1859,9 +1910,9 @@ namespace MPL::WeatherPatcher
         return profileName;
     }
 
-    std::unordered_map<std::string, std::vector<std::string>>& GetPresetCatalogs()
+    std::unordered_map<std::string, PresetCatalog::Catalog>& GetPresetCatalogs()
     {
-        static std::unordered_map<std::string, std::vector<std::string>> catalogs;
+        static std::unordered_map<std::string, PresetCatalog::Catalog> catalogs;
         return catalogs;
     }
 
@@ -1935,19 +1986,10 @@ namespace MPL::WeatherPatcher
         }
     }
 
-    void InvalidatePresetCatalog(const std::string& a_profileName, const std::string& a_category)
-    {
-        const auto profileKey = LowercaseKey(a_profileName);
-        auto& catalogs = GetPresetCatalogs();
-        catalogs.erase(profileKey + "|categories");
-        catalogs.erase(profileKey + "|presets|" + LowercaseKey(a_category));
-    }
-
     void InvalidateProfilePresetCache(const std::string& a_profileName)
     {
         const auto profileKey = LowercaseKey(a_profileName);
-        std::erase_if(GetPresetCatalogs(), [&](const auto& a_entry)
-            { return a_entry.first.starts_with(profileKey + "|"); });
+        GetPresetCatalogs().erase(profileKey);
         GetActivePresetCaches().erase(profileKey);
         GetPresetPreviewCaches().erase(profileKey);
     }
@@ -2199,6 +2241,12 @@ namespace MPL::WeatherPatcher
         GetPresetCatalogs().clear();
         GetActivePresetCaches().clear();
         GetPresetPreviewCaches().clear();
+    }
+
+    void DiscardPresetCatalogChanges(std::string& a_profileName)
+    {
+        const auto profileName = ProfileNameFromKey(a_profileName);
+        if (!profileName.empty()) InvalidateProfilePresetCache(profileName);
     }
 
     std::unordered_map<std::string, SourceWeatherSet> BuildSourceWeatherSets(RE::TESDataHandler* a_dataHandler)
@@ -2830,22 +2878,26 @@ namespace MPL::WeatherPatcher
             ambientWithinCompressionSource,
             withinWeatherCompression.values.ambientCompression,
             ambientWithinCompressionSource.brightLimit,
-            brightnessGains[kAmbientBrightnessField]);
+            brightnessGains[kAmbientBrightnessField],
+            false);
         const auto ambientBetweenCompressionStatus = BuildCompressionStatus(
             ambientBetweenCompressionSource,
             compression.values.ambientCompression,
             a_anchors.ambientAnchor,
-            brightnessGains[kAmbientBrightnessField]);
+            brightnessGains[kAmbientBrightnessField],
+            true);
         const auto sunlightWithinCompressionStatus = BuildCompressionStatus(
             sunlightWithinCompressionSource,
             withinWeatherCompression.values.sunlightCompression,
             sunlightWithinCompressionSource.brightLimit,
-            brightnessGains[kSunlightBrightnessField]);
+            brightnessGains[kSunlightBrightnessField],
+            false);
         const auto sunlightBetweenCompressionStatus = BuildCompressionStatus(
             sunlightBetweenCompressionSource,
             compression.values.sunlightCompression,
             a_anchors.sunlightAnchor,
-            brightnessGains[kSunlightBrightnessField]);
+            brightnessGains[kSunlightBrightnessField],
+            true);
         CacheDynamicBrightnessStatus(
             a_profiles,
             DynamicAmbientMode::within,
@@ -4233,51 +4285,67 @@ namespace MPL::WeatherPatcher
         return a_value;
     }
 
-    bool RenamePresetPath(
-        const std::filesystem::path& a_source,
-        const std::filesystem::path& a_destination,
+    std::filesystem::path PresetCatalogPath(const std::string& a_profileName)
+    {
+        return TuningUtil::ProfileDirectory(a_profileName) / PresetCatalog::kFileName;
+    }
+
+    PresetCatalog::Catalog* ResolvePresetCatalog(
+        std::string& a_profileName,
         std::string& a_error)
     {
-        if (a_source == a_destination)
+        a_error.clear();
+        const auto profileName = ProfileNameFromKey(a_profileName);
+        if (profileName.empty())
         {
-            return true;
+            a_error = "The profile is unavailable.";
+            return nullptr;
         }
 
-        std::error_code error;
-        if (!std::filesystem::exists(a_source, error) || error)
+        auto& catalogs = GetPresetCatalogs();
+        const auto cacheKey = LowercaseKey(profileName);
+        if (const auto cached = catalogs.find(cacheKey); cached != catalogs.end())
         {
-            a_error = "The selected preset or category could not be found.";
+            return std::addressof(cached->second);
+        }
+
+        const auto path = PresetCatalogPath(a_profileName);
+        std::error_code fileError;
+        if (!std::filesystem::is_regular_file(path, fileError))
+        {
+            if (fileError)
+            {
+                a_error = std::format("The preset catalog could not be inspected: {}", fileError.message());
+                return nullptr;
+            }
+            logger::warn("[Preset] catalog missing | profile={} | path={}", profileName, path.string());
+            return std::addressof(catalogs.emplace(cacheKey, PresetCatalog::Catalog{}).first->second);
+        }
+
+        auto catalog = PresetCatalog::Read(path, a_error);
+        if (!catalog)
+        {
+            logger::warn("[Preset] catalog invalid | profile={} | {}", profileName, a_error);
+            return nullptr;
+        }
+        DetailedLogging::Info(
+            "[Preset] catalog | profile={} | categories={} | path={}",
+            profileName,
+            catalog->categories.size(),
+            path.string());
+        return std::addressof(catalogs.emplace(cacheKey, std::move(*catalog)).first->second);
+    }
+
+    bool WritePresetCatalog(
+        std::string& a_profileName,
+        const PresetCatalog::Catalog& a_catalog,
+        std::string& a_error)
+    {
+        if (!PresetCatalog::Write(PresetCatalogPath(a_profileName), a_catalog, a_error))
+        {
             return false;
         }
-
-        if (Config::IEquals(a_source.string(), a_destination.string()))
-        {
-            auto temporary = a_source;
-            temporary += std::format(".tuningutil-rename-{}", ::GetTickCount64());
-            std::filesystem::rename(a_source, temporary, error);
-            if (error)
-            {
-                a_error = std::format("Could not begin renaming the preset or category: {}", error.message());
-                return false;
-            }
-
-            std::filesystem::rename(temporary, a_destination, error);
-            if (error)
-            {
-                std::error_code rollbackError;
-                std::filesystem::rename(temporary, a_source, rollbackError);
-                a_error = std::format("Could not finish renaming the preset or category: {}", error.message());
-                return false;
-            }
-            return true;
-        }
-
-        std::filesystem::rename(a_source, a_destination, error);
-        if (error)
-        {
-            a_error = std::format("Could not rename the preset or category: {}", error.message());
-            return false;
-        }
+        InvalidateProfilePresetCache(ProfileNameFromKey(a_profileName));
         return true;
     }
 
@@ -4290,45 +4358,21 @@ namespace MPL::WeatherPatcher
             return {};
         }
 
-        auto& catalogs = GetPresetCatalogs();
-        const auto catalogKey = LowercaseKey(profileName) + "|categories";
-        if (const auto cached = catalogs.find(catalogKey); cached != catalogs.end())
+        std::string error;
+        const auto* catalog = ResolvePresetCatalog(a_profileName, error);
+        if (!catalog)
         {
-            return cached->second;
+            logger::warn("[Preset] category request failed | profile={} | {}", profileName, error);
+            return {};
         }
-
         std::vector<std::string> categories;
-        const auto directory = TuningUtil::ProfileDirectory(a_profileName);
-        std::error_code error;
-        for (auto iterator = std::filesystem::directory_iterator(directory, error);
-            !error && iterator != std::filesystem::directory_iterator();
-            iterator.increment(error))
-        {
-            if (!iterator->is_directory(error) || error)
-            {
-                continue;
-            }
-            const auto category = iterator->path().filename().string();
-            if (!std::ranges::any_of(categories, [&](const std::string& a_existing)
-                    { return Config::IEquals(a_existing, category); }))
-            {
-                categories.push_back(category);
-            }
-        }
-        std::ranges::sort(categories, [](const std::string& a_left, const std::string& a_right)
-            { return LowercaseKey(a_left) < LowercaseKey(a_right); });
-        return catalogs.emplace(catalogKey, std::move(categories)).first->second;
+        categories.reserve(catalog->categories.size());
+        for (const auto& category : catalog->categories) categories.push_back(category.name);
+        return categories;
     }
 
     std::vector<std::string> GetPresets(std::string& a_profileName, const std::string& a_category)
     {
-        struct PresetEntry
-        {
-            std::string name;
-            std::optional<std::int64_t> order;
-        };
-
-        std::vector<PresetEntry> entries;
         const auto profileName = ProfileNameFromKey(a_profileName);
         std::string validationError;
         const auto category = NormalizePresetPathComponent(a_category, false, validationError);
@@ -4337,69 +4381,19 @@ namespace MPL::WeatherPatcher
             logger::warn("[Preset] request rejected | {}", validationError);
             return {};
         }
-        auto& catalogs = GetPresetCatalogs();
-        const auto catalogKey = LowercaseKey(profileName) + "|presets|" + LowercaseKey(*category);
-        if (const auto cached = catalogs.find(catalogKey); cached != catalogs.end())
+        std::string error;
+        const auto* catalog = ResolvePresetCatalog(a_profileName, error);
+        const auto* actualCategory = catalog ? PresetCatalog::FindCategory(*catalog, *category) : nullptr;
+        if (!actualCategory)
         {
-            return cached->second;
+            if (!error.empty()) logger::warn("[Preset] request failed | profile={} | {}", profileName, error);
+            return {};
         }
-        const auto directory = TuningUtil::ProfileDirectory(a_profileName) / *category;
-        std::error_code error;
-        if (std::filesystem::is_directory(directory, error))
-        {
-            for (auto iterator = std::filesystem::directory_iterator(directory, error);
-                !error && iterator != std::filesystem::directory_iterator();
-                iterator.increment(error))
-            {
-                const auto& preset = *iterator;
-                if (preset.is_regular_file(error) && !error && Config::IEquals(preset.path().extension().string(), ".json"))
-                {
-                    const auto text = ReadJsonText(preset.path());
-                    entries.push_back({
-                        preset.path().stem().string(),
-                        text ? JsonOverlay::IntegerMember(*text, "presetOrder") : std::nullopt,
-                    });
-                }
-            }
-        }
-
-        const auto fallbackLess = [&](const PresetEntry& a_left, const PresetEntry& a_right)
-        {
-            if (Config::IEquals(*category, "Brightness"))
-            {
-                constexpr std::array brightnessOrder{
-                    std::string_view{ "Abyss" },
-                    std::string_view{ "Dark" },
-                    std::string_view{ "Dim" },
-                    std::string_view{ "Default" },
-                    std::string_view{ "Bright" },
-                };
-                const auto rank = [&](const std::string_view a_name)
-                {
-                    const auto found = std::ranges::find_if(brightnessOrder, [&](const auto a_entry)
-                        { return Config::IEquals(a_entry, a_name); });
-                    return static_cast<std::size_t>(std::distance(brightnessOrder.begin(), found));
-                };
-                const auto leftRank = rank(a_left.name);
-                const auto rightRank = rank(a_right.name);
-                if (leftRank != rightRank) return leftRank < rightRank;
-            }
-            return LowercaseKey(a_left.name) < LowercaseKey(a_right.name);
-        };
-        std::ranges::sort(entries, [&](const PresetEntry& a_left, const PresetEntry& a_right)
-        {
-            if (a_left.order && a_right.order && *a_left.order != *a_right.order)
-                return *a_left.order < *a_right.order;
-            if (a_left.order.has_value() != a_right.order.has_value())
-                return a_left.order.has_value();
-            return fallbackLess(a_left, a_right);
-        });
-
         std::vector<std::string> presets;
-        presets.reserve(entries.size());
-        for (auto& entry : entries) presets.push_back(std::move(entry.name));
+        presets.reserve(actualCategory->presets.size());
+        for (const auto& preset : actualCategory->presets) presets.push_back(preset.name);
         DetailedLogging::Info("[Preset] cache | profile={} | category={} | presets={}", profileName, *category, presets.size());
-        return catalogs.emplace(catalogKey, std::move(presets)).first->second;
+        return presets;
     }
 
     std::optional<std::string> GetPresetSettings(
@@ -4418,32 +4412,20 @@ namespace MPL::WeatherPatcher
             return std::nullopt;
         }
 
-        const auto categories = GetPresetCategories(a_profileName);
-        const auto actualCategory = std::ranges::find_if(categories, [&](const auto& a_existing)
-            { return Config::IEquals(a_existing, *category); });
-        if (actualCategory == categories.end())
+        const auto* catalog = ResolvePresetCatalog(a_profileName, a_error);
+        const auto* actualCategory = catalog ? PresetCatalog::FindCategory(*catalog, *category) : nullptr;
+        if (!actualCategory)
         {
-            a_error = "The selected preset category could not be found.";
+            if (a_error.empty()) a_error = "The selected preset category could not be found.";
             return std::nullopt;
         }
-
-        const auto presets = GetPresets(a_profileName, *actualCategory);
-        const auto actualPreset = std::ranges::find_if(presets, [&](const auto& a_existing)
-            { return Config::IEquals(a_existing, *presetName); });
-        if (actualPreset == presets.end())
+        const auto* actualPreset = PresetCatalog::FindPreset(*actualCategory, *presetName);
+        if (!actualPreset)
         {
             a_error = "The selected preset could not be found.";
             return std::nullopt;
         }
-
-        const auto path = TuningUtil::ProfileDirectory(a_profileName) / *actualCategory / (*actualPreset + ".json");
-        const auto text = ReadJsonText(path);
-        if (!text)
-        {
-            a_error = std::format("Preset {} could not be read.", path.string());
-            return std::nullopt;
-        }
-        return PresetSettingsOnly(*text, a_error);
+        return actualPreset->settings;
     }
 
     static ActivePresetCache* ResolveActivePresetCache(
@@ -4466,39 +4448,33 @@ namespace MPL::WeatherPatcher
         }
 
         ActivePresetCache result;
+        const auto savedSelections = TuningUtil::GetSavedPresetSelections(a_profileName, a_error);
+        if (!a_error.empty())
+        {
+            logger::warn("[Preset] saved selections failed | profile={} | {}", profileName, a_error);
+            return nullptr;
+        }
         for (const auto& category : GetPresetCategories(a_profileName))
         {
-            std::optional<std::string> selected;
-            for (const auto& preset : GetPresets(a_profileName, category))
+            const auto saved = std::ranges::find_if(savedSelections, [&](const auto& a_selection)
+                { return Config::IEquals(a_selection.first, category); });
+            if (saved == savedSelections.end())
             {
-                const auto path = TuningUtil::ProfileDirectory(a_profileName) / category / (preset + ".json");
-                const auto text = ReadJsonText(path);
-                if (!text || !JsonOverlay::BooleanMember(*text, "autoLoadOnStartup").value_or(false))
-                {
-                    continue;
-                }
-                if (selected)
-                {
-                    logger::warn(
-                        "[Preset] {} auto-load | category={} | selected={} | ignored={}",
-                        profileName,
-                        category,
-                        *selected,
-                        preset);
-                    continue;
-                }
-
-                selected = preset;
-                const auto settings = PresetSettingsOnly(*text, a_error);
-                const auto merged = settings ? JsonOverlay::Overlay(result.settings, *settings, a_error) : std::nullopt;
-                if (!merged)
-                {
-                    logger::warn("[Preset] auto-load failed | file={} | {}", path.string(), a_error);
-                    return nullptr;
-                }
-                result.settings = std::move(*merged);
-                result.presets.push_back({ category, preset });
+                continue;
             }
+            const auto presets = GetPresets(a_profileName, category);
+            const auto preset = std::ranges::find_if(presets, [&](const auto& a_preset)
+                { return Config::IEquals(a_preset, saved->second); });
+            if (preset == presets.end())
+            {
+                logger::warn(
+                    "[Preset] saved selection unavailable | profile={} | category={} | preset={}",
+                    profileName,
+                    category,
+                    saved->second);
+                continue;
+            }
+            result.presets.push_back({ category, *preset });
         }
 
         return std::addressof(caches.emplace(cacheKey, std::move(result)).first->second);
@@ -4535,63 +4511,63 @@ namespace MPL::WeatherPatcher
     {
         a_preview.settings = "{}";
         a_preview.changedSettings = "{}";
-        std::string resetSchema{ "{}" };
-        auto hasResetSchema = false;
+        std::string changedSchema{ "{}" };
+        auto hasChangedSchema = false;
         for (const auto& category : GetPresetCategories(a_profileName))
         {
             const auto categoryKey = LowercaseKey(category);
+            if (a_preview.changedCategories.contains(categoryKey))
+            {
+                if (const auto reset = a_preview.resetSettingSchemas.find(categoryKey);
+                    reset != a_preview.resetSettingSchemas.end())
+                {
+                    const auto merged = JsonOverlay::Overlay(changedSchema, reset->second, a_error);
+                    if (!merged)
+                    {
+                        return false;
+                    }
+                    changedSchema = std::move(*merged);
+                    hasChangedSchema = true;
+                }
+            }
             const auto selected = std::ranges::find_if(a_preview.presets, [&](const ActivePreset& a_preset)
                 { return Config::IEquals(a_preset.category, category); });
             if (selected == a_preview.presets.end())
             {
-                if (a_preview.changedCategories.contains(categoryKey))
-                {
-                    if (const auto reset = a_preview.resetSettingSchemas.find(categoryKey);
-                        reset != a_preview.resetSettingSchemas.end())
-                    {
-                        const auto merged = JsonOverlay::Overlay(resetSchema, reset->second, a_error);
-                        if (!merged)
-                        {
-                            return false;
-                        }
-                        resetSchema = std::move(*merged);
-                        hasResetSchema = true;
-                    }
-                }
                 continue;
             }
 
-            const auto path = TuningUtil::ProfileDirectory(a_profileName) / category / (selected->name + ".json");
-            const auto text = ReadJsonText(path);
-            const auto settings = text ? PresetSettingsOnly(*text, a_error) : std::nullopt;
+            const auto settings = GetPresetSettings(
+                a_profileName,
+                category,
+                selected->name,
+                a_error);
             const auto merged = settings ? JsonOverlay::Overlay(a_preview.settings, *settings, a_error) : std::nullopt;
             if (!merged)
             {
-                if (a_error.empty()) a_error = std::format("Preset {} could not be read.", path.string());
+                if (a_error.empty()) a_error = "The selected preset could not be read from presets.json.";
                 return false;
             }
             a_preview.settings = std::move(*merged);
 
             if (a_preview.changedCategories.contains(categoryKey))
             {
-                const auto changed = JsonOverlay::Overlay(a_preview.changedSettings, *settings, a_error);
+                const auto changed = JsonOverlay::Overlay(changedSchema, *settings, a_error);
                 if (!changed)
                 {
                     return false;
                 }
-                a_preview.changedSettings = std::move(*changed);
+                changedSchema = std::move(*changed);
+                hasChangedSchema = true;
             }
         }
-        if (hasResetSchema)
+        if (hasChangedSchema)
         {
-            const auto reset = TuningUtil::ResolvePresetResetSettings(
+            const auto changed = TuningUtil::ResolvePresetResetSettings(
                 a_profileName,
                 a_preview.settings,
-                resetSchema,
+                changedSchema,
                 a_error);
-            const auto changed = reset ?
-                                     JsonOverlay::Overlay(*reset, a_preview.changedSettings, a_error) :
-                                     std::nullopt;
             if (!changed)
             {
                 return false;
@@ -4601,79 +4577,7 @@ namespace MPL::WeatherPatcher
         return true;
     }
 
-    static bool WritePresetText(const std::filesystem::path& a_path, const std::string_view a_text)
-    {
-        std::ofstream file(a_path, std::ios::binary | std::ios::trunc);
-        file << a_text << '\n';
-        return static_cast<bool>(file);
-    }
-
-    bool DisableAllAutoLoadPresets(std::size_t& a_updated, std::string& a_error)
-    {
-        struct PresetUpdate
-        {
-            std::filesystem::path path;
-            std::string original;
-            std::string updated;
-        };
-
-        a_updated = 0;
-        a_error.clear();
-        std::vector<PresetUpdate> updates;
-        for (const auto& profile : TuningUtil::GetProfiles())
-        {
-            auto profileName = profile.name;
-            for (const auto& category : GetPresetCategories(profileName))
-            {
-                for (const auto& preset : GetPresets(profileName, category))
-                {
-                    const auto path = profile.directory / category / (preset + ".json");
-                    const auto original = ReadJsonText(path);
-                    if (!original)
-                    {
-                        a_error = std::format("Preset {} could not be read.", path.string());
-                        return false;
-                    }
-                    if (!JsonOverlay::BooleanMember(*original, "autoLoadOnStartup").value_or(false))
-                    {
-                        continue;
-                    }
-                    const auto updated = JsonOverlay::SetBooleanMember(
-                        *original,
-                        "autoLoadOnStartup",
-                        false,
-                        a_error);
-                    if (!updated)
-                    {
-                        return false;
-                    }
-                    updates.push_back({ path, *original, *updated });
-                }
-            }
-        }
-
-        std::size_t written = 0;
-        for (; written < updates.size(); ++written)
-        {
-            if (WritePresetText(updates[written].path, updates[written].updated))
-            {
-                continue;
-            }
-            for (std::size_t rollback = 0; rollback <= written; ++rollback)
-            {
-                (void)WritePresetText(updates[rollback].path, updates[rollback].original);
-            }
-            a_error = "A preset file could not be updated; the original files were restored where possible.";
-            return false;
-        }
-
-        a_updated = updates.size();
-        InvalidatePresetCache();
-        logger::info("[Preset] auto-load disabled={}", a_updated);
-        return true;
-    }
-
-    bool SavePreset(
+    bool StagePreset(
         std::string& a_profileName,
         const std::string& a_categoryName,
         const std::string& a_presetName,
@@ -4691,78 +4595,33 @@ namespace MPL::WeatherPatcher
         {
             return false;
         }
-
-        const auto directory = TuningUtil::ProfileDirectory(a_profileName) / *category;
-        const auto presetPath = directory / (*presetName + ".json");
-        std::error_code existsError;
-        const auto existingPreset = std::filesystem::is_regular_file(presetPath, existsError) ?
-                                        ReadJsonText(presetPath) :
-                                        std::nullopt;
-        const auto autoLoadOnStartup = existingPreset ?
-                                           JsonOverlay::BooleanMember(*existingPreset, "autoLoadOnStartup").value_or(false) :
-                                           false;
-        const auto presetOrder = existingPreset ?
-                                     JsonOverlay::IntegerMember(*existingPreset, "presetOrder") :
-                                     std::nullopt;
-
         const auto settings = TuningUtil::SerializePresetSettings(a_profileName, a_error);
-        auto presetHeader = std::format(R"({{"autoLoadOnStartup":{}}})", autoLoadOnStartup);
-        if (presetOrder)
+        auto* currentCatalog = settings ? ResolvePresetCatalog(a_profileName, a_error) : nullptr;
+        if (!settings || !currentCatalog)
         {
-            const auto orderedHeader = JsonOverlay::SetIntegerMember(
-                presetHeader,
-                "presetOrder",
-                *presetOrder,
-                a_error);
-            if (!orderedHeader) return false;
-            presetHeader = *orderedHeader;
-        }
-        const auto text = settings ?
-                              JsonOverlay::Overlay(presetHeader, *settings, a_error) :
-                              std::nullopt;
-        if (!text)
-        {
-            return false;
-        }
-        std::error_code error;
-        std::filesystem::create_directories(directory, error);
-        if (error)
-        {
-            a_error = std::format("Could not create the preset folder: {}", error.message());
             return false;
         }
 
-        auto temporaryPath = presetPath;
-        temporaryPath += ".tmp";
+        auto catalog = *currentCatalog;
+        auto* actualCategory = PresetCatalog::FindCategory(catalog, *category);
+        if (!actualCategory)
         {
-            std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
-            file << *text << '\n';
-            if (!file)
-            {
-                file.close();
-                std::error_code removeError;
-                std::filesystem::remove(temporaryPath, removeError);
-                a_error = "Could not write the preset file.";
-                return false;
-            }
+            catalog.categories.push_back({ .name = *category });
+            actualCategory = std::addressof(catalog.categories.back());
         }
-        if (!::MoveFileExW(
-                temporaryPath.c_str(),
-                presetPath.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        if (auto* preset = PresetCatalog::FindPreset(*actualCategory, *presetName))
         {
-            const std::error_code moveError(static_cast<int>(::GetLastError()), std::system_category());
-            std::error_code removeError;
-            std::filesystem::remove(temporaryPath, removeError);
-            a_error = std::format("Could not finish saving the preset: {}", moveError.message());
-            return false;
+            preset->settings = *settings;
         }
-
-        const auto profileName = ProfileNameFromKey(a_profileName);
-        InvalidatePresetCatalog(profileName, *category);
-        GetActivePresetCaches().erase(LowercaseKey(profileName));
-        GetPresetPreviewCaches().erase(LowercaseKey(profileName));
-        logger::info("[Preset] {} | category={} | profile={} | status=saved", *presetName, *category, a_profileName);
+        else
+        {
+            actualCategory->presets.push_back({ *presetName, *settings });
+        }
+        *currentCatalog = std::move(catalog);
+        const auto profileKey = LowercaseKey(ProfileNameFromKey(a_profileName));
+        GetActivePresetCaches().erase(profileKey);
+        GetPresetPreviewCaches().erase(profileKey);
+        logger::info("[Preset] {} | category={} | profile={} | status=staged", *presetName, *category, a_profileName);
         return true;
     }
 
@@ -4776,7 +4635,7 @@ namespace MPL::WeatherPatcher
         {
             return false;
         }
-        return SavePreset(a_profileName, a_category, a_presetName, a_error);
+        return StagePreset(a_profileName, a_category, a_presetName, a_error);
     }
 
     bool MovePreset(
@@ -4801,74 +4660,41 @@ namespace MPL::WeatherPatcher
             return false;
         }
 
-        const auto categories = GetPresetCategories(a_profileName);
-        const auto actualCategory = std::ranges::find_if(categories, [&](const auto& a_existing)
-            { return Config::IEquals(a_existing, *category); });
-        if (actualCategory == categories.end())
+        const auto* currentCatalog = ResolvePresetCatalog(a_profileName, a_error);
+        if (!currentCatalog)
+        {
+            return false;
+        }
+        auto catalog = *currentCatalog;
+        auto* actualCategory = PresetCatalog::FindCategory(catalog, *category);
+        if (!actualCategory)
         {
             a_error = "The selected preset category could not be found.";
             return false;
         }
-
-        auto presets = GetPresets(a_profileName, *actualCategory);
-        const auto preset = std::ranges::find_if(presets, [&](const auto& a_existing)
-            { return Config::IEquals(a_existing, *presetName); });
-        if (preset == presets.end())
+        const auto preset = std::ranges::find_if(actualCategory->presets, [&](const auto& a_existing)
+            { return Config::IEquals(a_existing.name, *presetName); });
+        if (preset == actualCategory->presets.end())
         {
             a_error = "The selected preset could not be found.";
             return false;
         }
-        const auto index = static_cast<std::size_t>(std::distance(presets.begin(), preset));
-        if ((a_direction < 0 && index == 0) || (a_direction > 0 && index + 1 >= presets.size()))
+        const auto index = static_cast<std::size_t>(std::distance(actualCategory->presets.begin(), preset));
+        if ((a_direction < 0 && index == 0) ||
+            (a_direction > 0 && index + 1 >= actualCategory->presets.size()))
         {
             a_error = "The preset cannot move farther in that direction.";
             return false;
         }
         const auto destination = static_cast<std::size_t>(static_cast<std::ptrdiff_t>(index) + a_direction);
-        std::swap(presets[index], presets[destination]);
-
-        struct PresetUpdate
+        std::swap(actualCategory->presets[index], actualCategory->presets[destination]);
+        if (!WritePresetCatalog(a_profileName, catalog, a_error))
         {
-            std::filesystem::path path;
-            std::string original;
-            std::string updated;
-        };
-        std::vector<PresetUpdate> updates;
-        updates.reserve(presets.size());
-        const auto directory = TuningUtil::ProfileDirectory(a_profileName) / *actualCategory;
-        for (std::size_t order = 0; order < presets.size(); ++order)
-        {
-            const auto path = directory / (presets[order] + ".json");
-            const auto original = ReadJsonText(path);
-            const auto updated = original ?
-                                     JsonOverlay::SetIntegerMember(
-                                         *original,
-                                         "presetOrder",
-                                         static_cast<std::int64_t>(order),
-                                         a_error) :
-                                     std::nullopt;
-            if (!original || !updated)
-            {
-                if (a_error.empty()) a_error = "A preset file could not be updated.";
-                return false;
-            }
-            updates.push_back({ path, *original, *updated });
-        }
-
-        std::size_t written = 0;
-        for (; written < updates.size(); ++written)
-        {
-            if (WritePresetText(updates[written].path, updates[written].updated)) continue;
-            for (std::size_t rollback = 0; rollback <= written; ++rollback)
-                (void)WritePresetText(updates[rollback].path, updates[rollback].original);
-            a_error = "The preset order could not be saved; the original files were restored where possible.";
             return false;
         }
-
-        InvalidatePresetCatalog(profileName, *actualCategory);
         logger::info(
             "[Preset] move | category={} | preset={} | direction={} | profile={}",
-            *actualCategory,
+            actualCategory->name,
             *presetName,
             a_direction,
             profileName);
@@ -4893,40 +4719,62 @@ namespace MPL::WeatherPatcher
             return false;
         }
 
-        const auto categories = GetPresetCategories(a_profileName);
-        const auto actualCategory = std::ranges::find_if(categories, [&](const auto& a_existing)
-            { return Config::IEquals(a_existing, *category); });
-        if (actualCategory == categories.end())
+        const auto* currentCatalog = ResolvePresetCatalog(a_profileName, a_error);
+        if (!currentCatalog)
+        {
+            return false;
+        }
+        const auto originalCatalog = *currentCatalog;
+        auto catalog = originalCatalog;
+        auto* actualCategory = PresetCatalog::FindCategory(catalog, *category);
+        if (!actualCategory)
         {
             a_error = "The selected preset category could not be found.";
             return false;
         }
-
-        const auto presets = GetPresets(a_profileName, *actualCategory);
-        const auto actualPreset = std::ranges::find_if(presets, [&](const auto& a_existing)
-            { return Config::IEquals(a_existing, *presetName); });
-        if (actualPreset == presets.end())
+        auto* actualPreset = PresetCatalog::FindPreset(*actualCategory, *presetName);
+        if (!actualPreset)
         {
             a_error = "The selected preset could not be found.";
             return false;
         }
-        if (std::ranges::any_of(presets, [&](const auto& a_existing)
-                { return !Config::IEquals(a_existing, *actualPreset) && Config::IEquals(a_existing, *newName); }))
+        if (std::ranges::any_of(actualCategory->presets, [&](const auto& a_existing)
+                { return std::addressof(a_existing) != actualPreset && Config::IEquals(a_existing.name, *newName); }))
         {
             a_error = "A preset with that name already exists in the selected category.";
             return false;
         }
-
-        const auto directory = TuningUtil::ProfileDirectory(a_profileName) / *actualCategory;
-        if (!RenamePresetPath(directory / (*actualPreset + ".json"), directory / (*newName + ".json"), a_error))
+        const auto actualCategoryName = actualCategory->name;
+        const auto actualPresetName = actualPreset->name;
+        auto selections = TuningUtil::GetSavedPresetSelections(a_profileName, a_error);
+        if (!a_error.empty())
         {
             return false;
         }
-        InvalidateProfilePresetCache(profileName);
+        const auto selected = std::ranges::find_if(selections, [&](const auto& a_selection)
+            {
+                return Config::IEquals(a_selection.first, actualCategoryName) &&
+                       Config::IEquals(a_selection.second, actualPresetName);
+            });
+        actualPreset->name = *newName;
+        if (!WritePresetCatalog(a_profileName, catalog, a_error))
+        {
+            return false;
+        }
+        if (selected != selections.end())
+        {
+            selected->second = *newName;
+            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, "{}", a_error))
+            {
+                std::string rollbackError;
+                (void)WritePresetCatalog(a_profileName, originalCatalog, rollbackError);
+                return false;
+            }
+        }
         logger::info(
             "[Preset] rename | category={} | from={} | to={} | profile={}",
-            *actualCategory,
-            *actualPreset,
+            actualCategoryName,
+            actualPresetName,
             *newName,
             profileName);
         return true;
@@ -4948,30 +4796,53 @@ namespace MPL::WeatherPatcher
             return false;
         }
 
-        const auto categories = GetPresetCategories(a_profileName);
-        const auto actualCategory = std::ranges::find_if(categories, [&](const auto& a_existing)
-            { return Config::IEquals(a_existing, *category); });
-        if (actualCategory == categories.end())
+        const auto* currentCatalog = ResolvePresetCatalog(a_profileName, a_error);
+        if (!currentCatalog)
+        {
+            return false;
+        }
+        const auto originalCatalog = *currentCatalog;
+        auto catalog = originalCatalog;
+        auto* actualCategory = PresetCatalog::FindCategory(catalog, *category);
+        if (!actualCategory)
         {
             a_error = "The selected preset category could not be found.";
             return false;
         }
-        if (std::ranges::any_of(categories, [&](const auto& a_existing)
-                { return !Config::IEquals(a_existing, *actualCategory) && Config::IEquals(a_existing, *newName); }))
+        if (std::ranges::any_of(catalog.categories, [&](const auto& a_existing)
+                { return std::addressof(a_existing) != actualCategory && Config::IEquals(a_existing.name, *newName); }))
         {
             a_error = "A preset category with that name already exists.";
             return false;
         }
-
-        const auto root = TuningUtil::ProfileDirectory(a_profileName);
-        if (!RenamePresetPath(root / *actualCategory, root / *newName, a_error))
+        const auto actualCategoryName = actualCategory->name;
+        auto selections = TuningUtil::GetSavedPresetSelections(a_profileName, a_error);
+        if (!a_error.empty())
         {
             return false;
         }
-        InvalidateProfilePresetCache(profileName);
+        const auto selected = std::ranges::find_if(selections, [&](const auto& a_selection)
+            { return Config::IEquals(a_selection.first, actualCategoryName); });
+        actualCategory->name = *newName;
+        if (!WritePresetCatalog(a_profileName, catalog, a_error))
+        {
+            return false;
+        }
+        if (selected != selections.end())
+        {
+            const auto preset = selected->second;
+            selections.erase(selected);
+            selections.insert_or_assign(*newName, preset);
+            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, "{}", a_error))
+            {
+                std::string rollbackError;
+                (void)WritePresetCatalog(a_profileName, originalCatalog, rollbackError);
+                return false;
+            }
+        }
         logger::info(
             "[Preset] category rename | from={} | to={} | profile={}",
-            *actualCategory,
+            actualCategoryName,
             *newName,
             profileName);
         return true;
@@ -4997,7 +4868,7 @@ namespace MPL::WeatherPatcher
             { return Config::IEquals(a_existing, *presetName); });
         if (selected == presets.end())
         {
-            a_error = "The preset file could not be found.";
+            a_error = "The selected preset could not be found.";
             logger::warn("[Preset] missing | profile={} | category={} | preset={}", a_profileName, *category, *presetName);
             return false;
         }
@@ -5020,18 +4891,28 @@ namespace MPL::WeatherPatcher
 
         const auto previous = std::ranges::find_if(preview.presets, [&](const ActivePreset& a_preset)
             { return Config::IEquals(a_preset.category, *category); });
+        const auto categoryKey = LowercaseKey(*category);
         if (previous != preview.presets.end())
         {
+            const auto previousSettings = GetPresetSettings(
+                a_profileName,
+                previous->category,
+                previous->name,
+                a_error);
+            if (!previousSettings)
+            {
+                return false;
+            }
+            preview.resetSettingSchemas.insert_or_assign(categoryKey, *previousSettings);
             previous->category = *category;
             previous->name = *selected;
         }
         else
         {
             preview.presets.push_back({ *category, *selected });
+            preview.resetSettingSchemas.erase(categoryKey);
         }
-        const auto categoryKey = LowercaseKey(*category);
         preview.changedCategories.insert(categoryKey);
-        preview.resetSettingSchemas.erase(categoryKey);
         if (!RebuildPresetPreview(a_profileName, preview, a_error) ||
             !TuningUtil::ApplyPresetPreview(a_profileName, preview.settings, preview.changedSettings, a_error))
         {
@@ -5128,77 +5009,24 @@ namespace MPL::WeatherPatcher
             return true;
         }
 
-        struct PresetUpdate
+        TuningUtil::PresetSelections selections;
+        for (const auto& selected : preview->second.presets)
         {
-            std::filesystem::path path;
-            std::string original;
-            std::string updated;
-        };
-        std::vector<PresetUpdate> updates;
-        const auto categories = GetPresetCategories(a_profileName);
-        for (const auto& categoryKey : preview->second.changedCategories)
-        {
-            const auto category = std::ranges::find_if(categories, [&](const std::string& a_category)
-                { return LowercaseKey(a_category) == categoryKey; });
-            if (category == categories.end())
-            {
-                a_error = "A previewed preset category is unavailable.";
-                return false;
-            }
-            const auto selected = std::ranges::find_if(preview->second.presets, [&](const ActivePreset& a_preset)
-                { return LowercaseKey(a_preset.category) == categoryKey; });
-            for (const auto& preset : GetPresets(a_profileName, *category))
-            {
-                const auto path = TuningUtil::ProfileDirectory(a_profileName) / *category / (preset + ".json");
-                const auto original = ReadJsonText(path);
-                const auto updated = original ? JsonOverlay::SetBooleanMember(
-                                                    *original,
-                                                    "autoLoadOnStartup",
-                                                    selected != preview->second.presets.end() &&
-                                                        Config::IEquals(preset, selected->name),
-                                                    a_error) :
-                                                std::nullopt;
-                if (!original || !updated)
-                {
-                    if (a_error.empty()) a_error = "A preset file could not be updated.";
-                    return false;
-                }
-                updates.push_back({ path, *original, *updated });
-            }
+            selections.insert_or_assign(selected.category, selected.name);
         }
-
-        std::size_t written = 0;
-        for (; written < updates.size(); ++written)
-        {
-            if (WritePresetText(updates[written].path, updates[written].updated))
-            {
-                continue;
-            }
-            for (std::size_t rollback = 0; rollback <= written; ++rollback)
-            {
-                (void)WritePresetText(updates[rollback].path, updates[rollback].original);
-            }
-            a_error = "A preset file could not be updated; the original files were restored where possible.";
-            return false;
-        }
-
-        GetActivePresetCaches().erase(cacheKey);
-        if (!TuningUtil::ApplyPresetAndRemoveUserOverrides(
+        const auto changedCategoryCount = preview->second.changedCategories.size();
+        const auto changedSettings = preview->second.changedSettings;
+        if (!TuningUtil::SavePresetSelectionSnapshot(
                 a_profileName,
-                preview->second.changedSettings,
+                selections,
+                changedSettings,
                 a_error))
         {
-            for (const auto& update : updates)
-            {
-                (void)WritePresetText(update.path, update.original);
-            }
-            GetActivePresetCaches().erase(cacheKey);
-            if (a_error.empty()) a_error = "Preset settings could not be saved; the original preset files were restored.";
+            if (a_error.empty()) a_error = "Preset settings could not be saved to user settings.";
             return false;
         }
 
-        logger::info("[Preset] selections | profile={} | saved={}", a_profileName, preview->second.changedCategories.size());
-        GetPresetPreviewCaches().erase(preview);
+        logger::info("[Preset] selections | profile={} | saved={}", a_profileName, changedCategoryCount);
         return true;
     }
 
@@ -5216,31 +5044,12 @@ namespace MPL::WeatherPatcher
             return false;
         }
 
-        struct Removal
-        {
-            std::filesystem::path original;
-            std::filesystem::path staged;
-        };
-        std::vector<Removal> removals;
-        const auto root = TuningUtil::ProfileDirectory(a_profileName);
-        const auto suffix = std::format(".tuningutil-delete-{}", ::GetTickCount64());
-        const auto addRemoval = [&](const std::filesystem::path& a_path)
-        {
-            if (std::ranges::any_of(removals, [&](const Removal& a_removal)
-                    { return Config::IEquals(a_removal.original.string(), a_path.string()); }))
-                return;
-            auto staged = a_path;
-            staged += suffix;
-            removals.push_back({ a_path, std::move(staged) });
-        };
-
         std::vector<std::string> normalizedCategories;
         for (const auto& categoryName : a_categories)
         {
             const auto category = NormalizePresetPathComponent(categoryName, false, a_error);
             if (!category) return false;
             normalizedCategories.push_back(*category);
-            addRemoval(root / *category);
         }
         std::vector<ActivePreset> normalizedPresets;
         for (const auto& preset : a_presets)
@@ -5252,59 +5061,106 @@ namespace MPL::WeatherPatcher
                     { return Config::IEquals(a_removedCategory, *category); }))
                 continue;
             normalizedPresets.push_back({ *category, *name });
-            addRemoval(root / *category / (*name + ".json"));
         }
 
-        std::size_t stagedCount = 0;
-        for (; stagedCount < removals.size(); ++stagedCount)
+        const auto* currentCatalog = ResolvePresetCatalog(a_profileName, a_error);
+        if (!currentCatalog) return false;
+        const auto originalCatalog = *currentCatalog;
+        auto catalog = originalCatalog;
+        auto selections = TuningUtil::GetSavedPresetSelections(a_profileName, a_error);
+        if (!a_error.empty()) return false;
+        std::string resetSchema{ "{}" };
+        auto selectionChanged = false;
+        for (auto selection = selections.begin(); selection != selections.end();)
         {
-            std::error_code existsError;
-            if (!std::filesystem::exists(removals[stagedCount].original, existsError) && !existsError)
+            const auto categoryRemoved = std::ranges::any_of(normalizedCategories, [&](const auto& a_category)
+                { return Config::IEquals(a_category, selection->first); });
+            const auto presetRemoved = std::ranges::any_of(normalizedPresets, [&](const auto& a_preset)
+                {
+                    return Config::IEquals(a_preset.category, selection->first) &&
+                           Config::IEquals(a_preset.name, selection->second);
+                });
+            if (!categoryRemoved && !presetRemoved)
             {
+                ++selection;
                 continue;
             }
-            std::error_code renameError;
-            std::filesystem::rename(removals[stagedCount].original, removals[stagedCount].staged, renameError);
-            if (!renameError)
+            const auto* category = PresetCatalog::FindCategory(originalCatalog, selection->first);
+            const auto* preset = category ? PresetCatalog::FindPreset(*category, selection->second) : nullptr;
+            const auto merged = preset ?
+                                    JsonOverlay::Overlay(resetSchema, preset->settings, a_error) :
+                                    std::nullopt;
+            if (!preset && a_error.empty())
             {
-                continue;
+                a_error = "The selected preset being removed could not be found in presets.json.";
             }
-            for (std::size_t rollback = 0; rollback < stagedCount; ++rollback)
+            if (!merged) return false;
+            resetSchema = std::move(*merged);
+            selection = selections.erase(selection);
+            selectionChanged = true;
+        }
+
+        std::erase_if(catalog.categories, [&](const auto& a_category)
+        {
+            return std::ranges::any_of(normalizedCategories, [&](const auto& a_removed)
+                { return Config::IEquals(a_removed, a_category.name); });
+        });
+        for (auto& category : catalog.categories)
+        {
+            std::erase_if(category.presets, [&](const auto& a_preset)
             {
-                std::error_code rollbackError;
-                if (std::filesystem::exists(removals[rollback].staged, rollbackError) && !rollbackError)
-                    std::filesystem::rename(removals[rollback].staged, removals[rollback].original, rollbackError);
+                return std::ranges::any_of(normalizedPresets, [&](const auto& a_removed)
+                {
+                    return Config::IEquals(a_removed.category, category.name) &&
+                           Config::IEquals(a_removed.name, a_preset.name);
+                });
+            });
+        }
+
+        std::string remainingSettings{ "{}" };
+        if (selectionChanged)
+        {
+            for (const auto& category : catalog.categories)
+            {
+                const auto selected = std::ranges::find_if(selections, [&](const auto& a_selection)
+                    { return Config::IEquals(a_selection.first, category.name); });
+                if (selected == selections.end()) continue;
+                const auto* preset = PresetCatalog::FindPreset(category, selected->second);
+                const auto merged = preset ?
+                                        JsonOverlay::Overlay(remainingSettings, preset->settings, a_error) :
+                                        std::nullopt;
+                if (!preset && a_error.empty())
+                {
+                    a_error = "A remaining selected preset could not be found in presets.json.";
+                }
+                if (!merged) return false;
+                remainingSettings = std::move(*merged);
             }
-            a_error = std::format("Could not remove a preset or category: {}", renameError.message());
+        }
+
+        std::optional<std::string> reset;
+        if (selectionChanged)
+        {
+            reset = TuningUtil::ResolvePresetResetSettings(
+                a_profileName,
+                remainingSettings,
+                resetSchema,
+                a_error);
+            if (!reset) return false;
+        }
+        if (!WritePresetCatalog(a_profileName, catalog, a_error))
+        {
             return false;
         }
 
-        const auto cacheKey = LowercaseKey(profileName);
-        const auto preview = GetPresetPreviewCaches().find(cacheKey);
-        const auto previewAffected = preview != GetPresetPreviewCaches().end() &&
-                                     (std::ranges::any_of(normalizedCategories, [&](const auto& a_category)
-                                          { return preview->second.changedCategories.contains(LowercaseKey(a_category)); }) ||
-                                         std::ranges::any_of(preview->second.presets, [&](const auto& a_active)
-                                         {
-                                             return std::ranges::any_of(normalizedCategories, [&](const auto& a_category)
-                                                        { return Config::IEquals(a_category, a_active.category); }) ||
-                                                    std::ranges::any_of(normalizedPresets, [&](const auto& a_preset)
-                                                    {
-                                                        return Config::IEquals(a_preset.category, a_active.category) &&
-                                                               Config::IEquals(a_preset.name, a_active.name);
-                                                    });
-                                         }));
-        std::erase_if(GetPresetCatalogs(), [&](const auto& a_entry)
-            { return a_entry.first.starts_with(cacheKey + "|"); });
-        GetActivePresetCaches().erase(cacheKey);
-        if (previewAffected) GetPresetPreviewCaches().erase(cacheKey);
-        for (const auto& removal : removals)
+        if (selectionChanged)
         {
-            std::error_code cleanupError;
-            std::filesystem::remove_all(removal.staged, cleanupError);
-            if (cleanupError)
+            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, *reset, a_error))
             {
-                logger::warn("[Preset] staged delete failed | path={} | {}", removal.staged.string(), cleanupError.message());
+                std::string rollbackError;
+                (void)WritePresetCatalog(a_profileName, originalCatalog, rollbackError);
+                if (a_error.empty()) a_error = "The removed preset selection could not be reset.";
+                return false;
             }
         }
         logger::info(

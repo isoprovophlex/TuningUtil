@@ -2,9 +2,12 @@
 
 #include <Config/Tuning.h>
 #include <cstdint>
+#include <map>
 
 namespace MPL::TuningUtil
 {
+    using PresetSelections = std::map<std::string, std::string>;
+
     enum class FilteredWeatherOperation
     {
         brightness,
@@ -112,12 +115,16 @@ namespace MPL::TuningUtil
         std::string name;
         int priority = 0;
         std::filesystem::path directory;
+        std::string ambientAnchorWeather{ "SkyrimClear" };
+        std::optional<double> runtimeAmbientAnchor;
         std::vector<std::string> defaultSettingRoots;
         std::vector<FilteredWeatherRule> filteredWeatherRules;
         std::vector<FilteredLightingTemplateRule> filteredLightingTemplateRules;
         std::vector<FilteredBaseLightRule> filteredBaseLightRules;
         std::vector<std::string> interiorSliderSettings;
         std::vector<std::string> ignoredInteriorSliderLinks;
+        std::vector<std::string> interiorMenuSettings;
+        std::vector<std::string> weatherMenuSettings;
     };
 
     void ApplyDataLoaded();
@@ -148,8 +155,13 @@ namespace MPL::TuningUtil
         std::string_view,
         std::string_view,
         std::string&);
+    PresetSelections GetSavedPresetSelections(std::string&, std::string&);
+    bool SavePresetSelectionSnapshot(
+        std::string&,
+        const PresetSelections&,
+        std::string_view,
+        std::string&);
     bool ApplyPresetPreview(std::string&, std::string_view, std::string_view, std::string&);
-    bool ApplyPresetAndRemoveUserOverrides(std::string&, std::string_view, std::string&);
     bool SaveSettings(std::string&);
     bool PromoteUserSettingsToProfile(std::string&, std::string&);
     bool SavePageSettings(std::string&, const std::vector<std::string>&);
