@@ -13,6 +13,7 @@ namespace MPL::PointLightPatcher
     void BeginCell(RE::TESObjectCELL*);
     void ResetCellTracking();
     void RecordCellChangeThread();
+    void QueueReferenceReconciliation(RE::TESObjectREFR*);
     void InitializeReference(RE::TESObjectREFR*);
     void ReleaseRuntimeState();
 }  // namespace MPL::PointLightPatcher

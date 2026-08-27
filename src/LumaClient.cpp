@@ -22,7 +22,7 @@ namespace MPL::LumaClient
             {
                 return;
             }
-            PointLightPatcher::InitializeReference(a_reference);
+            PointLightPatcher::QueueReferenceReconciliation(a_reference);
         }
 
         void OnCellChanging(RE::TESObjectCELL* a_cell)
@@ -56,8 +56,8 @@ namespace MPL::LumaClient
         api = request ? request(LumaAPI::kVersion) : nullptr;
         return api && api->version == LumaAPI::kVersion &&
                api->RegisterClient &&
-               api->GetProviderDetailedLogging &&
-               api->UpdateProviderDetailedLogging &&
+               api->GetProviderSettings &&
+               api->UpdateProviderSettings &&
                api->RegisterClient(&callbacks);
     }
 
@@ -65,20 +65,24 @@ namespace MPL::LumaClient
         const char* a_id,
         bool& a_detailedLogging)
     {
-        return api && api->GetProviderDetailedLogging &&
-               api->GetProviderDetailedLogging(
+        return api && api->GetProviderSettings &&
+               api->GetProviderSettings(
                    a_id,
-                   std::addressof(a_detailedLogging));
+                   std::addressof(a_detailedLogging),
+                   nullptr);
     }
 
     bool UpdateProviderDetailedLogging(
         const char* a_id,
         const bool a_detailedLogging)
     {
-        return api && api->UpdateProviderDetailedLogging &&
-               api->UpdateProviderDetailedLogging(
+        return api && api->UpdateProviderSettings &&
+               api->UpdateProviderSettings(
                    a_id,
-                   a_detailedLogging);
+                   a_detailedLogging ?
+                       std::int8_t{ 1 } :
+                       std::int8_t{ 0 },
+                   std::int8_t{ -1 });
     }
 
     void SetRuntimeReady(const bool a_ready)
