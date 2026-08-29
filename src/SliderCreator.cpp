@@ -146,9 +146,6 @@ namespace MPL::SliderCreator
             Definition result;
             result.id = StringMember(a_control, "id").value_or("");
             result.label = StringMember(a_control, "label").value_or("");
-            result.tooltip = StringMember(a_control, "tooltip").value_or("");
-            result.link = StringMember(a_control, "link").value_or("");
-            result.localLink = StringMember(a_control, "localLink").value_or("");
             result.hueScales = ReadHueScales(a_control);
             result.invert = BooleanMember(a_control, "invert");
             result.defaultValue = NumberMember(a_control, "default");
@@ -213,7 +210,7 @@ namespace MPL::SliderCreator
                                                         { return IsInteriorLinkableSetting(a_target.setting); }) &&
                                                     std::ranges::any_of(result.settings, &Target::ignoreLink);
             result.filtered = (structured && !directInteriorLinkOverride) || result.useTimes ||
-                              !result.localLink.empty() || result.hueScales ||
+                              result.hueScales ||
                               result.filterDomain == FilterDomain::lightingTemplate ||
                               result.filterDomain == FilterDomain::baseLight ||
                               !result.include.formIDs.empty() || !result.include.contains.empty() ||
@@ -289,6 +286,10 @@ namespace MPL::SliderCreator
                 std::string_view("spacing"),
                 std::string_view("boxStart"),
                 std::string_view("boxEnd"),
+                std::string_view("dropdownBoxStart"),
+                std::string_view("dropdownBoxEnd"),
+                std::string_view("dropdownStart"),
+                std::string_view("dropdownEnd"),
             };
             return std::ranges::any_of(kinds, [&](const auto kind) { return IEquals(a_kind, kind); });
         }
@@ -301,6 +302,8 @@ namespace MPL::SliderCreator
                 std::string_view("description"),
                 std::string_view("separatorText"),
                 std::string_view("boxStart"),
+                std::string_view("dropdownBoxStart"),
+                std::string_view("dropdownStart"),
                 std::string_view("ambientWithinGauge"),
                 std::string_view("ambientBetweenGauge"),
                 std::string_view("sunlightWithinGauge"),
@@ -393,10 +396,6 @@ namespace MPL::SliderCreator
                 !AddString(a_document, control, "id", a_definition.id) ||
                 !AddString(a_document, control, "label", a_definition.label))
                 return nullptr;
-
-            if (!a_definition.tooltip.empty() && !AddString(a_document, control, "tooltip", a_definition.tooltip)) return nullptr;
-            if (!a_definition.link.empty() && !AddString(a_document, control, "link", a_definition.link)) return nullptr;
-            if (!a_definition.localLink.empty() && !AddString(a_document, control, "localLink", a_definition.localLink)) return nullptr;
 
             if (!a_definition.filtered && a_definition.settings.size() == 1 &&
                 !a_definition.settings.front().ignoreLink)
@@ -542,12 +541,6 @@ namespace MPL::SliderCreator
                 a_error = "All Hues is a creator shortcut; direct sliders must store its seven individual hue bands.";
                 return false;
             }
-            if (!a_definition.link.empty() &&
-                (a_definition.filtered || std::ranges::any_of(entries, [](const auto* a_entry) { return !a_entry->linkable; })))
-            {
-                a_error = "A direct link requires only linkable, unfiltered settings.";
-                return false;
-            }
             if (a_definition.filtered)
             {
                 if (a_definition.filterDomain == FilterDomain::baseLight)
@@ -569,9 +562,9 @@ namespace MPL::SliderCreator
                         }
                         operation = entry->filterOperation;
                     }
-                    if (a_definition.useTimes || !a_definition.localLink.empty() || a_definition.hueScales)
+                    if (a_definition.useTimes || a_definition.hueScales)
                     {
-                        a_error = "Time filters, local links, and saturation scales do not apply to Base Light filters.";
+                        a_error = "Time filters and saturation scales do not apply to Base Light filters.";
                         return false;
                     }
                 }
@@ -596,9 +589,9 @@ namespace MPL::SliderCreator
                         }
                         operation = entry->filterOperation;
                     }
-                    if (a_definition.useTimes || !a_definition.localLink.empty() || a_definition.hueScales)
+                    if (a_definition.useTimes || a_definition.hueScales)
                     {
-                        a_error = "Time filters, local links, and saturation scales apply only to filtered weather sliders.";
+                        a_error = "Time filters and saturation scales apply only to filtered weather sliders.";
                         return false;
                     }
                 }
@@ -630,23 +623,6 @@ namespace MPL::SliderCreator
                         }
                         operation = entry->filterOperation;
                     }
-                    if (effectLighting.value_or(false) && !a_definition.localLink.empty())
-                    {
-                        a_error = "Effect Lighting weather filters do not support local links.";
-                        return false;
-                    }
-                    if (!a_definition.localLink.empty() && !std::ranges::any_of(
-                            SliderSettingCatalog::Entries(),
-                            [&](const auto& a_entry)
-                            {
-                                return a_entry.domain == SliderSettingCatalog::Domain::weather &&
-                                       a_entry.filterOperation == *operation &&
-                                       IEquals(a_entry.target, Trim(a_definition.localLink));
-                            }))
-                    {
-                        a_error = "The local link must name a target supported by this filtered operation.";
-                        return false;
-                    }
                     if (a_definition.hueScales && *operation != SliderSettingCatalog::FilterOperation::saturation)
                     {
                         a_error = "Slider-specific saturation scales are supported only by filtered saturation sliders.";
@@ -654,9 +630,9 @@ namespace MPL::SliderCreator
                     }
                 }
             }
-            else if (!a_definition.localLink.empty() || a_definition.hueScales)
+            else if (a_definition.hueScales)
             {
-                a_error = "Local links and slider-specific saturation scales require a filtered weather slider.";
+                a_error = "Slider-specific saturation scales require a filtered weather slider.";
                 return false;
             }
             if (a_definition.hueScales)
@@ -941,7 +917,8 @@ namespace MPL::SliderCreator
         const std::filesystem::path& a_tuningRoot,
         const std::string& a_profileName,
         std::string& a_error,
-        const std::filesystem::path& a_sourceProfile)
+        const std::filesystem::path& a_sourceProfile,
+        const std::optional<ProfileTemplate> a_profileTemplate)
     {
         a_error.clear();
         const auto profileName = Trim(a_profileName);
@@ -952,8 +929,21 @@ namespace MPL::SliderCreator
         }
 
         const auto copying = !a_sourceProfile.empty();
+        if (copying && a_profileTemplate)
+        {
+            a_error = "Select either a profile template or an existing profile to copy.";
+            return false;
+        }
+        if (!copying && !a_profileTemplate)
+        {
+            a_error = "Select a profile template or an existing profile to copy.";
+            return false;
+        }
+        const auto templateName = a_profileTemplate == ProfileTemplate::weather ?
+                                      "skseMenuWeatherTemplate.json" :
+                                      "skseMenuLightingTemplate.json";
         const auto menuSource = copying ? a_sourceProfile / "skseMenu.json" :
-                                          a_tuningRoot / "newSkseMenu.json";
+                                          a_tuningRoot / templateName;
         const auto menuText = ReadText(menuSource);
         Document menuDocument(menuText ?
                                   yyjson_read(
@@ -968,7 +958,7 @@ namespace MPL::SliderCreator
         {
             a_error = copying ?
                           "The source profile does not contain a valid skseMenu.json." :
-                          "Luma/Tuning/newSkseMenu.json is missing or does not contain a valid pages array.";
+                          "The selected profile template is missing or does not contain a valid pages array.";
             return false;
         }
         if (copying)
@@ -1107,6 +1097,19 @@ namespace MPL::SliderCreator
                 return false;
             }
         }
+        if (!ReplaceRootStringMember(
+                profileDirectory / "skseMenu.json",
+                "title",
+                profileName,
+                a_error,
+                "lockEditMode",
+                false))
+        {
+            const auto reason = a_error;
+            removeIncompleteProfile();
+            a_error = reason;
+            return false;
+        }
         {
             std::ofstream settingsFile(profileDirectory / "profileSettings.json", std::ios::binary | std::ios::trunc);
             settingsFile << std::format(
@@ -1230,7 +1233,9 @@ namespace MPL::SliderCreator
         auto* page = yyjson_mut_is_arr(pages) ? yyjson_mut_arr_get(pages, a_pageIndex) : nullptr;
         auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
         auto* module = yyjson_mut_obj(document.get());
-        const auto labelKey = kind == "text" || kind == "separatorText" || kind == "boxStart" ?
+        const auto labelKey = kind == "text" || kind == "separatorText" ||
+                                      kind == "boxStart" || kind == "dropdownBoxStart" ||
+                                      kind == "dropdownStart" ?
                                   "label" : "header";
         if (!yyjson_mut_is_arr(modules) || !module || !AddString(document.get(), module, "type", kind) ||
             (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
@@ -1353,6 +1358,41 @@ namespace MPL::SliderCreator
         return WriteDocument(a_path, document.get(), a_error);
     }
 
+    bool RemoveSlider(
+        const std::filesystem::path& a_path,
+        const std::size_t a_pageIndex,
+        const std::size_t a_controlIndex,
+        const std::string& a_sliderID,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        if (!root)
+        {
+            a_error = "The menu layout could not be read.";
+            return false;
+        }
+        yyjson_mut_doc_set_root(document.get(), root);
+        auto* pages = yyjson_mut_obj_get(root, "pages");
+        auto* page = yyjson_mut_is_arr(pages) ? yyjson_mut_arr_get(pages, a_pageIndex) : nullptr;
+        auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
+        auto* slider = yyjson_mut_is_arr(modules) ? yyjson_mut_arr_get(modules, a_controlIndex) : nullptr;
+        auto* type = yyjson_mut_is_obj(slider) ? yyjson_mut_obj_get(slider, "type") : nullptr;
+        auto* id = yyjson_mut_is_obj(slider) ? yyjson_mut_obj_get(slider, "id") : nullptr;
+        if (!yyjson_mut_is_str(type) || !IEquals(yyjson_mut_get_str(type), "slider") ||
+            !yyjson_mut_is_str(id) || !IEquals(yyjson_mut_get_str(id), a_sliderID) ||
+            !yyjson_mut_arr_remove(modules, a_controlIndex))
+        {
+            a_error = "The slider being edited no longer exists.";
+            return false;
+        }
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
     bool RenameModule(
         const std::filesystem::path& a_path,
         const std::size_t a_pageIndex,
@@ -1412,7 +1452,9 @@ namespace MPL::SliderCreator
         yyjson_mut_doc_set_root(document.get(), root);
         auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
         auto* module = yyjson_mut_obj(document.get());
-        const auto labelKey = kind == "text" || kind == "separatorText" || kind == "boxStart" ?
+        const auto labelKey = kind == "text" || kind == "separatorText" ||
+                                      kind == "boxStart" || kind == "dropdownBoxStart" ||
+                                      kind == "dropdownStart" ?
                                   "label" : "";
         if (!modules || !module || !AddString(document.get(), module, "type", kind) ||
             (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
@@ -1920,7 +1962,8 @@ namespace MPL::SliderCreator
         const std::size_t a_pageIndex,
         const std::optional<std::size_t> a_controlIndex,
         const Definition& a_definition,
-        std::string& a_error)
+        std::string& a_error,
+        const std::optional<std::size_t> a_sourcePageIndex)
     {
         a_error.clear();
         if (!Validate(a_definition, a_error)) return false;
@@ -1934,7 +1977,8 @@ namespace MPL::SliderCreator
             return false;
         }
         auto* sourcePages = yyjson_obj_get(sourceRoot, "pages");
-        auto* sourcePage = yyjson_is_arr(sourcePages) ? yyjson_arr_get(sourcePages, a_pageIndex) : nullptr;
+        const auto editedPageIndex = a_controlIndex ? a_sourcePageIndex.value_or(a_pageIndex) : a_pageIndex;
+        auto* sourcePage = yyjson_is_arr(sourcePages) ? yyjson_arr_get(sourcePages, editedPageIndex) : nullptr;
         auto* sourceModules = yyjson_is_obj(sourcePage) ? yyjson_obj_get(sourcePage, "modules") : nullptr;
         auto* sourceControl = a_controlIndex && yyjson_is_arr(sourceModules) ?
                                   yyjson_arr_get(sourceModules, *a_controlIndex) :
@@ -1956,6 +2000,13 @@ namespace MPL::SliderCreator
             a_error = "The selected page is unavailable.";
             return false;
         }
+        auto* editedPage = yyjson_mut_arr_get(pages, editedPageIndex);
+        auto* editedModules = yyjson_mut_is_obj(editedPage) ? yyjson_mut_obj_get(editedPage, "modules") : nullptr;
+        if (a_controlIndex && !yyjson_mut_is_arr(editedModules))
+        {
+            a_error = "The slider being edited no longer exists.";
+            return false;
+        }
 
         std::size_t pagePosition = 0;
         std::size_t pageMaximum = 0;
@@ -1969,7 +2020,7 @@ namespace MPL::SliderCreator
             yyjson_mut_val* control = nullptr;
             yyjson_mut_arr_foreach(pageModules, controlPosition, controlMaximum, control)
             {
-                if (a_controlIndex && pagePosition == a_pageIndex && controlPosition == *a_controlIndex) continue;
+                if (a_controlIndex && pagePosition == editedPageIndex && controlPosition == *a_controlIndex) continue;
                 auto* kind = yyjson_mut_obj_get(control, "type");
                 auto* id = yyjson_mut_obj_get(control, "id");
                 if (yyjson_mut_is_str(kind) && yyjson_mut_is_str(id) &&
@@ -1990,12 +2041,25 @@ namespace MPL::SliderCreator
         }
         if (a_controlIndex)
         {
-            auto* existing = yyjson_mut_arr_get(modules, *a_controlIndex);
+            auto* existing = yyjson_mut_arr_get(editedModules, *a_controlIndex);
             auto* kind = yyjson_mut_is_obj(existing) ? yyjson_mut_obj_get(existing, "type") : nullptr;
-            if (!yyjson_mut_is_str(kind) || !IEquals(yyjson_mut_get_str(kind), "slider") ||
-                !yyjson_mut_arr_replace(modules, *a_controlIndex, slider))
+            if (!yyjson_mut_is_str(kind) || !IEquals(yyjson_mut_get_str(kind), "slider"))
             {
                 a_error = "The slider being edited no longer exists.";
+                return false;
+            }
+            if (editedPageIndex == a_pageIndex)
+            {
+                if (!yyjson_mut_arr_replace(modules, *a_controlIndex, slider))
+                {
+                    a_error = "The slider being edited no longer exists.";
+                    return false;
+                }
+            }
+            else if (!yyjson_mut_arr_remove(editedModules, *a_controlIndex) ||
+                     !yyjson_mut_arr_append(modules, slider))
+            {
+                a_error = "The slider could not be moved to the selected page.";
                 return false;
             }
         }

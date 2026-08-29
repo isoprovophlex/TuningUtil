@@ -5,6 +5,7 @@
 #include <JsonOverlay.h>
 #include <LightingPatcher.h>
 #include <PresetCatalog.h>
+#include <SliderCreator.h>
 #include <TuningSettings.h>
 #include <SliderSettingCatalog.h>
 #include <TuningUtil.h>
@@ -452,11 +453,6 @@ namespace MPL::TuningUtil
             FilteredWeatherRule rule;
             rule.id = std::move(a_id);
             rule.controlID = std::move(a_controlID);
-            if (auto localLink = JsonString(a_control, "localLink"))
-            {
-                *localLink = Lowercase(Trim(std::move(*localLink)));
-                if (!localLink->empty()) rule.localLink = std::move(*localLink);
-            }
             rule.hueScales = JsonHueScales(a_control);
             for (const auto& specification : a_settings)
             {
@@ -485,47 +481,13 @@ namespace MPL::TuningUtil
             {
                 return std::nullopt;
             }
-            if (rule.localLink && rule.domain == FilteredWeatherDomain::effectLighting)
-            {
-                logger::warn("[TuningUtil] filtered slider={} | source={} | local link unsupported for Effect Lighting",
-                    rule.id, a_source.string());
-                return std::nullopt;
-            }
-            if (rule.localLink)
-            {
-                const auto operation = rule.settings.front().operation;
-                const auto valid = std::ranges::any_of(
-                    SliderSettingCatalog::Entries(),
-                    [&](const auto& a_entry)
-                    {
-                        if (a_entry.domain != SliderSettingCatalog::Domain::weather ||
-                            !Config::IEquals(a_entry.target, *rule.localLink))
-                            return false;
-                        switch (operation)
-                        {
-                        case FilteredWeatherOperation::brightness:
-                            return a_entry.filterOperation == SliderSettingCatalog::FilterOperation::brightness;
-                        case FilteredWeatherOperation::saturation:
-                            return a_entry.filterOperation == SliderSettingCatalog::FilterOperation::saturation;
-                        case FilteredWeatherOperation::hueShift:
-                            return a_entry.filterOperation == SliderSettingCatalog::FilterOperation::hueShift;
-                        }
-                        return false;
-                    });
-                if (!valid)
-                {
-                    logger::warn("[TuningUtil] filtered slider={} | source={} | local link={} unsupported",
-                        rule.id, a_source.string(), *rule.localLink);
-                    return std::nullopt;
-                }
-            }
             if (rule.hueScales && rule.settings.front().operation != FilteredWeatherOperation::saturation)
             {
                 logger::warn("[TuningUtil] filtered slider={} | source={} | saturation settings required",
                     rule.id, a_source.string());
                 return std::nullopt;
             }
-            rule.defaultValue = rule.settings.front().operation == FilteredWeatherOperation::hueShift && !rule.localLink ? 0.0 : 1.0;
+            rule.defaultValue = rule.settings.front().operation == FilteredWeatherOperation::hueShift ? 0.0 : 1.0;
             if (auto* value = yyjson_obj_get(a_control, "default"); yyjson_is_num(value))
             {
                 rule.defaultValue = yyjson_get_real(value);
@@ -546,7 +508,6 @@ namespace MPL::TuningUtil
             const auto kind = Lowercase(Trim(JsonString(a_control, "type").value_or("")));
             const auto times = JsonStrings(a_control, "times");
             const auto filtered = !times.empty() || yyjson_is_obj(yyjson_obj_get(a_control, "weatherFilter")) ||
-                                   yyjson_is_str(yyjson_obj_get(a_control, "localLink")) ||
                                    yyjson_is_obj(yyjson_obj_get(a_control, "hueScales")) ||
                                    (HasStructuredSliderSettings(a_control) &&
                                        !HasDirectInteriorLinkOverride(a_control));
@@ -2393,6 +2354,222 @@ namespace MPL::TuningUtil
                 profile.filteredBaseLightRules.size());
         }
         return changed;
+    }
+
+    bool SetSliderCreatorPreview(
+        std::string& a_profileName,
+        const std::string_view a_existingRuleID,
+        const SliderCreator::Definition& a_definition,
+        const double a_value,
+        bool& a_changed,
+        std::string& a_error)
+    {
+        constexpr std::string_view previewRuleID = "$sliderCreatorPreview";
+        a_changed = false;
+        a_error.clear();
+        if (!a_definition.filtered || a_definition.settings.empty() || !std::isfinite(a_value))
+        {
+            a_error = "The functional preview requires a valid filtered slider.";
+            return false;
+        }
+
+        const auto profileName = ProfileName(a_profileName);
+        (void)GetProfiles();
+        const auto profile = std::ranges::find_if(profiles, [&](const Profile& a_profile)
+            { return Config::IEquals(a_profile.name, profileName); });
+        if (profile == profiles.end())
+        {
+            a_error = "The slider profile is unavailable.";
+            return false;
+        }
+
+        auto settingsName = profile->name;
+        auto& settings = GetSettings(settingsName);
+        const auto runtimeID = a_existingRuleID.empty() ? std::string(previewRuleID) : std::string(a_existingRuleID);
+        const auto filter = [](const SliderCreator::Filter& a_filter)
+        {
+            return WeatherFilter{
+                .formIDs = a_filter.formIDs,
+                .contains = a_filter.contains,
+            };
+        };
+        const auto eraseRule = [&](auto& a_rules)
+        {
+            const auto originalSize = a_rules.size();
+            std::erase_if(a_rules, [&](const auto& a_rule)
+                { return Config::IEquals(a_rule.id, runtimeID); });
+            return a_rules.size() != originalSize;
+        };
+        const auto findValue = [&](auto& a_values)
+        {
+            return std::ranges::find_if(a_values, [&](const auto& a_entry)
+                { return Config::IEquals(a_entry.first, runtimeID); });
+        };
+        const auto assignValue = [&](auto& a_values)
+        {
+            const auto existing = findValue(a_values);
+            if (existing != a_values.end()) existing->second = a_value;
+            else a_values.emplace(runtimeID, a_value);
+        };
+        const auto otherRuleExists = [&](const auto& a_rules)
+        {
+            return std::ranges::any_of(a_rules, [&](const auto& a_rule)
+                { return Config::IEquals(a_rule.id, runtimeID); });
+        };
+
+        if (a_definition.filterDomain == SliderCreator::FilterDomain::weather)
+        {
+            FilteredWeatherRule rule{
+                .id = runtimeID,
+                .controlID = runtimeID,
+            };
+            std::optional<FilteredWeatherDomain> domain;
+            std::optional<FilteredWeatherOperation> operation;
+            for (const auto& target : a_definition.settings)
+            {
+                auto parsed = ParseFilteredWeatherSetting(target.setting);
+                if (!parsed || (domain && *domain != parsed->domain) ||
+                    (operation && *operation != parsed->setting.operation))
+                {
+                    a_error = "The functional preview settings do not use one compatible weather operation.";
+                    return false;
+                }
+                domain = parsed->domain;
+                operation = parsed->setting.operation;
+                parsed->setting.scale = target.scale;
+                parsed->setting.ignoreLink = target.ignoreLink;
+                rule.settings.push_back(std::move(parsed->setting));
+            }
+            rule.domain = *domain;
+            rule.times = a_definition.times;
+            if (!a_definition.useTimes) rule.times.fill(true);
+            if (!std::ranges::any_of(rule.times, std::identity{}))
+            {
+                a_error = "Select at least one time for the functional preview.";
+                return false;
+            }
+            rule.include = filter(a_definition.include);
+            rule.exclude = filter(a_definition.exclude);
+            if (a_definition.hueScales)
+            {
+                const auto& scales = *a_definition.hueScales;
+                rule.hueScales = WeatherPatcher::AmbientHueScales{
+                    scales.red,
+                    scales.orange,
+                    scales.yellow,
+                    scales.green,
+                    scales.teal,
+                    scales.blue,
+                    scales.magenta,
+                };
+            }
+            rule.defaultValue = a_definition.defaultValue.value_or(
+                *operation == FilteredWeatherOperation::hueShift ? 0.0 : 1.0);
+
+            const auto existing = std::ranges::find_if(profile->filteredWeatherRules, [&](const auto& a_rule)
+                { return Config::IEquals(a_rule.id, runtimeID); });
+            const auto value = findValue(settings.filteredWeatherAdjustments);
+            if (existing != profile->filteredWeatherRules.end() && *existing == rule &&
+                value != settings.filteredWeatherAdjustments.end() &&
+                std::abs(value->second - a_value) <= 0.000001 &&
+                !otherRuleExists(profile->filteredLightingTemplateRules) &&
+                !otherRuleExists(profile->filteredBaseLightRules))
+                return true;
+
+            eraseRule(profile->filteredWeatherRules);
+            eraseRule(profile->filteredLightingTemplateRules);
+            eraseRule(profile->filteredBaseLightRules);
+            profile->filteredWeatherRules.push_back(std::move(rule));
+            assignValue(settings.filteredWeatherAdjustments);
+        }
+        else if (a_definition.filterDomain == SliderCreator::FilterDomain::lightingTemplate)
+        {
+            FilteredLightingTemplateRule rule{
+                .id = runtimeID,
+                .controlID = runtimeID,
+            };
+            std::optional<FilteredLightingTemplateOperation> operation;
+            for (const auto& target : a_definition.settings)
+            {
+                auto setting = ParseFilteredLightingTemplateSetting(target.setting);
+                if (!setting || (operation && *operation != setting->operation))
+                {
+                    a_error = "The functional preview settings do not use one compatible Lighting Template operation.";
+                    return false;
+                }
+                operation = setting->operation;
+                setting->scale = target.scale;
+                setting->ignoreLink = target.ignoreLink;
+                rule.settings.push_back(std::move(*setting));
+            }
+            rule.include = filter(a_definition.include);
+            rule.exclude = filter(a_definition.exclude);
+            rule.locationTypeInclusions = a_definition.include.locationTypes;
+            rule.locationTypeExclusions = a_definition.exclude.locationTypes;
+            rule.inclusionMultiLocationExceptions = a_definition.include.multiLocationExceptions;
+            rule.exclusionMultiLocationExceptions = a_definition.exclude.multiLocationExceptions;
+            rule.defaultValue = a_definition.defaultValue.value_or(1.0);
+
+            const auto existing = std::ranges::find_if(profile->filteredLightingTemplateRules, [&](const auto& a_rule)
+                { return Config::IEquals(a_rule.id, runtimeID); });
+            const auto value = findValue(settings.filteredLightingTemplateAdjustments);
+            if (existing != profile->filteredLightingTemplateRules.end() && *existing == rule &&
+                value != settings.filteredLightingTemplateAdjustments.end() &&
+                std::abs(value->second - a_value) <= 0.000001 &&
+                !otherRuleExists(profile->filteredWeatherRules) &&
+                !otherRuleExists(profile->filteredBaseLightRules))
+                return true;
+
+            eraseRule(profile->filteredWeatherRules);
+            eraseRule(profile->filteredLightingTemplateRules);
+            eraseRule(profile->filteredBaseLightRules);
+            profile->filteredLightingTemplateRules.push_back(std::move(rule));
+            assignValue(settings.filteredLightingTemplateAdjustments);
+        }
+        else
+        {
+            FilteredBaseLightRule rule{
+                .id = runtimeID,
+                .controlID = runtimeID,
+            };
+            std::optional<FilteredBaseLightOperation> operation;
+            for (const auto& target : a_definition.settings)
+            {
+                auto setting = ParseFilteredBaseLightSetting(target.setting);
+                if (!setting || (operation && *operation != setting->operation))
+                {
+                    a_error = "The functional preview settings do not use one compatible Base Light operation.";
+                    return false;
+                }
+                operation = setting->operation;
+                setting->scale = target.scale;
+                rule.settings.push_back(std::move(*setting));
+            }
+            rule.include = filter(a_definition.include);
+            rule.exclude = filter(a_definition.exclude);
+            rule.defaultValue = a_definition.defaultValue.value_or(
+                *operation == FilteredBaseLightOperation::hueShift ? 0.0 : 1.0);
+
+            const auto existing = std::ranges::find_if(profile->filteredBaseLightRules, [&](const auto& a_rule)
+                { return Config::IEquals(a_rule.id, runtimeID); });
+            const auto value = findValue(settings.filteredBaseLightAdjustments);
+            if (existing != profile->filteredBaseLightRules.end() && *existing == rule &&
+                value != settings.filteredBaseLightAdjustments.end() &&
+                std::abs(value->second - a_value) <= 0.000001 &&
+                !otherRuleExists(profile->filteredWeatherRules) &&
+                !otherRuleExists(profile->filteredLightingTemplateRules))
+                return true;
+
+            eraseRule(profile->filteredWeatherRules);
+            eraseRule(profile->filteredLightingTemplateRules);
+            eraseRule(profile->filteredBaseLightRules);
+            profile->filteredBaseLightRules.push_back(std::move(rule));
+            assignValue(settings.filteredBaseLightAdjustments);
+        }
+
+        a_changed = true;
+        ++settingsRevision;
+        return true;
     }
 
     Settings& GetSettings(std::string& a_profileName)

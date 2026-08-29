@@ -4,6 +4,11 @@
 #include <cstdint>
 #include <map>
 
+namespace MPL::SliderCreator
+{
+    struct Definition;
+}
+
 namespace MPL::TuningUtil
 {
     using PresetSelections = std::map<std::string, std::string>;
@@ -41,7 +46,6 @@ namespace MPL::TuningUtil
         std::array<bool, RE::TESWeather::ColorTime::kTotal> times{};
         WeatherFilter include;
         WeatherFilter exclude;
-        std::optional<std::string> localLink;
         std::optional<WeatherPatcher::AmbientHueScales> hueScales;
         double defaultValue = 1.0;
 
@@ -147,6 +151,13 @@ namespace MPL::TuningUtil
     const FilteredBaseLightRule* FindFilteredBaseLightRule(const std::string&, std::string_view);
     bool IgnoresInteriorSliderLink(std::span<const std::string>, std::string_view);
     bool ReloadFilteredRules();
+    bool SetSliderCreatorPreview(
+        std::string&,
+        std::string_view,
+        const SliderCreator::Definition&,
+        double,
+        bool&,
+        std::string&);
     Settings& GetSettings(std::string&);
     Settings ResolveSettingsStack(std::span<const std::string>);
     std::optional<std::string> SerializePresetSettings(std::string&, std::string&);

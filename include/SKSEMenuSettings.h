@@ -40,13 +40,6 @@ namespace MPL::SKSEMenuSettings
         pressed,
     };
 
-    enum class TooltipDelay
-    {
-        none,
-        shortDelay,
-        normal,
-    };
-
     using Color = std::array<float, 4>;
 
     struct SliderDefaults
@@ -100,11 +93,6 @@ namespace MPL::SKSEMenuSettings
 
     bool SettingsProfileFirst();
     std::string SettingsProfileLabel(bool a_includeGap);
-
-    TooltipDelay GetTooltipDelay();
-    float GetTooltipFontScale();
-    std::optional<Color> GetTooltipTextColor();
-    std::optional<Color> GetTooltipBackgroundColor();
 
     std::string StatusMessage(
         std::string_view a_key,

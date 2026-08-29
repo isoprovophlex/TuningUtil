@@ -57,9 +57,6 @@ namespace MPL::SliderCreator
     {
         std::string id;
         std::string label;
-        std::string tooltip;
-        std::string link;
-        std::string localLink;
         std::vector<Target> settings;
         std::optional<HueScales> hueScales;
         bool filtered = true;
@@ -90,12 +87,19 @@ namespace MPL::SliderCreator
         std::vector<ExistingSlider> sliders;
     };
 
+    enum class ProfileTemplate
+    {
+        weather,
+        lighting,
+    };
+
     std::vector<Page> Load(const std::filesystem::path&, std::string&);
     bool CreateProfile(
         const std::filesystem::path&,
         const std::string&,
         std::string&,
-        const std::filesystem::path& = {});
+        const std::filesystem::path& = {},
+        std::optional<ProfileTemplate> = std::nullopt);
     std::optional<std::size_t> CreatePage(
         const std::filesystem::path&,
         const std::string&,
@@ -125,6 +129,12 @@ namespace MPL::SliderCreator
         const std::filesystem::path&,
         std::size_t,
         std::size_t,
+        std::string&);
+    bool RemoveSlider(
+        const std::filesystem::path&,
+        std::size_t,
+        std::size_t,
+        const std::string&,
         std::string&);
     bool RenameModule(
         const std::filesystem::path&,
@@ -198,5 +208,6 @@ namespace MPL::SliderCreator
         std::size_t,
         std::optional<std::size_t>,
         const Definition&,
-        std::string&);
+        std::string&,
+        std::optional<std::size_t> = std::nullopt);
 }  // namespace MPL::SliderCreator

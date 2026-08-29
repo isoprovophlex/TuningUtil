@@ -20,7 +20,7 @@ namespace MPL::SKSEMenuSettings
             std::string location = "bottom";
             double duration = 0.0;
             float fontScale = 1.0f;
-            float height = 48.0f;
+            float height = 36.0f;
             std::optional<Color> color;
             bool clearOnPageChange = false;
         };
@@ -75,14 +75,6 @@ namespace MPL::SKSEMenuSettings
             std::unordered_map<std::string, std::string> settings;
         };
 
-        struct Tooltip
-        {
-            std::string delay = "normal";
-            float fontScale = 1.0f;
-            std::optional<Color> textColor;
-            std::optional<Color> backgroundColor;
-        };
-
         struct ConfiguredSliderDefaults
         {
             float min = std::numeric_limits<float>::quiet_NaN();
@@ -104,7 +96,6 @@ namespace MPL::SKSEMenuSettings
             Layout layout;
             std::unordered_map<std::string, ConfiguredSliderDefaults> sliderDefaults;
             SettingsProfile settingsProfile;
-            Tooltip tooltip;
             std::unordered_map<std::string, std::string> statusMessages;
             std::unordered_map<std::string, std::string> displayMessages;
         };
@@ -174,6 +165,8 @@ namespace MPL::SKSEMenuSettings
                 { "userSettingsPromoteFailure", "User settings could not be made permanent: {reason}" },
                 { "sliderSaved", "Saved {slider} to {profile} / {page}." },
                 { "sliderSaveFailure", "The slider could not be saved: {reason}" },
+                { "sliderDeleted", "Deleted {slider} from {profile} / {page}." },
+                { "sliderDeleteFailure", "The slider could not be deleted: {reason}" },
                 { "profileCreated", "Created profile {profile}. Restart Skyrim to load its menu." },
                 { "profileCreateFailure", "The profile could not be created: {reason}" },
                 { "editModeEnabled", "Edit Mode enabled." },
@@ -247,18 +240,15 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorNoValidSettings", "Add at least one valid setting to the slider." },
                 { "sliderCreatorUnsupportedSettingPath", "The slider contains a setting path that TuningUtil does not support." },
                 { "sliderCreatorDirectAllHues", "All Hues is a creator shortcut; direct sliders must store its seven individual hue bands." },
-                { "sliderCreatorInvalidDirectLink", "A direct link requires only linkable, unfiltered settings." },
                 { "sliderCreatorFilteredUnsupportedSetting", "Filtered sliders support only weather brightness, saturation, and hue-shift settings." },
                 { "sliderCreatorFilteredLightingUnsupportedSetting", "Lighting Template filters support only interior brightness and Fog Strength settings." },
                 { "sliderCreatorFilteredBaseLightUnsupportedSetting", "Base Light filters support only Point Lights settings." },
-                { "sliderCreatorBaseLightWeatherFeatures", "Time filters, local links, and saturation scales do not apply to Base Light filters." },
-                { "sliderCreatorLightingWeatherFeatures", "Time filters, local links, and saturation scales apply only to filtered weather sliders." },
+                { "sliderCreatorBaseLightWeatherFeatures", "Time filters and saturation scales do not apply to Base Light filters." },
+                { "sliderCreatorLightingWeatherFeatures", "Time filters and saturation scales apply only to filtered weather sliders." },
                 { "sliderCreatorMixedFilteredOperations", "Every setting in a filtered slider must use the same operation." },
                 { "sliderCreatorMixedFilterDomains", "Every setting in a filtered slider must use the same filter domain." },
-                { "sliderCreatorInvalidLocalLink", "The local link must name a target supported by this filtered operation." },
-                { "sliderCreatorEffectLightingLocalLink", "Effect Lighting weather filters do not support local links." },
                 { "sliderCreatorHueScalesRequireSaturation", "Slider-specific saturation scales are supported only by filtered saturation sliders." },
-                { "sliderCreatorLocalFeaturesRequireFilter", "Local links and slider-specific saturation scales require a filtered weather slider." },
+                { "sliderCreatorHueScalesRequireFilter", "Slider-specific saturation scales require a filtered weather slider." },
                 { "sliderCreatorInvalidHueScale", "Every slider-specific saturation scale must be a finite number." },
                 { "sliderCreatorNoTimeSelected", "Select at least one time of day or disable the time filter." },
                 { "sliderCreatorInvalidRange", "The slider minimum must be lower than its maximum." },
@@ -268,7 +258,9 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorReplaceFailure", "The menu file could not be replaced: {reason}" },
                 { "sliderCreatorPagesMissing", "The menu file does not contain a pages array." },
                 { "sliderCreatorInvalidProfileName", "Enter a valid profile name that can be used as a Windows folder name." },
-                { "sliderCreatorTemplateMissing", "Luma/Tuning/newSkseMenu.json is missing or does not contain a valid pages array." },
+                { "sliderCreatorSelectProfileSource", "Select a profile template or an existing profile to copy." },
+                { "sliderCreatorConflictingProfileSource", "Select either a profile template or an existing profile to copy." },
+                { "sliderCreatorTemplateMissing", "The selected profile template is missing or does not contain a valid pages array." },
                 { "sliderCreatorProfileExists", "A profile folder with that name already exists." },
                 { "sliderCreatorProfileFolderFailure", "The profile folder could not be created: {reason}" },
                 { "sliderCreatorProfileFolderUnknownFailure", "The profile folder could not be created." },
@@ -313,7 +305,7 @@ namespace MPL::SKSEMenuSettings
                 { "restoreAll", "Restore All" },
                 { "resetAll", "Reset All to Defaults" },
                 { "savePresetSelection", "Save Preset Selection" },
-                { "presetControl", "Presets Create" },
+                { "presetControl", "Preset Creator" },
                 { "createPresetHeader", "Create Preset" },
                 { "savePresetControl", "Save Presets" },
                 { "restorePresetControl", "Restore Presets" },
@@ -326,7 +318,7 @@ namespace MPL::SKSEMenuSettings
                 { "presetName", "Preset Name" },
                 { "renamePresetCategory", "Rename Category" },
                 { "renamePreset", "Rename Preset" },
-                { "updatePreset", "Update Preset" },
+                { "updatePreset", "Update Preset with Current Settings" },
                 { "movePresetUp", "Move Up" },
                 { "movePresetDown", "Move Down" },
                 { "removePreset", "Remove Preset" },
@@ -415,8 +407,14 @@ namespace MPL::SKSEMenuSettings
                 { "removeContains", "Remove Contains" },
                 { "addSlider", "Add Slider" },
                 { "updateSlider", "Update Slider" },
+                { "deleteSlider", "Delete Slider" },
                 { "createProfile", "Create New Profile" },
+                { "profileTemplate", "Template" },
+                { "selectProfileTemplate", "Select Template..." },
+                { "weatherProfileTemplate", "Weather Template" },
+                { "lightingProfileTemplate", "Lighting Template" },
                 { "copyExistingProfile", "Copy Existing Profile" },
+                { "selectExistingProfile", "Select Existing Profile..." },
                 { "blankProfile", "Blank Profile" },
                 { "deleteUserSettings", "Delete User Settings" },
                 { "confirmDeleteUserSettings", "Delete" },
@@ -439,9 +437,7 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorAutomatic", "Automatic" },
                 { "sliderCreatorFormat", "Format" },
                 { "sliderCreatorScale", "Scale" },
-                { "sliderCreatorIgnoreLink", "Ignore Link" },
-                { "sliderCreatorLink", "Link" },
-                { "sliderCreatorLinkHint", "Optional direct grouped link source" },
+                { "sliderCreatorIgnoreLink", "Ignore Links" },
                 { "sliderCreatorInvert", "Invert Slider" },
                 { "sliderCreatorCustomDefault", "Custom Default" },
                 { "sliderCreatorDefault", "Default" },
@@ -456,8 +452,6 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorLoadExisting", "Load Existing Slider" },
                 { "sliderCreatorPageSelection", "Page Selection" },
                 { "addAllHues", "Add All Hues" },
-                { "sliderCreatorLocalLink", "Local Link" },
-                { "sliderCreatorNoLocalLink", "None" },
                 { "sliderCreatorUniqueHueScales", "Unique Saturation Scales" },
                 { "editMode", "Edit Profile Mode" },
                 { "editPage", "Edit Page" },
@@ -642,7 +636,7 @@ namespace MPL::SKSEMenuSettings
             }
             if (!std::isfinite(loaded.statusDisplay.height) || loaded.statusDisplay.height <= 0.0f)
             {
-                loaded.statusDisplay.height = 48.0f;
+                loaded.statusDisplay.height = 36.0f;
             }
             NormalizeOptionalJsonColor(loaded.statusDisplay.color);
             loaded.buttonFeedback.hoverBrightness = std::clamp(loaded.buttonFeedback.hoverBrightness, 0.0f, 1.0f);
@@ -701,18 +695,6 @@ namespace MPL::SKSEMenuSettings
             }
             if (loaded.settingsProfile.label.empty()) loaded.settingsProfile.label = "Settings";
             loaded.settingsProfile.blankLinesAbove = std::clamp(loaded.settingsProfile.blankLinesAbove, 0, 4);
-
-            loaded.tooltip.delay = Lowercase(loaded.tooltip.delay);
-            if (loaded.tooltip.delay != "none" && loaded.tooltip.delay != "short" && loaded.tooltip.delay != "normal")
-            {
-                loaded.tooltip.delay = "normal";
-            }
-            if (!std::isfinite(loaded.tooltip.fontScale) || loaded.tooltip.fontScale <= 0.0f)
-            {
-                loaded.tooltip.fontScale = 1.0f;
-            }
-            NormalizeOptionalJsonColor(loaded.tooltip.textColor);
-            NormalizeOptionalJsonColor(loaded.tooltip.backgroundColor);
 
             settings = std::move(loaded);
             loadedWriteTime = writeTime;
@@ -991,28 +973,6 @@ namespace MPL::SKSEMenuSettings
             label.insert(0, static_cast<std::size_t>(settings.settingsProfile.blankLinesAbove), '\n');
         }
         return label;
-    }
-
-    TooltipDelay GetTooltipDelay()
-    {
-        if (settings.tooltip.delay == "none") return TooltipDelay::none;
-        if (settings.tooltip.delay == "short") return TooltipDelay::shortDelay;
-        return TooltipDelay::normal;
-    }
-
-    float GetTooltipFontScale()
-    {
-        return settings.tooltip.fontScale;
-    }
-
-    std::optional<Color> GetTooltipTextColor()
-    {
-        return settings.tooltip.textColor;
-    }
-
-    std::optional<Color> GetTooltipBackgroundColor()
-    {
-        return settings.tooltip.backgroundColor;
     }
 
     std::string StatusMessage(

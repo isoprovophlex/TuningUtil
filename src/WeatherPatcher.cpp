@@ -3091,32 +3091,6 @@ namespace MPL::WeatherPatcher
         return result;
     }
 
-    HueShiftBands FilteredLinkedHueShift(
-        const TuningUtil::FilteredWeatherSetting& a_setting,
-        const AmbientHueScaleValues& a_source,
-        const double a_scale)
-    {
-        HueShiftBands result{
-            a_source.red * a_scale,
-            a_source.orange * a_scale,
-            a_source.yellow * a_scale,
-            a_source.green * a_scale,
-            a_source.teal * a_scale,
-            a_source.blue * a_scale,
-            a_source.magenta * a_scale,
-        };
-        if (!a_setting.hue) return result;
-        const auto selected = *a_setting.hue;
-        if (selected != "red") result.red = 0.0;
-        if (selected != "orange") result.orange = 0.0;
-        if (selected != "yellow") result.yellow = 0.0;
-        if (selected != "green") result.green = 0.0;
-        if (selected != "teal") result.teal = 0.0;
-        if (selected != "blue") result.blue = 0.0;
-        if (selected != "magenta") result.magenta = 0.0;
-        return result;
-    }
-
     double ScaledFilteredValue(
         const TuningUtil::FilteredWeatherOperation a_operation,
         const double a_value,
@@ -3168,52 +3142,39 @@ namespace MPL::WeatherPatcher
         result.values.fill(1.0);
 
         std::array<std::optional<SettingLinkResolution>, kFilteredWeatherFieldCount> links{};
-        std::array<double, kFilteredWeatherFieldCount> baseValues{};
-        baseValues.fill(1.0);
-        std::array<AmbientHueScaleValues, kFilteredWeatherFieldCount> baseHueShifts{};
         if (result.operation == TuningUtil::FilteredWeatherOperation::brightness)
         {
             const auto resolved = ResolveBrightnessWithLinks(a_settings.brightnessMultiplier, a_settings.links.weather);
             std::ranges::copy(resolved.links, links.begin());
-            const auto values = BaseBrightnessMultipliers(resolved.values);
-            std::ranges::copy(values, baseValues.begin());
         }
         else if (result.operation == TuningUtil::FilteredWeatherOperation::saturation)
         {
             const auto resolved = ResolveSaturation(a_settings.saturationMultiplier, a_settings.links.weather);
             links = resolved.links;
-            const auto values = SaturationMultipliers(resolved.values);
-            std::ranges::copy(values, baseValues.begin());
         }
         else
         {
             const auto resolved = ResolveHueShift(a_settings.hueShift, a_settings.links.weather);
             links = resolved.links;
-            std::ranges::copy(resolved.values, baseHueShifts.begin());
         }
-
-        const auto localLink = a_rule.localLink ? FilteredWeatherFieldIndex(*a_rule.localLink) : std::nullopt;
 
         for (const auto& setting : a_rule.settings)
         {
             const auto field = FilteredWeatherFieldIndex(setting.target);
             if (!field) continue;
-            if (!localLink && links[*field] && !setting.ignoreLink) continue;
+            if (links[*field] && !setting.ignoreLink) continue;
             if (result.operation == TuningUtil::FilteredWeatherOperation::hueShift)
             {
-                const auto shift = localLink ?
-                                       FilteredLinkedHueShift(setting, baseHueShifts[*localLink], a_value * setting.scale) :
-                                       FilteredHueShift(setting, ScaledFilteredValue(result.operation, a_value, setting.scale));
+                const auto shift = FilteredHueShift(
+                    setting,
+                    ScaledFilteredValue(result.operation, a_value, setting.scale));
                 if (!HueShiftBandsAreActive(shift)) continue;
                 result.active[*field] = true;
                 AddHueShift(result.hue[*field], shift);
             }
             else
             {
-                const auto localValue = localLink ?
-                                            1.0 + ((baseValues[*localLink] - 1.0) * a_value) :
-                                            a_value;
-                const auto value = ScaledFilteredValue(result.operation, localValue, setting.scale);
+                const auto value = ScaledFilteredValue(result.operation, a_value, setting.scale);
                 if (std::abs(value - 1.0) <= 0.0001) continue;
                 result.active[*field] = true;
                 result.values[*field] = result.operation == TuningUtil::FilteredWeatherOperation::brightness ?
@@ -3259,7 +3220,6 @@ namespace MPL::WeatherPatcher
         {
             return false;
         }
-        if (a_rule.localLink) return false;
         const auto field = FilteredWeatherFieldIndex(a_rule.settings.front().target);
         if (!field)
         {
@@ -3302,8 +3262,7 @@ namespace MPL::WeatherPatcher
                     continue;
                 const double value = FilteredAdjustmentValue(profile.settings, rule);
                 const auto operation = rule.settings.front().operation;
-                const double neutral = rule.localLink ? 0.0 :
-                                           operation == TuningUtil::FilteredWeatherOperation::hueShift ? 0.0 : 1.0;
+                const double neutral = operation == TuningUtil::FilteredWeatherOperation::hueShift ? 0.0 : 1.0;
                 if (std::abs(value - neutral) <= 0.0001)
                 {
                     continue;
