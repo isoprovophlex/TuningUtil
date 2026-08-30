@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Config/Tuning.h>
+#include <ProfileSetup.h>
 #include <cstdint>
 #include <map>
 
@@ -171,6 +172,8 @@ namespace MPL::TuningUtil
         std::string&);
     bool ApplyPresetPreview(std::string&, std::string_view, std::string_view, std::string&);
     bool SaveSettings(std::string&);
+    bool SaveProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);
+    bool RestoreProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);
     bool PromoteUserSettingsToProfile(std::string&, std::string&);
     bool SavePageSettings(std::string&, const std::vector<std::string>&);
     bool RestoreSettings(std::string&);

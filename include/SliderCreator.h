@@ -18,15 +18,12 @@ namespace MPL::SliderCreator
         baseLight,
     };
 
-    inline constexpr std::array<std::string_view, 5> kRequiredProfileModuleKinds{
+    inline constexpr std::array<std::string_view, 4> kRequiredProfileModuleKinds{
         "profileActions",
         "enableProfile",
         "profilePriority",
         "advancedToggle",
-        "profilePluginGating",
     };
-
-    bool IsRequiredProfileModuleKind(std::string_view);
 
     struct ProfilePluginGating
     {
@@ -171,36 +168,6 @@ namespace MPL::SliderCreator
         std::size_t,
         std::size_t,
         const std::string&,
-        std::string&);
-    bool AddProfileElement(
-        const std::filesystem::path&,
-        const std::string&,
-        const std::string&,
-        std::string&,
-        bool = false);
-    bool AddProfileDescription(
-        const std::filesystem::path&,
-        const std::string&,
-        const std::string&,
-        bool,
-        std::string&);
-    bool MoveProfileModule(
-        const std::filesystem::path&,
-        std::size_t,
-        int,
-        std::string&);
-    bool RemoveProfileModule(
-        const std::filesystem::path&,
-        std::size_t,
-        std::string&);
-    bool RenameProfileModule(
-        const std::filesystem::path&,
-        std::size_t,
-        const std::string&,
-        std::string&);
-    bool MoveProfilePage(
-        const std::filesystem::path&,
-        int,
         std::string&);
     bool MovePage(
         const std::filesystem::path&,

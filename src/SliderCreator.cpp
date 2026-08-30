@@ -272,83 +272,15 @@ namespace MPL::SliderCreator
             return yyjson_mut_obj_add_val(a_document, a_object, a_key.data(), values);
         }
 
-        bool HasProfileModuleKind(yyjson_val* a_modules, const std::string_view a_kind)
+        bool SetProfilePageLast(yyjson_mut_doc* a_document, yyjson_mut_val* a_root)
         {
-            if (!yyjson_is_arr(a_modules)) return false;
-            std::size_t index = 0;
-            std::size_t maximum = 0;
-            yyjson_val* module = nullptr;
-            yyjson_arr_foreach(a_modules, index, maximum, module)
-            {
-                if (const auto kind = StringMember(module, "type"); kind && IEquals(*kind, a_kind)) return true;
-            }
-            return false;
-        }
-
-        yyjson_mut_val* EnsureProfileModules(
-            yyjson_mut_doc* a_document,
-            yyjson_mut_val* a_root,
-            yyjson_val* a_sourceRoot)
-        {
-            auto* sourceProfilePage = yyjson_is_obj(a_sourceRoot) ? yyjson_obj_get(a_sourceRoot, "profilePage") : nullptr;
-            auto* sourceModules = yyjson_is_obj(sourceProfilePage) ? yyjson_obj_get(sourceProfilePage, "modules") : nullptr;
-            auto* profilePage = yyjson_mut_obj_get(a_root, "profilePage");
-            if (!yyjson_mut_is_obj(profilePage))
-            {
-                yyjson_mut_obj_remove_key(a_root, "profilePage");
-                profilePage = yyjson_mut_obj(a_document);
-                if (!profilePage || !yyjson_mut_obj_add_val(a_document, a_root, "profilePage", profilePage)) return nullptr;
-            }
-
-            auto* modules = yyjson_mut_obj_get(profilePage, "modules");
-            if (!yyjson_mut_is_arr(modules))
-            {
-                yyjson_mut_obj_remove_key(profilePage, "modules");
-                modules = yyjson_mut_arr(a_document);
-                if (!modules || !yyjson_mut_obj_add_val(a_document, profilePage, "modules", modules)) return nullptr;
-                sourceModules = nullptr;
-            }
-
-            for (const auto kind : kRequiredProfileModuleKinds)
-            {
-                if (!HasProfileModuleKind(sourceModules, kind))
-                {
-                    auto* module = yyjson_mut_obj(a_document);
-                    if (!module || !AddString(a_document, module, "type", kind) ||
-                        !yyjson_mut_arr_append(modules, module))
-                        return nullptr;
-                }
-            }
-
-            std::size_t index = 0;
-            std::size_t maximum = 0;
-            yyjson_mut_val* module = nullptr;
-            yyjson_mut_arr_foreach(modules, index, maximum, module)
-            {
-                auto* type = yyjson_mut_obj_get(module, "type");
-                if (!yyjson_mut_is_str(type) ||
-                    !IEquals(yyjson_mut_get_str(type), "profilePluginGating"))
-                    continue;
-                yyjson_mut_obj_remove_key(module, "advanced");
-                if (!yyjson_mut_obj_add_bool(a_document, module, "advanced", true)) return nullptr;
-                break;
-            }
-            return modules;
-        }
-
-        bool IsProfileElementKind(const std::string_view a_kind)
-        {
-            static constexpr std::array kinds{
-                std::string_view("text"),
-                std::string_view("separatorText"),
-                std::string_view("separator"),
-                std::string_view("spacing"),
-                std::string_view("boxStart"),
-                std::string_view("boxEnd"),
-                std::string_view("dropBoxStart"),
-                std::string_view("dropBoxEnd"),
-            };
-            return std::ranges::any_of(kinds, [&](const auto kind) { return IEquals(a_kind, kind); });
+            auto* profilePage = yyjson_mut_is_obj(a_root) ? yyjson_mut_obj_get(a_root, "profilePage") : nullptr;
+            if (!yyjson_mut_is_obj(profilePage)) return true;
+            auto* pages = yyjson_mut_obj_get(a_root, "pages");
+            if (!yyjson_mut_is_arr(pages)) return false;
+            yyjson_mut_obj_remove_key(profilePage, "order");
+            auto* order = yyjson_mut_uint(a_document, yyjson_mut_arr_size(pages));
+            return order && yyjson_mut_obj_add_val(a_document, profilePage, "order", order);
         }
 
         bool ModuleHasDisplayName(const std::string_view a_kind)
@@ -365,7 +297,6 @@ namespace MPL::SliderCreator
                 std::string_view("sunlightWithinGauge"),
                 std::string_view("sunlightBetweenGauge"),
                 std::string_view("links"),
-                std::string_view("presetCreator"),
             };
             return std::ranges::any_of(kinds, [&](const auto kind) { return IEquals(a_kind, kind); });
         }
@@ -730,7 +661,7 @@ namespace MPL::SliderCreator
                             (entry->filterOperation != SliderSettingCatalog::FilterOperation::brightness &&
                                 entry->filterOperation != SliderSettingCatalog::FilterOperation::fogStrength))
                         {
-                            a_error = "Lighting Template filters support only interior brightness and Fog Strength settings.";
+                            a_error = "Lighting Template filters support only Lighting brightness and Fog Strength settings.";
                             return false;
                         }
                         if (operation && operation != entry->filterOperation)
@@ -990,11 +921,6 @@ namespace MPL::SliderCreator
             return WriteDocument(a_path, document.get(), a_error);
         }
     }  // namespace
-
-    bool IsRequiredProfileModuleKind(const std::string_view a_kind)
-    {
-        return std::ranges::any_of(kRequiredProfileModuleKinds, [&](const auto kind) { return IEquals(a_kind, kind); });
-    }
 
     std::optional<ProfilePluginGating> LoadProfilePluginGating(
         const std::filesystem::path& a_path,
@@ -1413,18 +1339,10 @@ namespace MPL::SliderCreator
             a_error = "The new page JSON could not be created.";
             return std::nullopt;
         }
-        auto* sourceProfilePage = yyjson_is_obj(sourceRoot) ? yyjson_obj_get(sourceRoot, "profilePage") : nullptr;
-        const auto sourceProfileOrder = NumberMember(sourceProfilePage, "order");
-        if (sourceProfileOrder && *sourceProfileOrder >= static_cast<double>(pageIndex))
+        if (!SetProfilePageLast(document.get(), root))
         {
-            auto* profilePage = yyjson_mut_obj_get(root, "profilePage");
-            yyjson_mut_obj_remove_key(profilePage, "order");
-            auto* order = yyjson_mut_uint(document.get(), static_cast<std::uint64_t>(pageIndex + 1));
-            if (!order || !yyjson_mut_obj_add_val(document.get(), profilePage, "order", order))
-            {
-                a_error = "The Profile page order could not be preserved.";
-                return std::nullopt;
-            }
+            a_error = "The Profile page could not be kept last.";
+            return std::nullopt;
         }
         yyjson_mut_doc_set_root(document.get(), root);
         if (!WriteDocument(a_path, document.get(), a_error)) return std::nullopt;
@@ -1657,242 +1575,6 @@ namespace MPL::SliderCreator
         return WriteDocument(a_path, document.get(), a_error);
     }
 
-    bool AddProfileElement(
-        const std::filesystem::path& a_path,
-        const std::string& a_kind,
-        const std::string& a_label,
-        std::string& a_error,
-        const bool a_defaultOpen)
-    {
-        a_error.clear();
-        const auto kind = Trim(a_kind);
-        if (!IsProfileElementKind(kind))
-        {
-            a_error = "Select a profile page element to add.";
-            return false;
-        }
-
-        const auto text = ReadText(a_path);
-        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
-        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
-        MutableDocument document(yyjson_mut_doc_new(nullptr));
-        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
-        if (!root)
-        {
-            a_error = "The menu layout could not be read.";
-            return false;
-        }
-        yyjson_mut_doc_set_root(document.get(), root);
-        auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
-        auto* module = yyjson_mut_obj(document.get());
-        const auto labelKey = kind == "text" || kind == "separatorText" ||
-                                      kind == "boxStart" || kind == "dropBoxStart" ?
-                                  "label" : "";
-        const auto dropBoxStart = kind == "dropBoxStart";
-        if (!modules || !module || !AddString(document.get(), module, "type", kind) ||
-            (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
-            (dropBoxStart && !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", a_defaultOpen)) ||
-            !yyjson_mut_arr_append(modules, module))
-        {
-            a_error = "The element could not be added to the Profile page.";
-            return false;
-        }
-        return WriteDocument(a_path, document.get(), a_error);
-    }
-
-    bool AddProfileDescription(
-        const std::filesystem::path& a_path,
-        const std::string& a_header,
-        const std::string& a_text,
-        const bool a_defaultOpen,
-        std::string& a_error)
-    {
-        a_error.clear();
-        const auto header = Trim(a_header);
-        const auto description = Trim(a_text);
-        if (description.empty())
-        {
-            a_error = "Enter a description.";
-            return false;
-        }
-
-        const auto text = ReadText(a_path);
-        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
-        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
-        MutableDocument document(yyjson_mut_doc_new(nullptr));
-        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
-        if (!root)
-        {
-            a_error = "The menu layout could not be read.";
-            return false;
-        }
-        yyjson_mut_doc_set_root(document.get(), root);
-        auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
-        auto* module = yyjson_mut_obj(document.get());
-        if (!modules || !module ||
-            !AddDescriptionFields(document.get(), module, header, description, a_defaultOpen) ||
-            !yyjson_mut_arr_append(modules, module))
-        {
-            a_error = "The description could not be added to the Profile page.";
-            return false;
-        }
-        return WriteDocument(a_path, document.get(), a_error);
-    }
-
-    bool MoveProfileModule(
-        const std::filesystem::path& a_path,
-        const std::size_t a_controlIndex,
-        const int a_direction,
-        std::string& a_error)
-    {
-        a_error.clear();
-        const auto text = ReadText(a_path);
-        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
-        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
-        MutableDocument document(yyjson_mut_doc_new(nullptr));
-        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
-        if (!root)
-        {
-            a_error = "The menu layout could not be read.";
-            return false;
-        }
-        yyjson_mut_doc_set_root(document.get(), root);
-        auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
-        const auto count = yyjson_mut_is_arr(modules) ? yyjson_mut_arr_size(modules) : 0;
-        const auto destination = static_cast<std::ptrdiff_t>(a_controlIndex) + a_direction;
-        if (a_controlIndex >= count || destination < 0 || destination >= static_cast<std::ptrdiff_t>(count))
-        {
-            a_error = "The module cannot move farther in that direction.";
-            return false;
-        }
-        auto* value = yyjson_mut_arr_remove(modules, a_controlIndex);
-        if (!value || !yyjson_mut_arr_insert(modules, value, static_cast<std::size_t>(destination)))
-        {
-            a_error = "The Profile page module order could not be changed.";
-            return false;
-        }
-        return WriteDocument(a_path, document.get(), a_error);
-    }
-
-    bool RemoveProfileModule(
-        const std::filesystem::path& a_path,
-        const std::size_t a_controlIndex,
-        std::string& a_error)
-    {
-        a_error.clear();
-        const auto text = ReadText(a_path);
-        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
-        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
-        auto* sourceProfilePage = yyjson_is_obj(sourceRoot) ? yyjson_obj_get(sourceRoot, "profilePage") : nullptr;
-        auto* sourceModules = yyjson_is_obj(sourceProfilePage) ? yyjson_obj_get(sourceProfilePage, "modules") : nullptr;
-        const auto sourceCount = yyjson_is_arr(sourceModules) ? yyjson_arr_size(sourceModules) : 0;
-        if (a_controlIndex >= sourceCount)
-        {
-            a_error = "Required Profile page modules cannot be removed.";
-            return false;
-        }
-        auto* sourceModule = yyjson_arr_get(sourceModules, a_controlIndex);
-        const auto sourceKind = StringMember(sourceModule, "type").value_or("");
-        if (IsRequiredProfileModuleKind(sourceKind))
-        {
-            a_error = "Required Profile page modules cannot be removed.";
-            return false;
-        }
-
-        MutableDocument document(yyjson_mut_doc_new(nullptr));
-        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
-        if (!root)
-        {
-            a_error = "The menu layout could not be read.";
-            return false;
-        }
-        yyjson_mut_doc_set_root(document.get(), root);
-        auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
-        if (!yyjson_mut_is_arr(modules) || !yyjson_mut_arr_remove(modules, a_controlIndex))
-        {
-            a_error = "The Profile page element could not be removed.";
-            return false;
-        }
-        return WriteDocument(a_path, document.get(), a_error);
-    }
-
-    bool RenameProfileModule(
-        const std::filesystem::path& a_path,
-        const std::size_t a_controlIndex,
-        const std::string& a_name,
-        std::string& a_error)
-    {
-        a_error.clear();
-        const auto text = ReadText(a_path);
-        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
-        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
-        MutableDocument document(yyjson_mut_doc_new(nullptr));
-        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
-        if (!root)
-        {
-            a_error = "The menu layout could not be read.";
-            return false;
-        }
-        yyjson_mut_doc_set_root(document.get(), root);
-        auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
-        auto* module = yyjson_mut_is_arr(modules) ? yyjson_mut_arr_get(modules, a_controlIndex) : nullptr;
-        if (!module)
-        {
-            a_error = "The selected module is unavailable.";
-            return false;
-        }
-        if (!RenameMutableModule(document.get(), module, a_name, a_error)) return false;
-        return WriteDocument(a_path, document.get(), a_error);
-    }
-
-    bool MoveProfilePage(
-        const std::filesystem::path& a_path,
-        const int a_direction,
-        std::string& a_error)
-    {
-        a_error.clear();
-        const auto text = ReadText(a_path);
-        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
-        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
-        auto* sourceProfilePage = yyjson_is_obj(sourceRoot) ? yyjson_obj_get(sourceRoot, "profilePage") : nullptr;
-        auto* sourcePages = yyjson_is_obj(sourceRoot) ? yyjson_obj_get(sourceRoot, "pages") : nullptr;
-        const auto pageCount = yyjson_is_arr(sourcePages) ? yyjson_arr_size(sourcePages) : 0;
-        const auto currentOrder = static_cast<std::ptrdiff_t>(
-            std::clamp(
-                NumberMember(sourceProfilePage, "order").value_or(0.0),
-                0.0,
-                static_cast<double>(pageCount)));
-        const auto destination = currentOrder + a_direction;
-        if (destination < 0 || destination > static_cast<std::ptrdiff_t>(pageCount))
-        {
-            a_error = "The Profile page cannot move farther in that direction.";
-            return false;
-        }
-
-        MutableDocument document(yyjson_mut_doc_new(nullptr));
-        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
-        if (!root)
-        {
-            a_error = "The menu layout could not be read.";
-            return false;
-        }
-        yyjson_mut_doc_set_root(document.get(), root);
-        if (!EnsureProfileModules(document.get(), root, sourceRoot))
-        {
-            a_error = "The Profile page could not be prepared for editing.";
-            return false;
-        }
-        auto* profilePage = yyjson_mut_obj_get(root, "profilePage");
-        yyjson_mut_obj_remove_key(profilePage, "order");
-        auto* order = yyjson_mut_uint(document.get(), static_cast<std::uint64_t>(destination));
-        if (!order || !yyjson_mut_obj_add_val(document.get(), profilePage, "order", order))
-        {
-            a_error = "The Profile page order could not be changed.";
-            return false;
-        }
-        return WriteDocument(a_path, document.get(), a_error);
-    }
-
     bool MovePage(
         const std::filesystem::path& a_path,
         const std::size_t a_pageIndex,
@@ -1923,6 +1605,11 @@ namespace MPL::SliderCreator
         if (!value || !yyjson_mut_arr_insert(pages, value, static_cast<std::size_t>(destination)))
         {
             a_error = "The page order could not be changed.";
+            return false;
+        }
+        if (!SetProfilePageLast(document.get(), root))
+        {
+            a_error = "The Profile page could not be kept last.";
             return false;
         }
         return WriteDocument(a_path, document.get(), a_error);
@@ -2039,25 +1726,10 @@ namespace MPL::SliderCreator
             a_error = "The page could not be removed.";
             return false;
         }
-        auto* sourceProfilePage = yyjson_is_obj(sourceRoot) ? yyjson_obj_get(sourceRoot, "profilePage") : nullptr;
-        const auto sourcePageCount = yyjson_is_arr(yyjson_obj_get(sourceRoot, "pages")) ?
-                                         yyjson_arr_size(yyjson_obj_get(sourceRoot, "pages")) :
-                                         0;
-        const auto profileOrder = static_cast<std::size_t>(
-            std::clamp(
-                NumberMember(sourceProfilePage, "order").value_or(0.0),
-                0.0,
-                static_cast<double>(sourcePageCount)));
-        if (a_pageIndex < profileOrder)
+        if (!SetProfilePageLast(document.get(), root))
         {
-            auto* profilePage = yyjson_mut_obj_get(root, "profilePage");
-            yyjson_mut_obj_remove_key(profilePage, "order");
-            auto* order = yyjson_mut_uint(document.get(), static_cast<std::uint64_t>(profileOrder - 1));
-            if (!order || !yyjson_mut_obj_add_val(document.get(), profilePage, "order", order))
-            {
-                a_error = "The Profile page order could not be preserved.";
-                return false;
-            }
+            a_error = "The Profile page could not be kept last.";
+            return false;
         }
         return WriteDocument(a_path, document.get(), a_error);
     }
@@ -2092,7 +1764,7 @@ namespace MPL::SliderCreator
         auto* workingPage = yyjson_is_arr(workingPages) ? yyjson_arr_get(workingPages, a_workingPageIndex) : nullptr;
         if (!yyjson_is_obj(workingPage) || !yyjson_is_arr(savedPages))
         {
-            a_error = "The page could not be found in the Edit Mode layout.";
+            a_error = "The page could not be found in the Dev Mode layout.";
             return false;
         }
         if (a_savedPageIndex && *a_savedPageIndex >= yyjson_arr_size(savedPages))
@@ -2129,6 +1801,11 @@ namespace MPL::SliderCreator
                 a_error = "The new page could not be added to the saved menu layout.";
                 return false;
             }
+        }
+        if (!SetProfilePageLast(document.get(), root))
+        {
+            a_error = "The Profile page could not be kept last.";
+            return false;
         }
         return WriteDocument(a_savedPath, document.get(), a_error);
     }
@@ -2186,6 +1863,11 @@ namespace MPL::SliderCreator
             !yyjson_mut_arr_insert(pages, page, a_workingPageIndex))
         {
             a_error = "The selected page could not be restored.";
+            return false;
+        }
+        if (!SetProfilePageLast(document.get(), root))
+        {
+            a_error = "The Profile page could not be kept last.";
             return false;
         }
         return WriteDocument(a_workingPath, document.get(), a_error);

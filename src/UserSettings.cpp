@@ -1,6 +1,7 @@
 #include <UserSettings.h>
 
 #include <JsonOverlay.h>
+#include <ProfileSetup.h>
 #include <memory>
 #include <rfl/json.hpp>
 #include <vector>
@@ -35,13 +36,23 @@ namespace MPL::UserSettings
             const auto last = a_value.find_last_not_of(" \t\r\n");
             return a_value.substr(first, last - first + 1);
         }
+
+        std::optional<std::string> ValuesWithoutMetadata(
+            const std::string_view a_json,
+            std::string& a_error)
+        {
+            return JsonOverlay::RemovePaths(a_json, kMetadataPaths, a_error);
+        }
     }  // namespace
 
     std::optional<std::string> ValuesOnly(
         const std::string_view a_json,
         std::string& a_error)
     {
-        return JsonOverlay::RemovePaths(a_json, kMetadataPaths, a_error);
+        const auto values = ValuesWithoutMetadata(a_json, a_error);
+        return values ?
+                   JsonOverlay::RemovePaths(*values, ProfileSetup::kSettingPaths, a_error) :
+                   std::nullopt;
     }
 
     std::optional<PresetSelections> ParsePresetSelections(
@@ -108,12 +119,13 @@ namespace MPL::UserSettings
         std::string& a_error)
     {
         a_error.clear();
+        const auto originalValues = ValuesWithoutMetadata(a_json, a_error);
         const auto values = ValuesOnly(a_json, a_error);
         const auto sanitizedValues = values ?
                                          JsonOverlay::ProjectLike(*values, a_settingsSchema, a_error) :
                                          std::nullopt;
         const auto selections = sanitizedValues ? ParsePresetSelections(a_json, a_error) : std::nullopt;
-        if (!values || !sanitizedValues || !selections) return std::nullopt;
+        if (!originalValues || !values || !sanitizedValues || !selections) return std::nullopt;
 
         PresetSelections sanitizedSelections;
         auto removedPresetSelections = std::size_t{ 0 };
@@ -136,7 +148,7 @@ namespace MPL::UserSettings
             sanitizedSelections = *selections;
         }
 
-        const auto settingsEquivalent = JsonOverlay::Equivalent(*values, *sanitizedValues, a_error);
+        const auto settingsEquivalent = JsonOverlay::Equivalent(*originalValues, *sanitizedValues, a_error);
         const auto output = settingsEquivalent ?
                                 JsonOverlay::Overlay(
                                     *sanitizedValues,

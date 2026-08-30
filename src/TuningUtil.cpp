@@ -5,6 +5,7 @@
 #include <JsonOverlay.h>
 #include <LightingPatcher.h>
 #include <PresetCatalog.h>
+#include <ProfileSetup.h>
 #include <SliderCreator.h>
 #include <TuningSettings.h>
 #include <SliderSettingCatalog.h>
@@ -977,6 +978,7 @@ namespace MPL::TuningUtil
             if (!yyjson_is_num(schemaVersion) || yyjson_get_num(schemaVersion) != 1.0) return {};
 
             InteriorSliderLinkRules result;
+            auto weatherProfile = false;
             const auto add = [](std::vector<std::string>& a_values, const std::string& a_value)
             {
                 if (!std::ranges::any_of(a_values, [&](const auto& a_existing)
@@ -993,17 +995,18 @@ namespace MPL::TuningUtil
                 {
                     const auto type = Trim(JsonString(control, "type").value_or(""));
                     const auto setting = Trim(JsonString(control, "setting").value_or(""));
-                    if (Config::IEquals(type, "weatherSetup") ||
-                        (Config::IEquals(type, "links") && Config::IEquals(setting, "weather")))
+                    if (Config::IEquals(type, "weatherSelector") ||
+                        Config::IEquals(type, "weatherControlCompact") ||
+                        Config::IEquals(type, "ambientWithinGauge") ||
+                        Config::IEquals(type, "ambientBetweenGauge") ||
+                        Config::IEquals(type, "sunlightWithinGauge") ||
+                        Config::IEquals(type, "sunlightBetweenGauge") ||
+                        Config::IEquals(type, "dynamicAmbientWeatherList") ||
+                        (Config::IEquals(type, "links") && Config::IEquals(setting, "weather")) ||
+                        (Config::IEquals(type, "csTonemapping") && Config::IEquals(setting, "exteriorImageSpace")) ||
+                        (Config::IEquals(type, "slider") && yyjson_is_obj(yyjson_obj_get(control, "weatherFilter"))))
                     {
-                        add(result.weatherDeclaredSettings, "links.weather");
-                    }
-                    if (Config::IEquals(type, "interiorSetup"))
-                    {
-                        add(result.declaredSettings, "links.interior");
-                        add(result.declaredSettings, "intAmbientHueScales");
-                        add(result.declaredSettings, "intHueRanges");
-                        continue;
+                        weatherProfile = true;
                     }
                     if (Config::IEquals(type, "links") && Config::IEquals(setting, "interior"))
                     {
@@ -1054,6 +1057,16 @@ namespace MPL::TuningUtil
                 std::size_t maximum = 0;
                 yyjson_val* page = nullptr;
                 yyjson_arr_foreach(pages, index, maximum, page) readModules(yyjson_obj_get(page, "modules"));
+            }
+            if (weatherProfile)
+            {
+                add(result.weatherDeclaredSettings, "links.weather");
+            }
+            else
+            {
+                add(result.declaredSettings, "links.interior");
+                add(result.declaredSettings, "intAmbientHueScales");
+                add(result.declaredSettings, "intHueRanges");
             }
             return result;
         }
@@ -1379,6 +1392,10 @@ namespace MPL::TuningUtil
             const std::filesystem::path&,
             std::string_view,
             std::string&);
+        bool WriteProfileSetupPatch(
+            const Profile&,
+            std::string_view,
+            std::string&);
 
         std::optional<UserSettings::SanitizeResult> SanitizeUserSettingsText(
             const Profile& a_profile,
@@ -1443,6 +1460,33 @@ namespace MPL::TuningUtil
 
             const auto text = ReadText(path);
             std::string error;
+            const auto setup = text ?
+                                   JsonOverlay::ProjectPaths(
+                                       *text,
+                                       ProfileSetup::kSettingPaths,
+                                       error) :
+                                   std::nullopt;
+            const auto setupValues = setup ?
+                                         JsonOverlay::FlattenValues(*setup, error) :
+                                         std::nullopt;
+            if (!setup || !setupValues)
+            {
+                logger::warn(
+                    "[TuningUtil] user profile setup migration failed | profile={} | path={} | {}",
+                    a_profile.name,
+                    path.string(),
+                    error.empty() ? "The user settings file could not be read." : error);
+                return;
+            }
+            if (!setupValues->empty() && !WriteProfileSetupPatch(a_profile, *setup, error))
+            {
+                logger::warn(
+                    "[TuningUtil] user profile setup migration failed | profile={} | path={} | {}",
+                    a_profile.name,
+                    path.string(),
+                    error);
+                return;
+            }
             const auto sanitized = text ?
                                        SanitizeUserSettingsText(a_profile, *text, error) :
                                        std::nullopt;
@@ -1643,23 +1687,49 @@ namespace MPL::TuningUtil
                 return false;
             }
             const auto difference = JsonOverlay::Difference(*declared, *defaultText, error);
-            if (!difference)
+            const auto userDifference = difference ?
+                                            UserSettingsValuesOnly(*difference, error) :
+                                            std::nullopt;
+            if (!userDifference)
             {
                 logger::warn("[TuningUtil] {} save failed | sparse settings | {}", a_profileName, error);
                 return false;
             }
-            if (!WriteUserSettings(a_profile, *difference))
+            if (!WriteUserSettings(a_profile, *userDifference))
             {
                 return false;
             }
             if (auto cached = settingsCache.find(Lowercase(a_profile.name)); cached != settingsCache.end())
             {
-                cached->second.explicitUserSettings = *difference;
+                cached->second.explicitUserSettings = *userDifference;
                 if (cached->second.presetPreviewUserLayer)
                 {
-                    cached->second.presetPreviewUserLayer = *difference;
+                    cached->second.presetPreviewUserLayer = *userDifference;
                 }
             }
+            return true;
+        }
+
+        bool WriteProfileSetupPatch(
+            const Profile& a_profile,
+            const std::string_view a_setup,
+            std::string& a_error)
+        {
+            const auto path = ProfileDefaultsPath(a_profile);
+            const auto existing = ReadText(path);
+            const auto updated = existing ?
+                                     JsonOverlay::Overlay(*existing, a_setup, a_error) :
+                                     std::nullopt;
+            if (!updated || !ParseSettings(*updated, path) ||
+                !WriteTextAtomically(path, CompactLinkArrays(*updated), a_error))
+            {
+                if (a_error.empty()) a_error = "The profile setup could not be prepared.";
+                return false;
+            }
+
+            const auto profile = std::ranges::find_if(profiles, [&](const Profile& a_candidate)
+                { return Config::IEquals(a_candidate.name, a_profile.name); });
+            if (profile != profiles.end()) profile->defaultSettingRoots = SettingRoots(*updated);
             return true;
         }
 
@@ -2972,6 +3042,70 @@ namespace MPL::TuningUtil
         return profile && WriteSettings(*profile, a_profileName, GetSettings(a_profileName));
     }
 
+    bool SaveProfileSetupSettings(
+        std::string& a_profileName,
+        const ProfileSetup::Domain a_domain,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto* profile = FindProfile(a_profileName);
+        const auto setup = profile ?
+                               JsonOverlay::ProjectPaths(
+                                   SerializeSettings(GetSettings(a_profileName)),
+                                   ProfileSetup::SettingPaths(a_domain),
+                                   a_error) :
+                               std::nullopt;
+        if (!profile || !setup || !WriteProfileSetupPatch(*profile, *setup, a_error))
+        {
+            if (a_error.empty()) a_error = "The profile setup could not be saved.";
+            return false;
+        }
+
+        if (auto cached = settingsCache.find(Lowercase(profile->name)); cached != settingsCache.end())
+        {
+            const auto localDefaults = LocalDefaultsText(*profile, a_error);
+            const auto presetDefaults = localDefaults ?
+                                            PresetDefaultsText(*profile, a_error) :
+                                            std::nullopt;
+            if (!localDefaults || !presetDefaults) return false;
+            cached->second.localDefaults = *localDefaults;
+            cached->second.presetDefaults = *presetDefaults;
+        }
+        a_profileName = profile->name;
+        return true;
+    }
+
+    bool RestoreProfileSetupSettings(
+        std::string& a_profileName,
+        const ProfileSetup::Domain a_domain,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto* profile = FindProfile(a_profileName);
+        const auto defaults = profile ? LocalDefaultsText(*profile, a_error) : std::nullopt;
+        const auto setup = defaults ?
+                               JsonOverlay::ProjectPaths(
+                                   *defaults,
+                                   ProfileSetup::SettingPaths(a_domain),
+                                   a_error) :
+                               std::nullopt;
+        const auto current = profile ? SerializeSettings(GetSettings(a_profileName)) : std::string{};
+        const auto restored = setup ? JsonOverlay::Overlay(current, *setup, a_error) : std::nullopt;
+        auto settings = restored ?
+                            ParseSettings(*restored, ProfileDefaultsPath(*profile)) :
+                            std::nullopt;
+        if (!profile || !settings)
+        {
+            if (a_error.empty()) a_error = "The saved profile setup could not be restored.";
+            return false;
+        }
+
+        GetSettings(a_profileName) = std::move(*settings);
+        ApplySettings();
+        a_profileName = profile->name;
+        return true;
+    }
+
     bool PromoteUserSettingsToProfile(
         std::string& a_profileName,
         std::string& a_error)
@@ -3088,14 +3222,17 @@ namespace MPL::TuningUtil
         const auto difference = pageDifferences && retainedExisting ?
                                     JsonOverlay::Overlay(*retainedExisting, *pageDifferences, error) :
                                     std::nullopt;
-        if (!difference || !WriteUserSettings(*profile, *difference))
+        const auto userDifference = difference ?
+                                        UserSettingsValuesOnly(*difference, error) :
+                                        std::nullopt;
+        if (!userDifference || !WriteUserSettings(*profile, *userDifference))
         {
             logger::warn("[TuningUtil] {} page save failed | {}", a_profileName, error);
             return false;
         }
         if (auto cached = settingsCache.find(Lowercase(profile->name)); cached != settingsCache.end())
         {
-            cached->second.explicitUserSettings = *difference;
+            cached->second.explicitUserSettings = *userDifference;
             if (cached->second.presetPreviewUserLayer)
             {
                 const auto currentUser = CurrentUserLayer(*profile, error);
@@ -3108,12 +3245,28 @@ namespace MPL::TuningUtil
     bool RestoreSettings(std::string& a_profileName)
     {
         const auto* profile = FindProfile(a_profileName);
-        if (!profile)
+        std::string error;
+        const auto setup = profile ?
+                               JsonOverlay::ProjectPaths(
+                                   SerializeSettings(GetSettings(a_profileName)),
+                                   ProfileSetup::kSettingPaths,
+                                   error) :
+                               std::nullopt;
+        if (!profile || !setup)
         {
             return false;
         }
         settingsCache.erase(Lowercase(profile->name));
-        (void)GetSettings(a_profileName);
+        auto& restoredSettings = GetSettings(a_profileName);
+        const auto restored = JsonOverlay::Overlay(
+            SerializeSettings(restoredSettings),
+            *setup,
+            error);
+        auto parsed = restored ?
+                          ParseSettings(*restored, ProfileDefaultsPath(*profile)) :
+                          std::nullopt;
+        if (!parsed) return false;
+        restoredSettings = std::move(*parsed);
         ApplySettings();
         return true;
     }
@@ -3146,12 +3299,21 @@ namespace MPL::TuningUtil
     {
         const auto* profile = FindProfile(a_profileName);
         std::string error;
+        const auto setup = profile ?
+                               JsonOverlay::ProjectPaths(
+                                   SerializeSettings(GetSettings(a_profileName)),
+                                   ProfileSetup::kSettingPaths,
+                                   error) :
+                               std::nullopt;
         const auto defaults = profile ? LocalDefaultsText(*profile, error) : std::nullopt;
-        if (!profile || !defaults)
+        const auto reset = setup && defaults ?
+                               JsonOverlay::Overlay(*defaults, *setup, error) :
+                               std::nullopt;
+        if (!profile || !defaults || !reset)
         {
             return false;
         }
-        auto parsed = ParseSettings(*defaults, ProfileDefaultsPath(*profile));
+        auto parsed = ParseSettings(*reset, ProfileDefaultsPath(*profile));
         if (!parsed)
         {
             return false;
