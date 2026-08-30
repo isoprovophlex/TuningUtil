@@ -67,6 +67,8 @@ namespace MPL::TuningUtil
         PluginFilter pluginExclusions;
         std::map<std::string, double> filteredWeatherAdjustments;
         WeatherPatcher::ImageSpaceSettings exteriorImageSpace;
+        WeatherFilter effectPointLightInclusions;
+        WeatherFilter effectPointLightExclusions;
 
         LightingPatcher::InteriorColorSettings intBrightnessMultiplier;
         LightingPatcher::InteriorColorSettings intSaturationMultiplier;

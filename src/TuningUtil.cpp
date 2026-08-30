@@ -406,8 +406,8 @@ namespace MPL::TuningUtil
             FilteredBaseLightSetting result;
             if (entry->path == "pointLights.fadeMultiplier")
                 result.operation = FilteredBaseLightOperation::brightness;
-            else if (entry->path == "pointLights.sunlightFadeMultiplier")
-                result.operation = FilteredBaseLightOperation::sunlight;
+            else if (entry->path == "pointLights.effectFadeMultiplier")
+                result.operation = FilteredBaseLightOperation::effect;
             else if (entry->path == "pointLights.saturationMultiplier")
                 result.operation = FilteredBaseLightOperation::saturation;
             else if (entry->path.starts_with("pointLights.hueScales.") && !entry->hue.empty())
@@ -1238,7 +1238,7 @@ namespace MPL::TuningUtil
         std::optional<Settings> ParseSettings(const std::string& a_json, const std::filesystem::path& a_source)
         {
             static constexpr std::string_view filterSchema =
-                R"({"weatherInclusions":{"formIDs":[],"contains":[]},"weatherExclusions":{"formIDs":[],"contains":[]},"pluginInclusions":{"exact":[],"contains":[]},"pluginExclusions":{"exact":[],"contains":[]},"lightingTemplateInclusions":[],"lightingTemplateExclusions":[],"lightingTemplatePluginInclusions":{"exact":[],"contains":[]},"lightingTemplatePluginExclusions":{"exact":[],"contains":[]},"lightingTemplateFilter":{"include":{"locationTypes":[],"multiLocationExceptions":[]},"exclude":{"locationTypes":[],"multiLocationExceptions":[]}}})";
+                R"({"weatherInclusions":{"formIDs":[],"contains":[]},"weatherExclusions":{"formIDs":[],"contains":[]},"pluginInclusions":{"exact":[],"contains":[]},"pluginExclusions":{"exact":[],"contains":[]},"effectPointLightInclusions":{"formIDs":[],"contains":[]},"effectPointLightExclusions":{"formIDs":[],"contains":[]},"lightingTemplateInclusions":[],"lightingTemplateExclusions":[],"lightingTemplatePluginInclusions":{"exact":[],"contains":[]},"lightingTemplatePluginExclusions":{"exact":[],"contains":[]},"lightingTemplateFilter":{"include":{"locationTypes":[],"multiLocationExceptions":[]},"exclude":{"locationTypes":[],"multiLocationExceptions":[]}}})";
             std::string normalizationError;
             const auto normalized = JsonOverlay::Overlay(filterSchema, a_json, normalizationError);
             if (!normalized)
@@ -1770,6 +1770,8 @@ namespace MPL::TuningUtil
                 std::string_view{ "weatherExclusions" },
                 std::string_view{ "pluginInclusions" },
                 std::string_view{ "pluginExclusions" },
+                std::string_view{ "effectPointLightInclusions" },
+                std::string_view{ "effectPointLightExclusions" },
                 std::string_view{ "lightingTemplateInclusions" },
                 std::string_view{ "lightingTemplateExclusions" },
                 std::string_view{ "lightingTemplatePluginInclusions" },

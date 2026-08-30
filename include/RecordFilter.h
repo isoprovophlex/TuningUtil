@@ -15,6 +15,8 @@ namespace MPL::RecordFilter
         TuningUtil::PluginFilter includedPlugins;
         TuningUtil::PluginFilter excludedPlugins;
         bool requireIncludedRecordMatch = false;
+
+        bool operator==(const Resolved&) const = default;
     };
 
     Resolved Resolve(

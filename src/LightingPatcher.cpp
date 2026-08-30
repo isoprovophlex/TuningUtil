@@ -1518,8 +1518,8 @@ namespace MPL::LightingPatcher
                     a_target.fadeMultiplier *= multiplier;
                     changed = true;
                     break;
-                case TuningUtil::FilteredBaseLightOperation::sunlight:
-                    a_target.sunlightFadeMultiplier *= multiplier;
+                case TuningUtil::FilteredBaseLightOperation::effect:
+                    a_target.effectFadeMultiplier *= multiplier;
                     changed = true;
                     break;
                 case TuningUtil::FilteredBaseLightOperation::saturation:
@@ -1546,7 +1546,6 @@ namespace MPL::LightingPatcher
         struct FilteredBaseLightResolution
         {
             PointLightPatcher::BaseLightSettingsMap settings;
-            PointLightPatcher::SunlightBaseLights sunlightBaseLights;
         };
 
         FilteredBaseLightResolution ResolveFilteredBaseLightSettings(
@@ -1580,7 +1579,6 @@ namespace MPL::LightingPatcher
 
             FilteredBaseLightResolution result;
             std::unordered_map<std::string, std::unordered_set<RE::FormID>> profileTargets;
-            std::unordered_map<std::string, std::unordered_set<RE::FormID>> profileSunlightTargets;
             for (auto* light : a_dataHandler->GetFormArray<RE::TESObjectLIGH>())
             {
                 if (!light) continue;
@@ -1589,17 +1587,6 @@ namespace MPL::LightingPatcher
                 for (const auto& active : rules)
                 {
                     if (!RecordFilter::Matches(light, active.filter)) continue;
-                    if (std::ranges::any_of(
-                            active.rule->settings,
-                            [](const auto& a_setting)
-                            {
-                                return a_setting.operation ==
-                                       TuningUtil::FilteredBaseLightOperation::sunlight;
-                            }))
-                    {
-                        result.sunlightBaseLights.insert(light->GetFormID());
-                        profileSunlightTargets[active.profile].insert(light->GetFormID());
-                    }
                     if (ApplyFilteredBaseLightRule(settings, active.settings, *active.rule))
                     {
                         changed = true;
@@ -1613,17 +1600,15 @@ namespace MPL::LightingPatcher
                 if (!TuningUtil::GetFilteredBaseLightRules(discovered.name).empty())
                 {
                     DetailedLogging::Info(
-                        "[Base Light] {} | adjusted={} | sunlight={}",
+                        "[Base Light] {} | adjusted={}",
                         discovered.name,
-                        profileTargets[discovered.name].size(),
-                        profileSunlightTargets[discovered.name].size());
+                        profileTargets[discovered.name].size());
                 }
             }
             DetailedLogging::Info(
-                "[Base Light] apply | rules={} | adjusted={} | sunlight={}",
+                "[Base Light] apply | rules={} | adjusted={}",
                 rules.size(),
-                result.settings.size(),
-                result.sunlightBaseLights.size());
+                result.settings.size());
             return result;
         }
     }  // namespace
@@ -1721,6 +1706,8 @@ namespace MPL::LightingPatcher
         static constexpr std::array pointLightRoots{
             std::string_view{ "pointLights" },
             std::string_view{ "intHueRanges" },
+            std::string_view{ "effectPointLightInclusions" },
+            std::string_view{ "effectPointLightExclusions" },
         };
         std::vector<std::string> pointLightProfiles;
         for (auto profile : TuningUtil::GetProfilesWithSettings(pointLightRoots))
@@ -1735,10 +1722,16 @@ namespace MPL::LightingPatcher
         const auto filteredBaseLightSettings = ResolveFilteredBaseLightSettings(
             dataHandler,
             pointLightSettings.pointLights);
+        const TuningUtil::PluginFilter noPlugins;
+        const auto effectPointLightFilter = RecordFilter::Resolve(
+            pointLightSettings.effectPointLightInclusions,
+            pointLightSettings.effectPointLightExclusions,
+            noPlugins,
+            noPlugins);
         PointLightPatcher::Apply(
             pointLightSettings.pointLights,
             filteredBaseLightSettings.settings,
-            filteredBaseLightSettings.sunlightBaseLights,
+            effectPointLightFilter,
             pointLightSettings.intHueRanges,
             a_commitLightPlacer);
     }

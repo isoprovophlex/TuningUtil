@@ -1,18 +1,17 @@
 #pragma once
 
 #include <Config/Lighting.h>
+#include <RecordFilter.h>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace MPL::PointLightPatcher
 {
     using BaseLightSettingsMap = std::unordered_map<RE::FormID, LightingPatcher::PointLightSettings>;
-    using SunlightBaseLights = std::unordered_set<RE::FormID>;
 
     void Apply(
         const LightingPatcher::PointLightSettings&,
         const BaseLightSettingsMap&,
-        const SunlightBaseLights&,
+        const RecordFilter::Resolved&,
         const WeatherPatcher::HueRanges&,
         bool a_commitLightPlacer = true);
     void InstallRuntimeEvents();

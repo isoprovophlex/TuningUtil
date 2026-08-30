@@ -80,7 +80,7 @@ namespace MPL::TuningUtil
     enum class FilteredBaseLightOperation
     {
         brightness,
-        sunlight,
+        effect,
         saturation,
         hueScale,
         hueShift,

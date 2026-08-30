@@ -436,6 +436,7 @@ namespace MPL::TuningMenu
             lightingTemplate,
             baseLight,
             cell,
+            region,
         };
 
         struct TemplateInheritanceField
@@ -554,6 +555,7 @@ namespace MPL::TuningMenu
         std::optional<std::vector<RecordMenuEntry>> lightingTemplateMenuEntries;
         std::optional<std::vector<RecordMenuEntry>> baseLightMenuEntries;
         std::optional<std::vector<RecordMenuEntry>> cellMenuEntries;
+        std::optional<std::vector<RecordMenuEntry>> regionMenuEntries;
         std::unordered_map<std::string, PresetVisualState> presetVisualStates;
         std::unordered_map<std::string, int> profilePriorityInputs;
         std::unordered_map<std::string, bool> weatherLockPreferences;
@@ -2263,8 +2265,8 @@ namespace MPL::TuningMenu
                 {
                 case TuningUtil::FilteredBaseLightOperation::brightness:
                     return "pointLights.fadeMultiplier";
-                case TuningUtil::FilteredBaseLightOperation::sunlight:
-                    return "pointLights.sunlightFadeMultiplier";
+                case TuningUtil::FilteredBaseLightOperation::effect:
+                    return "pointLights.effectFadeMultiplier";
                 case TuningUtil::FilteredBaseLightOperation::saturation:
                     return "pointLights.saturationMultiplier";
                 case TuningUtil::FilteredBaseLightOperation::hueScale:
@@ -2438,6 +2440,31 @@ namespace MPL::TuningMenu
                 });
             cellMenuEntries = std::move(entries);
             return *cellMenuEntries;
+        }
+
+        const std::vector<RecordMenuEntry>& GetRegionMenuEntries()
+        {
+            if (regionMenuEntries) return *regionMenuEntries;
+
+            std::vector<RecordMenuEntry> entries;
+            if (auto* dataHandler = RE::TESDataHandler::GetSingleton())
+            {
+                for (auto* region : dataHandler->GetFormArray<RE::TESRegion>())
+                {
+                    if (region) entries.push_back({ region, RecordFilter::DisplayName(region) });
+                }
+            }
+            std::ranges::sort(
+                entries,
+                [](const RecordMenuEntry& a_left, const RecordMenuEntry& a_right)
+                {
+                    const auto leftName = Lowercase(a_left.label);
+                    const auto rightName = Lowercase(a_right.label);
+                    return leftName != rightName ? leftName < rightName :
+                                                  a_left.form->GetFormID() < a_right.form->GetFormID();
+                });
+            regionMenuEntries = std::move(entries);
+            return *regionMenuEntries;
         }
 
         RE::TESWeather* GetCurrentWeather()
@@ -4544,7 +4571,8 @@ namespace MPL::TuningMenu
             const std::span<const RecordMenuEntry> a_entries,
             const RecordFilterKind a_kind,
             const std::string_view a_selectorLabel,
-            const std::string_view a_id)
+            const std::string_view a_id,
+            const bool a_showPluginFilters)
         {
             const auto originalIncludedForms = a_includedForms;
             const auto originalExcludedForms = a_excludedForms;
@@ -4663,7 +4691,7 @@ namespace MPL::TuningMenu
                 }
             }
 
-            if (sections.Start(
+            if (a_showPluginFilters && sections.Start(
                     SKSEMenuSettings::Label("includedPlugins", "Included Plugins"),
                     "IncludedRecordPluginsHeader##" + id))
             {
@@ -4679,7 +4707,7 @@ namespace MPL::TuningMenu
                     "RecordPluginIncludeContains" + id);
             }
 
-            if (sections.Start(
+            if (a_showPluginFilters && sections.Start(
                     SKSEMenuSettings::Label("excludedPlugins", "Excluded Plugins"),
                     "ExcludedRecordPluginsHeader##" + id))
             {
@@ -4728,7 +4756,8 @@ namespace MPL::TuningMenu
                 a_entries,
                 a_kind,
                 a_selectorLabel,
-                a_id);
+                a_id,
+                true);
         }
 
         bool DrawRecordFilterEditor(
@@ -4752,7 +4781,8 @@ namespace MPL::TuningMenu
                 a_entries,
                 a_kind,
                 a_selectorLabel,
-                a_id);
+                a_id,
+                true);
         }
 
         bool DrawRecordFilterEditor(
@@ -4777,7 +4807,29 @@ namespace MPL::TuningMenu
                 a_entries,
                 a_kind,
                 a_selectorLabel,
-                a_id);
+                a_id,
+                true);
+        }
+
+        bool DrawEffectPointLightFilters(
+            TuningUtil::Settings& a_settings,
+            const std::string_view a_id)
+        {
+            TuningUtil::PluginFilter noPluginInclusions;
+            TuningUtil::PluginFilter noPluginExclusions;
+            return DrawRecordFilterEditor(
+                a_settings.effectPointLightInclusions.formIDs,
+                a_settings.effectPointLightExclusions.formIDs,
+                std::addressof(a_settings.effectPointLightInclusions.contains),
+                std::addressof(a_settings.effectPointLightExclusions.contains),
+                noPluginInclusions,
+                noPluginExclusions,
+                nullptr,
+                GetRegionMenuEntries(),
+                RecordFilterKind::region,
+                SKSEMenuSettings::Label("externalEmittanceSource", "External Emittance Source"),
+                a_id,
+                false);
         }
 
         bool DrawTemplateInheritanceEditor(
@@ -5044,6 +5096,16 @@ namespace MPL::TuningMenu
                             settings,
                             moduleID + "TemplateInheritance");
                     });
+                const auto effectPointLightFilterChanged = drawBox(
+                    "EffectPointLightFilter",
+                    SKSEMenuSettings::Label("effectPointLightFilter", "Effect Point Light Filter"),
+                    [&]
+                    {
+                        return DrawEffectPointLightFilters(
+                            settings,
+                            moduleID + "EffectPointLightFilter");
+                    });
+                changed |= effectPointLightFilterChanged;
                 changed |= drawBox(
                     "InteriorSaturationScales",
                     SKSEMenuSettings::Label("interiorSaturationScales", "Interior Saturation Scales"),
@@ -5105,7 +5167,10 @@ namespace MPL::TuningMenu
                     });
                 if (changed)
                 {
-                    ApplySliderChange(pointLightHueScalesChanged || hueRangesChanged);
+                    ApplySliderChange(
+                        pointLightHueScalesChanged ||
+                        hueRangesChanged ||
+                        effectPointLightFilterChanged);
                 }
                 return;
             }
@@ -5268,8 +5333,8 @@ namespace MPL::TuningMenu
                 return SliderSetting{ .resolved = a_settings.intFogMaxMultiplier, .scalar = &a_settings.intFogMaxMultiplier };
             if (a_setting == "pointLights.fadeMultiplier")
                 return SliderSetting{ .resolved = a_settings.pointLights.fadeMultiplier, .scalar = &a_settings.pointLights.fadeMultiplier };
-            if (a_setting == "pointLights.sunlightFadeMultiplier")
-                return SliderSetting{ .resolved = a_settings.pointLights.sunlightFadeMultiplier, .scalar = &a_settings.pointLights.sunlightFadeMultiplier };
+            if (a_setting == "pointLights.effectFadeMultiplier")
+                return SliderSetting{ .resolved = a_settings.pointLights.effectFadeMultiplier, .scalar = &a_settings.pointLights.effectFadeMultiplier };
             if (a_setting == "pointLights.saturationMultiplier")
                 return SliderSetting{ .resolved = a_settings.pointLights.saturationMultiplier, .scalar = &a_settings.pointLights.saturationMultiplier };
             return std::nullopt;
@@ -6999,6 +7064,8 @@ namespace MPL::TuningMenu
                             return form.Get<RE::TESObjectLIGH>();
                         case RecordFilterKind::cell:
                             return form.Get<RE::TESObjectCELL>();
+                        case RecordFilterKind::region:
+                            return form.Get<RE::TESRegion>();
                         }
                         return nullptr;
                     }();
@@ -8471,6 +8538,8 @@ namespace MPL::TuningMenu
                         "lightingTemplateFilter",
                         "enableTemplateInherit",
                         "cellExclusions",
+                        "effectPointLightInclusions",
+                        "effectPointLightExclusions",
                     };
                     for (const auto scope : scopes) addScope(scope);
                 }

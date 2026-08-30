@@ -1,5 +1,6 @@
 #include <DetailedLogging.h>
 #include <PointLightPatcher.h>
+#include <Config.h>
 #include <Config/Forms.h>
 #include <TuningSettings.h>
 #include <WeatherPatcher.h>
@@ -57,7 +58,7 @@ namespace MPL::PointLightPatcher
         {
             Settings settings;
             BaseLightSettingsMap baseLightSettings;
-            SunlightBaseLights sunlightBaseLights;
+            RecordFilter::Resolved effectPointLightFilter;
             WeatherPatcher::HueRanges hueRanges;
 
             bool operator==(const AppliedState&) const = default;
@@ -67,7 +68,7 @@ namespace MPL::PointLightPatcher
         {
             std::size_t refreshed = 0;
             std::size_t brightness = 0;
-            std::size_t sunlight = 0;
+            std::size_t effect = 0;
         };
 
         struct DirectLightRefreshResult
@@ -268,11 +269,13 @@ namespace MPL::PointLightPatcher
             return ExternalEmittanceSource(a_reference) != nullptr;
         }
 
-        bool IsSunlightBaseLight(
-            const RE::TESObjectLIGH* a_light,
+        bool IsEffectPointLight(
+            const RE::TESObjectREFR* a_reference,
             const AppliedState& a_state)
         {
-            return a_light && a_state.sunlightBaseLights.contains(a_light->GetFormID());
+            return RecordFilter::Matches(
+                ExternalEmittanceSource(a_reference),
+                a_state.effectPointLightFilter);
         }
 
         double BrightnessFadeMultiplier(const Settings& a_settings)
@@ -280,17 +283,17 @@ namespace MPL::PointLightPatcher
             return std::max(0.0, a_settings.fadeMultiplier);
         }
 
-        double SunlightFadeMultiplier(const Settings& a_settings)
+        double EffectFadeMultiplier(const Settings& a_settings)
         {
-            return std::max(0.0, a_settings.sunlightFadeMultiplier);
+            return std::max(0.0, a_settings.effectFadeMultiplier);
         }
 
         double ReferenceFadeMultiplier(const RE::TESObjectREFR* a_reference, const AppliedState& a_state)
         {
             const auto* light = GetBaseLight(a_reference);
             const auto& settings = SettingsForBaseLight(light, a_state);
-            return IsSunlightBaseLight(light, a_state) ?
-                       SunlightFadeMultiplier(settings) :
+            return IsEffectPointLight(a_reference, a_state) ?
+                       EffectFadeMultiplier(settings) :
                        BrightnessFadeMultiplier(settings);
         }
 
@@ -309,9 +312,7 @@ namespace MPL::PointLightPatcher
             {
                 light->fade = baseline->second.fade * static_cast<float>(
                                                        a_state ?
-                                                           (IsSunlightBaseLight(light, *a_state) ?
-                                                                   SunlightFadeMultiplier(SettingsForBaseLight(light, *a_state)) :
-                                                                   BrightnessFadeMultiplier(SettingsForBaseLight(light, *a_state))) :
+                                                           BrightnessFadeMultiplier(SettingsForBaseLight(light, *a_state)) :
                                                            1.0);
                 light->data.color = baseline->second.color;
             }
@@ -419,6 +420,48 @@ namespace MPL::PointLightPatcher
                 }
             }
             return std::nullopt;
+        }
+
+        bool EditorIDContains(
+            const std::string_view a_editorID,
+            const std::span<const std::string> a_fragments)
+        {
+            const auto editorID = Lowercase(std::string(a_editorID));
+            return std::ranges::any_of(a_fragments, [&](const auto& a_fragment)
+            {
+                const auto fragment = Lowercase(a_fragment);
+                return !fragment.empty() && editorID.contains(fragment);
+            });
+        }
+
+        bool IsEffectEmittance(
+            const std::string_view a_editorID,
+            const AppliedState& a_state)
+        {
+            if (a_editorID.empty()) return false;
+
+            auto* stat = Config::StatData::GetSingleton();
+            if (!stat->mmsfAPI)
+            {
+                stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
+            }
+            if (stat->mmsfAPI)
+            {
+                const auto formID = stat->mmsfAPI->LookupFormIDForEDID(std::string(a_editorID));
+                if (const auto* source = RE::TESForm::LookupByID<RE::TESForm>(formID))
+                {
+                    return RecordFilter::Matches(source, a_state.effectPointLightFilter);
+                }
+            }
+
+            const auto& filter = a_state.effectPointLightFilter;
+            if (EditorIDContains(a_editorID, filter.excludedEditorIDFragments)) return false;
+            const auto requiresInclusion =
+                filter.requireIncludedRecordMatch ||
+                !filter.includedFormIDs.empty() ||
+                !filter.includedEditorIDFragments.empty();
+            return !requiresInclusion ||
+                   EditorIDContains(a_editorID, filter.includedEditorIDFragments);
         }
 
         yyjson_mut_val* CopyValue(
@@ -629,8 +672,8 @@ namespace MPL::PointLightPatcher
                                                std::string{};
             const double fade = std::max(
                 0.0,
-                IsSunlightBaseLight(baseLight, a_state) ?
-                    SunlightFadeMultiplier(settings) :
+                IsEffectEmittance(emittance, a_state) ?
+                    EffectFadeMultiplier(settings) :
                     BrightnessFadeMultiplier(settings));
             const auto hueScales = WeatherPatcher::ResolveHueScales(settings.hueScales);
             const ColorTuning tuning = !emittance.empty() ?
@@ -778,10 +821,10 @@ namespace MPL::PointLightPatcher
             if constexpr (kUseDirectLightPlacerNiLights)
             {
                 return a_settings.fadeMultiplier != defaults.fadeMultiplier ||
-                       a_settings.sunlightFadeMultiplier != defaults.sunlightFadeMultiplier;
+                       a_settings.effectFadeMultiplier != defaults.effectFadeMultiplier;
             }
             return a_settings.fadeMultiplier != defaults.fadeMultiplier ||
-                   a_settings.sunlightFadeMultiplier != defaults.sunlightFadeMultiplier ||
+                   a_settings.effectFadeMultiplier != defaults.effectFadeMultiplier ||
                    a_settings.saturationMultiplier !=
                        defaults.saturationMultiplier ||
                    a_settings.hueScales != defaults.hueScales ||
@@ -1066,14 +1109,12 @@ namespace MPL::PointLightPatcher
             const auto& settings = a_state.settings;
             const auto& previous = a_previous->settings;
             if (settings.fadeMultiplier != previous.fadeMultiplier ||
-                settings.sunlightFadeMultiplier != previous.sunlightFadeMultiplier)
+                settings.effectFadeMultiplier != previous.effectFadeMultiplier ||
+                a_state.effectPointLightFilter != a_previous->effectPointLightFilter)
             {
                 return true;
             }
-            auto candidates = a_state.sunlightBaseLights;
-            candidates.insert(
-                a_previous->sunlightBaseLights.begin(),
-                a_previous->sunlightBaseLights.end());
+            std::unordered_set<RE::FormID> candidates;
             for (const auto& [formID, value] : a_state.baseLightSettings)
             {
                 (void)value;
@@ -1089,9 +1130,10 @@ namespace MPL::PointLightPatcher
                     const auto fadeFor = [&](const AppliedState& a_candidate)
                     {
                         const auto& baseSettings = SettingsForBaseLight(a_formID, a_candidate);
-                        return a_candidate.sunlightBaseLights.contains(a_formID) ?
-                                   baseSettings.sunlightFadeMultiplier :
-                                   baseSettings.fadeMultiplier;
+                        return std::pair{
+                            baseSettings.fadeMultiplier,
+                            baseSettings.effectFadeMultiplier,
+                        };
                     };
                     return fadeFor(a_state) != fadeFor(*a_previous);
                 }))
@@ -1493,11 +1535,11 @@ namespace MPL::PointLightPatcher
                 DirectLightRefreshResult directLights;
                 RefreshDirectLightPlacerLights(false, &directLights);
                 DetailedLogging::Info(
-                    "[Point Lights] cell={:08X} | references={} | Brightness={} | Sunlight={} | LightPlacer={}/{} | loadedReferences={}",
+                    "[Point Lights] cell={:08X} | references={} | Brightness={} | Effect={} | LightPlacer={}/{} | loadedReferences={}",
                     a_cell,
                     loadedReferences.refreshed,
                     loadedReferences.brightness,
-                    loadedReferences.sunlight,
+                    loadedReferences.effect,
                     directLights.changed,
                     directLights.lights,
                     directLights.references);
@@ -1577,8 +1619,8 @@ namespace MPL::PointLightPatcher
                         a_reference->GetFormID(),
                         light->GetFormID(),
                         source ? source->GetFormID() : 0,
-                        IsSunlightBaseLight(light, a_state) ?
-                            "Sunlight" :
+                        IsEffectPointLight(a_reference, a_state) ?
+                            "Effect" :
                             "Brightness",
                         0.0f,
                         multiplier,
@@ -1611,8 +1653,8 @@ namespace MPL::PointLightPatcher
                     a_reference->GetFormID(),
                     light->GetFormID(),
                     source ? source->GetFormID() : 0,
-                    IsSunlightBaseLight(light, a_state) ?
-                        "Sunlight" :
+                    IsEffectPointLight(a_reference, a_state) ?
+                        "Effect" :
                         "Brightness",
                     baseline->second,
                     multiplier,
@@ -1627,7 +1669,7 @@ namespace MPL::PointLightPatcher
         {
             std::size_t adjusted = 0;
             std::size_t brightness = 0;
-            std::size_t sunlight = 0;
+            std::size_t effect = 0;
             for (auto* reference : a_dataHandler->GetFormArray<RE::TESObjectREFR>())
             {
                 if (auto* light = GetBaseLight(reference);
@@ -1643,14 +1685,14 @@ namespace MPL::PointLightPatcher
                     continue;
                 }
                 ++adjusted;
-                if (IsSunlightBaseLight(GetBaseLight(reference), a_state)) ++sunlight;
+                if (IsEffectPointLight(reference, a_state)) ++effect;
                 else ++brightness;
             }
             DetailedLogging::Info(
-                "[Point Lights] reference fade | adjusted={} | Brightness={} | Sunlight={}",
+                "[Point Lights] reference fade | adjusted={} | Brightness={} | Effect={}",
                 adjusted,
                 brightness,
-                sunlight);
+                effect);
         }
 
         bool RefreshLoadedLightReference(
@@ -1778,8 +1820,8 @@ namespace MPL::PointLightPatcher
                         a_reference->GetFormID(),
                         light->GetFormID(),
                         emittanceSource ? emittanceSource->GetFormID() : 0,
-                        IsSunlightBaseLight(light, a_state) ?
-                            "Sunlight" :
+                        IsEffectPointLight(a_reference, a_state) ?
+                            "Effect" :
                             "Brightness",
                         sharedXEMIBase,
                         correctBaseFadeContribution,
@@ -1834,7 +1876,7 @@ namespace MPL::PointLightPatcher
                                             0;
                     if (a_reference->Is3DLoaded())
                     {
-                        if (IsSunlightBaseLight(light, a_state)) ++result.sunlight;
+                        if (IsEffectPointLight(a_reference, a_state)) ++result.effect;
                         else ++result.brightness;
                     }
                 }
@@ -1848,10 +1890,10 @@ namespace MPL::PointLightPatcher
             if (a_logResult)
             {
                 DetailedLogging::Info(
-                    "[Point Lights] loaded references | refreshed={} | Brightness={} | Sunlight={}",
+                    "[Point Lights] loaded references | refreshed={} | Brightness={} | Effect={}",
                     result.refreshed,
                     result.brightness,
-                    result.sunlight);
+                    result.effect);
             }
             return result;
         }
@@ -1861,14 +1903,14 @@ namespace MPL::PointLightPatcher
     void Apply(
         const Settings& a_settings,
         const BaseLightSettingsMap& a_baseLightSettings,
-        const SunlightBaseLights& a_sunlightBaseLights,
+        const RecordFilter::Resolved& a_effectPointLightFilter,
         const WeatherPatcher::HueRanges& a_hueRanges,
         const bool a_commitLightPlacer)
     {
         const AppliedState state{
             .settings = a_settings,
             .baseLightSettings = a_baseLightSettings,
-            .sunlightBaseLights = a_sunlightBaseLights,
+            .effectPointLightFilter = a_effectPointLightFilter,
             .hueRanges = a_hueRanges,
         };
         const bool recordsChanged = !appliedState || *appliedState != state;
@@ -1909,10 +1951,7 @@ namespace MPL::PointLightPatcher
                 const auto baseline = baselines.try_emplace(light, Baseline{ light->fade, light->data.color }).first;
                 light->fade = baseline->second.fade;
                 light->data.color = baseline->second.color;
-                light->fade *= static_cast<float>(
-                    IsSunlightBaseLight(light, state) ?
-                        SunlightFadeMultiplier(settings) :
-                        BrightnessFadeMultiplier(settings));
+                light->fade *= static_cast<float>(BrightnessFadeMultiplier(settings));
                 ++fadeCount;
                 if (externallyEmissiveLights.contains(light))
                 {
