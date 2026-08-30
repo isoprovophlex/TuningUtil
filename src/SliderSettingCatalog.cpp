@@ -68,7 +68,6 @@ namespace MPL::SliderSettingCatalog
             const FilterOperation a_filterOperation = FilterOperation::none,
             const bool a_linkable = false,
             const bool a_hueScales = false,
-            const bool a_aggregate = false,
             const std::optional<double> a_neutralValue = std::nullopt)
         {
             a_entries.push_back({
@@ -81,7 +80,6 @@ namespace MPL::SliderSettingCatalog
                 a_filterOperation,
                 a_linkable,
                 a_hueScales,
-                a_aggregate,
                 a_neutralValue,
             });
         }
@@ -109,7 +107,6 @@ namespace MPL::SliderSettingCatalog
                     a_operation,
                     a_linkable,
                     a_hueScales,
-                    false,
                     a_neutralValue);
         }
 
@@ -123,19 +120,6 @@ namespace MPL::SliderSettingCatalog
             const bool a_linkable)
         {
             for (const auto& color : a_colors)
-            {
-                Add(
-                    a_entries,
-                    a_domain,
-                    a_group,
-                    std::string(color.label) + " / All Hues",
-                    std::string(a_prefix) + "." + std::string(color.key),
-                    color.key,
-                    {},
-                    a_operation,
-                    a_linkable,
-                    false,
-                    true);
                 for (const auto& hue : hues)
                     Add(
                         a_entries,
@@ -147,7 +131,6 @@ namespace MPL::SliderSettingCatalog
                         hue.key,
                         a_operation,
                         a_linkable);
-            }
         }
 
         void AddHueValues(
@@ -167,7 +150,6 @@ namespace MPL::SliderSettingCatalog
                     {},
                     {},
                     FilterOperation::none,
-                    false,
                     false,
                     false,
                     a_neutralValue);
@@ -202,7 +184,6 @@ namespace MPL::SliderSettingCatalog
                     FilterOperation::none,
                     false,
                     false,
-                    false,
                     1.0);
         }
 
@@ -226,7 +207,7 @@ namespace MPL::SliderSettingCatalog
             AddHueValues(entries, Domain::weather, "Saturation Scales", "hueScales", 1.0);
             AddHueRanges(entries, Domain::weather, "Hue Ranges", "hueRanges");
             Add(entries, Domain::weather, "Volumetric Lighting", "Intensity",
-                "volumetricLightingIntensityMultiplier", {}, {}, FilterOperation::none, false, false, false, 1.0);
+                "volumetricLightingIntensityMultiplier", {}, {}, FilterOperation::none, false, false, 1.0);
             AddImageSpace(entries, Domain::weather, "Image Space", "exteriorImageSpace");
 
             AddColorCategory(entries, Domain::lighting, "Brightness", "intBrightnessMultiplier",
@@ -248,28 +229,19 @@ namespace MPL::SliderSettingCatalog
                 FilterOperation::fogStrength,
                 false,
                 false,
-                false,
                 1.0);
             AddImageSpace(entries, Domain::lighting, "Image Space", "intImageSpace");
-            Add(entries, Domain::lighting, "Effect Lighting", "Brightness",
-                "fxEffectLighting.brightnessMultiplier", "effectLighting", {}, FilterOperation::brightness, false, false, false, 1.0);
-            Add(entries, Domain::lighting, "Effect Lighting", "Saturation",
-                "fxEffectLighting.saturationMultiplier", "effectLighting", {}, FilterOperation::saturation, false, false, false, 1.0);
-            for (const auto& hue : hues)
-                Add(entries, Domain::lighting, "Effect Lighting", std::string("Hue Shift / ") + std::string(hue.label),
-                    "fxEffectLighting.hueShift." + std::string(hue.key),
-                    "effectLighting", hue.key, FilterOperation::hueShift);
             Add(entries, Domain::lighting, "Point Lights", "Brightness", "pointLights.fadeMultiplier",
-                "brightness", {}, FilterOperation::brightness, false, false, false, 1.0);
+                "brightness", {}, FilterOperation::brightness, false, false, 1.0);
             Add(entries, Domain::lighting, "Point Lights", "Sunlight", "pointLights.sunlightFadeMultiplier",
-                "sunlight", {}, FilterOperation::brightness, false, false, false, 1.0);
+                "sunlight", {}, FilterOperation::brightness, false, false, 1.0);
             Add(entries, Domain::lighting, "Point Lights", "Saturation", "pointLights.saturationMultiplier",
-                "saturation", {}, FilterOperation::saturation, false, false, false, 1.0);
+                "saturation", {}, FilterOperation::saturation, false, false, 1.0);
             for (const auto& hue : hues)
             {
                 Add(entries, Domain::lighting, "Point Lights", std::string("Saturation Scale / ") + std::string(hue.label),
                     "pointLights.hueScales." + std::string(hue.key),
-                    "hueScale", hue.key, FilterOperation::saturation, false, false, false, 1.0);
+                    "hueScale", hue.key, FilterOperation::saturation, false, false, 1.0);
                 Add(entries, Domain::lighting, "Point Lights", std::string("Hue Shift / ") + std::string(hue.label),
                     "pointLights.hueShift." + std::string(hue.key),
                     "hueShift", hue.key, FilterOperation::hueShift);

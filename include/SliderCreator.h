@@ -2,9 +2,11 @@
 
 #include <array>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace MPL::SliderCreator
@@ -16,21 +18,46 @@ namespace MPL::SliderCreator
         baseLight,
     };
 
-    inline constexpr std::array<std::string_view, 4> kRequiredProfileModuleKinds{
+    inline constexpr std::array<std::string_view, 5> kRequiredProfileModuleKinds{
         "profileActions",
         "enableProfile",
         "profilePriority",
         "advancedToggle",
+        "profilePluginGating",
     };
 
     bool IsRequiredProfileModuleKind(std::string_view);
+
+    struct ProfilePluginGating
+    {
+        std::vector<std::string> dependencies;
+        std::vector<std::string> disabledProfiles;
+
+        bool operator==(const ProfilePluginGating&) const = default;
+    };
+
+    std::optional<ProfilePluginGating> LoadProfilePluginGating(
+        const std::filesystem::path&,
+        std::string&);
+    bool SaveProfilePluginGating(
+        const std::filesystem::path&,
+        const ProfilePluginGating&,
+        std::string&);
+    std::optional<std::string> LoadAmbientAnchorWeather(
+        const std::filesystem::path&,
+        std::string&);
+    bool SaveAmbientAnchorWeather(
+        const std::filesystem::path&,
+        std::string_view,
+        std::string&);
 
     struct Target
     {
         std::string setting;
         double scale = 1.0;
-        bool ignoreLink = false;
     };
+
+    using CustomLinks = std::map<std::string, std::tuple<std::string, double>, std::less<>>;
 
     struct Filter
     {
@@ -58,7 +85,9 @@ namespace MPL::SliderCreator
         std::string id;
         std::string label;
         std::vector<Target> settings;
+        std::optional<CustomLinks> customLinks;
         std::optional<HueScales> hueScales;
+        bool advanced = false;
         bool filtered = true;
         FilterDomain filterDomain = FilterDomain::weather;
         bool invert = false;
@@ -111,7 +140,8 @@ namespace MPL::SliderCreator
         const std::string&,
         const std::string&,
         bool,
-        std::string&);
+        std::string&,
+        bool = false);
     bool AddDescriptionModule(
         const std::filesystem::path&,
         std::size_t,
@@ -146,7 +176,8 @@ namespace MPL::SliderCreator
         const std::filesystem::path&,
         const std::string&,
         const std::string&,
-        std::string&);
+        std::string&,
+        bool = false);
     bool AddProfileDescription(
         const std::filesystem::path&,
         const std::string&,

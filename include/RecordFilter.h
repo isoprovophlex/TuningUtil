@@ -14,6 +14,7 @@ namespace MPL::RecordFilter
         std::vector<std::string> excludedEditorIDFragments;
         TuningUtil::PluginFilter includedPlugins;
         TuningUtil::PluginFilter excludedPlugins;
+        bool requireIncludedRecordMatch = false;
     };
 
     Resolved Resolve(

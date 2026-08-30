@@ -28,18 +28,18 @@ namespace MPL::JsonOverlay
         constexpr std::array kRecordFilterKeys{
             std::string_view{ "weatherInclusions" },
             std::string_view{ "weatherExclusions" },
-            std::string_view{ "effectPointLightInclusions" },
-            std::string_view{ "effectPointLightExclusions" },
             std::string_view{ "lightingTemplateInclusions" },
             std::string_view{ "lightingTemplateExclusions" },
         };
         constexpr std::array kPluginFilterKeys{
             std::string_view{ "pluginInclusions" },
             std::string_view{ "pluginExclusions" },
-            std::string_view{ "effectLightingPluginInclusions" },
-            std::string_view{ "effectLightingPluginExclusions" },
             std::string_view{ "lightingTemplatePluginInclusions" },
             std::string_view{ "lightingTemplatePluginExclusions" },
+        };
+        constexpr std::array kLocationFilterKeys{
+            std::string_view{ "locationTypes" },
+            std::string_view{ "multiLocationExceptions" },
         };
 
         bool KeyEquals(yyjson_val* a_key, const std::string_view a_expected)
@@ -94,6 +94,11 @@ namespace MPL::JsonOverlay
             if (std::ranges::any_of(kPluginFilterKeys, [&](const auto a_expected)
                     { return KeyEquals(a_key, a_expected); }))
                 return "exact";
+            if (const auto match = std::ranges::find_if(
+                    kLocationFilterKeys,
+                    [&](const auto a_expected) { return KeyEquals(a_key, a_expected); });
+                match != kLocationFilterKeys.end())
+                return *match;
             return {};
         }
 
@@ -142,42 +147,11 @@ namespace MPL::JsonOverlay
             return true;
         }
 
-        yyjson_val* FilterArray(
+        yyjson_val* FilterMember(
             yyjson_val* a_value,
-            const std::string_view a_key,
-            const std::string_view a_exactKey)
+            const std::string_view a_key)
         {
-            if (yyjson_is_arr(a_value))
-            {
-                return a_key == a_exactKey ? a_value : nullptr;
-            }
             return yyjson_is_obj(a_value) ? yyjson_obj_getn(a_value, a_key.data(), a_key.size()) : nullptr;
-        }
-
-        yyjson_mut_val* CopyFilter(
-            yyjson_mut_doc* a_document,
-            yyjson_val* a_value,
-            const std::string_view a_exactKey)
-        {
-            if (!yyjson_is_arr(a_value) && !yyjson_is_obj(a_value))
-            {
-                return yyjson_val_mut_copy(a_document, a_value);
-            }
-
-            auto* result = yyjson_mut_obj(a_document);
-            const std::array keys{ a_exactKey, std::string_view{ "contains" } };
-            for (const auto key : keys)
-            {
-                auto* values = yyjson_mut_arr(a_document);
-                std::unordered_set<std::string> seen;
-                auto* member = yyjson_mut_strncpy(a_document, key.data(), key.size());
-                if (!AppendUniqueStrings(a_document, values, FilterArray(a_value, key, a_exactKey), seen) ||
-                    !member || !yyjson_mut_obj_add(result, member, values))
-                {
-                    return nullptr;
-                }
-            }
-            return result;
         }
 
         yyjson_mut_val* MergeFilters(
@@ -188,16 +162,20 @@ namespace MPL::JsonOverlay
         {
             if (yyjson_is_arr(a_defaults))
             {
+                if (!yyjson_is_arr(a_overrides))
+                {
+                    return yyjson_val_mut_copy(a_document, a_overrides);
+                }
                 auto* result = yyjson_mut_arr(a_document);
                 std::unordered_set<std::string> seen;
                 return AppendUniqueStrings(a_document, result, a_defaults, seen) &&
-                               AppendUniqueStrings(
-                                   a_document,
-                                   result,
-                                   FilterArray(a_overrides, a_exactKey, a_exactKey),
-                                   seen) ?
+                               AppendUniqueStrings(a_document, result, a_overrides, seen) ?
                            result :
                            nullptr;
+            }
+            if (!yyjson_is_obj(a_defaults) || !yyjson_is_obj(a_overrides))
+            {
+                return yyjson_val_mut_copy(a_document, a_overrides);
             }
 
             auto* result = yyjson_mut_obj(a_document);
@@ -207,8 +185,8 @@ namespace MPL::JsonOverlay
                 auto* values = yyjson_mut_arr(a_document);
                 std::unordered_set<std::string> seen;
                 auto* member = yyjson_mut_strncpy(a_document, key.data(), key.size());
-                if (!AppendUniqueStrings(a_document, values, FilterArray(a_defaults, key, a_exactKey), seen) ||
-                    !AppendUniqueStrings(a_document, values, FilterArray(a_overrides, key, a_exactKey), seen) ||
+                if (!AppendUniqueStrings(a_document, values, FilterMember(a_defaults, key), seen) ||
+                    !AppendUniqueStrings(a_document, values, FilterMember(a_overrides, key), seen) ||
                     !member || !yyjson_mut_obj_add(result, member, values))
                 {
                     return nullptr;
@@ -261,11 +239,16 @@ namespace MPL::JsonOverlay
         {
             if (yyjson_is_arr(a_current))
             {
-                auto* result = DifferenceStringList(
-                    a_document,
-                    a_current,
-                    FilterArray(a_defaults, a_exactKey, a_exactKey));
+                if (!yyjson_is_arr(a_defaults))
+                {
+                    return yyjson_val_mut_copy(a_document, a_current);
+                }
+                auto* result = DifferenceStringList(a_document, a_current, a_defaults);
                 return result && yyjson_mut_arr_size(result) != 0 ? result : nullptr;
+            }
+            if (!yyjson_is_obj(a_current) || !yyjson_is_obj(a_defaults))
+            {
+                return yyjson_val_mut_copy(a_document, a_current);
             }
 
             auto* result = yyjson_mut_obj(a_document);
@@ -274,8 +257,8 @@ namespace MPL::JsonOverlay
             {
                 auto* difference = DifferenceStringList(
                     a_document,
-                    FilterArray(a_current, key, a_exactKey),
-                    FilterArray(a_defaults, key, a_exactKey));
+                    FilterMember(a_current, key),
+                    FilterMember(a_defaults, key));
                 if (!difference)
                 {
                     return nullptr;
@@ -402,13 +385,7 @@ namespace MPL::JsonOverlay
                 const auto exactKey = FilterExactKey(key);
                 auto* mergedValue = a_userSettingsRules && !exactKey.empty() && overrideValue ?
                                         MergeFilters(a_document, defaultValue, overrideValue, exactKey) :
-                                    (!a_userSettingsRules && !exactKey.empty() &&
-                                             yyjson_is_arr(defaultValue) && yyjson_is_obj(overrideValue) ?
-                                        MergeFilters(a_document, defaultValue, overrideValue, exactKey) :
-                                        (!a_userSettingsRules && !exactKey.empty() &&
-                                                 yyjson_is_obj(defaultValue) && yyjson_is_arr(overrideValue) ?
-                                                CopyFilter(a_document, overrideValue, exactKey) :
-                                                MergeValue(a_document, defaultValue, overrideValue, a_userSettingsRules)));
+                                        MergeValue(a_document, defaultValue, overrideValue, a_userSettingsRules);
                 if (!AddMember(a_document, result, key, mergedValue))
                 {
                     return nullptr;

@@ -134,6 +134,7 @@ namespace MPL::RecordFilter
         }
 
         const auto hasRecordInclusions =
+            a_filter.requireIncludedRecordMatch ||
             !a_filter.includedFormIDs.empty() ||
             !a_filter.includedEditorIDFragments.empty();
         const auto recordIncluded =
@@ -152,17 +153,20 @@ namespace MPL::RecordFilter
         {
             return {};
         }
-        auto* stat = Config::StatData::GetSingleton();
-        if (!stat->mmsfAPI)
+        if (a_form->Is(RE::FormType::Weather) || a_form->Is(RE::FormType::Region))
         {
-            stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
-        }
-        if (stat->mmsfAPI)
-        {
-            if (auto editorID = stat->mmsfAPI->LookupEDIDForFormID(a_form->GetFormID());
-                !editorID.empty())
+            auto* stat = Config::StatData::GetSingleton();
+            if (!stat->mmsfAPI)
             {
-                return editorID;
+                stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
+            }
+            if (stat->mmsfAPI)
+            {
+                if (auto editorID = stat->mmsfAPI->LookupEDIDForFormID(a_form->GetFormID());
+                    !editorID.empty() && !Config::IEquals(editorID, "ERR"))
+                {
+                    return editorID;
+                }
             }
         }
         const auto* editorID = a_form->GetFormEditorID();

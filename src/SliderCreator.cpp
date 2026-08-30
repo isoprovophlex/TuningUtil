@@ -116,12 +116,39 @@ namespace MPL::SliderCreator
             };
         }
 
+        std::optional<CustomLinks> ReadCustomLinks(yyjson_val* a_control)
+        {
+            auto* object = yyjson_is_obj(a_control) ? yyjson_obj_get(a_control, "customLinks") : nullptr;
+            if (!yyjson_is_obj(object)) return std::nullopt;
+
+            CustomLinks result;
+            std::size_t index = 0;
+            std::size_t maximum = 0;
+            yyjson_val* key = nullptr;
+            yyjson_val* value = nullptr;
+            yyjson_obj_foreach(object, index, maximum, key, value)
+            {
+                if (!yyjson_is_str(key) || !yyjson_is_arr(value)) continue;
+                auto* source = yyjson_arr_get(value, 0);
+                auto* scale = yyjson_arr_get(value, 1);
+                if (!yyjson_is_str(source)) continue;
+                auto targetName = Trim(std::string(yyjson_get_str(key), yyjson_get_len(key)));
+                auto sourceName = Trim(std::string(yyjson_get_str(source), yyjson_get_len(source)));
+                const auto scaleValue = yyjson_is_num(scale) ? yyjson_get_real(scale) : 1.0;
+                if (!targetName.empty() && !sourceName.empty() && std::isfinite(scaleValue))
+                    result.insert_or_assign(
+                        std::move(targetName),
+                        std::tuple{ std::move(sourceName), scaleValue });
+            }
+            return result;
+        }
+
         std::optional<Target> ReadTarget(yyjson_val* a_value, bool& a_structured)
         {
             if (yyjson_is_str(a_value))
             {
                 auto setting = Trim(std::string(yyjson_get_str(a_value), yyjson_get_len(a_value)));
-                return setting.empty() ? std::nullopt : std::optional<Target>{ { std::move(setting), 1.0, true } };
+                return setting.empty() ? std::nullopt : std::optional<Target>{ { std::move(setting), 1.0 } };
             }
             if (!yyjson_is_obj(a_value)) return std::nullopt;
             a_structured = true;
@@ -130,7 +157,6 @@ namespace MPL::SliderCreator
             return Target{
                 .setting = std::move(*setting),
                 .scale = NumberMember(a_value, "scale").value_or(1.0),
-                .ignoreLink = BooleanMember(a_value, "ignoreLink"),
             };
         }
 
@@ -146,7 +172,9 @@ namespace MPL::SliderCreator
             Definition result;
             result.id = StringMember(a_control, "id").value_or("");
             result.label = StringMember(a_control, "label").value_or("");
+            result.customLinks = ReadCustomLinks(a_control);
             result.hueScales = ReadHueScales(a_control);
+            result.advanced = BooleanMember(a_control, "advanced");
             result.invert = BooleanMember(a_control, "invert");
             result.defaultValue = NumberMember(a_control, "default");
             result.minimum = NumberMember(a_control, "min");
@@ -205,11 +233,7 @@ namespace MPL::SliderCreator
                 result.include = ReadFilter(yyjson_obj_get(baseLightFilter, "include"));
                 result.exclude = ReadFilter(yyjson_obj_get(baseLightFilter, "exclude"));
             }
-            const auto directInteriorLinkOverride = structured && !result.settings.empty() &&
-                                                    std::ranges::all_of(result.settings, [](const auto& a_target)
-                                                        { return IsInteriorLinkableSetting(a_target.setting); }) &&
-                                                    std::ranges::any_of(result.settings, &Target::ignoreLink);
-            result.filtered = (structured && !directInteriorLinkOverride) || result.useTimes ||
+            result.filtered = structured || result.useTimes ||
                               result.hueScales ||
                               result.filterDomain == FilterDomain::lightingTemplate ||
                               result.filterDomain == FilterDomain::baseLight ||
@@ -227,6 +251,25 @@ namespace MPL::SliderCreator
             auto* key = yyjson_mut_strncpy(a_document, a_key.data(), a_key.size());
             auto* value = yyjson_mut_strncpy(a_document, a_value.data(), a_value.size());
             return key && value && yyjson_mut_obj_add(a_object, key, value);
+        }
+
+        bool ReplaceStringArray(
+            yyjson_mut_doc* a_document,
+            yyjson_mut_val* a_object,
+            const std::string_view a_key,
+            const std::vector<std::string>& a_values)
+        {
+            auto* values = yyjson_mut_arr(a_document);
+            if (!values) return false;
+            for (const auto& configured : a_values)
+            {
+                const auto value = Trim(configured);
+                if (value.empty()) continue;
+                auto* stringValue = yyjson_mut_strncpy(a_document, value.data(), value.size());
+                if (!stringValue || !yyjson_mut_arr_append(values, stringValue)) return false;
+            }
+            yyjson_mut_obj_remove_key(a_object, a_key.data());
+            return yyjson_mut_obj_add_val(a_document, a_object, a_key.data(), values);
         }
 
         bool HasProfileModuleKind(yyjson_val* a_modules, const std::string_view a_kind)
@@ -268,11 +311,27 @@ namespace MPL::SliderCreator
 
             for (const auto kind : kRequiredProfileModuleKinds)
             {
-                if (HasProfileModuleKind(sourceModules, kind)) continue;
-                auto* module = yyjson_mut_obj(a_document);
-                if (!module || !AddString(a_document, module, "type", kind) ||
-                    !yyjson_mut_arr_append(modules, module))
-                    return nullptr;
+                if (!HasProfileModuleKind(sourceModules, kind))
+                {
+                    auto* module = yyjson_mut_obj(a_document);
+                    if (!module || !AddString(a_document, module, "type", kind) ||
+                        !yyjson_mut_arr_append(modules, module))
+                        return nullptr;
+                }
+            }
+
+            std::size_t index = 0;
+            std::size_t maximum = 0;
+            yyjson_mut_val* module = nullptr;
+            yyjson_mut_arr_foreach(modules, index, maximum, module)
+            {
+                auto* type = yyjson_mut_obj_get(module, "type");
+                if (!yyjson_mut_is_str(type) ||
+                    !IEquals(yyjson_mut_get_str(type), "profilePluginGating"))
+                    continue;
+                yyjson_mut_obj_remove_key(module, "advanced");
+                if (!yyjson_mut_obj_add_bool(a_document, module, "advanced", true)) return nullptr;
+                break;
             }
             return modules;
         }
@@ -286,10 +345,8 @@ namespace MPL::SliderCreator
                 std::string_view("spacing"),
                 std::string_view("boxStart"),
                 std::string_view("boxEnd"),
-                std::string_view("dropdownBoxStart"),
-                std::string_view("dropdownBoxEnd"),
-                std::string_view("dropdownStart"),
-                std::string_view("dropdownEnd"),
+                std::string_view("dropBoxStart"),
+                std::string_view("dropBoxEnd"),
             };
             return std::ranges::any_of(kinds, [&](const auto kind) { return IEquals(a_kind, kind); });
         }
@@ -302,8 +359,7 @@ namespace MPL::SliderCreator
                 std::string_view("description"),
                 std::string_view("separatorText"),
                 std::string_view("boxStart"),
-                std::string_view("dropdownBoxStart"),
-                std::string_view("dropdownStart"),
+                std::string_view("dropBoxStart"),
                 std::string_view("ambientWithinGauge"),
                 std::string_view("ambientBetweenGauge"),
                 std::string_view("sunlightWithinGauge"),
@@ -389,6 +445,26 @@ namespace MPL::SliderCreator
                    yyjson_mut_obj_add_val(a_document, a_parent, a_name.data(), filter);
         }
 
+        bool AddCustomLinks(
+            yyjson_mut_doc* a_document,
+            yyjson_mut_val* a_parent,
+            const CustomLinks& a_links)
+        {
+            auto* links = yyjson_mut_obj(a_document);
+            if (!links) return false;
+            for (const auto& [target, link] : a_links)
+            {
+                const auto& [source, scale] = link;
+                auto* value = yyjson_mut_arr(a_document);
+                if (!value ||
+                    !yyjson_mut_arr_add_strncpy(a_document, value, source.data(), source.size()) ||
+                    !yyjson_mut_arr_add_real(a_document, value, scale) ||
+                    !yyjson_mut_obj_add_val(a_document, links, target.c_str(), value))
+                    return false;
+            }
+            return yyjson_mut_obj_add_val(a_document, a_parent, "customLinks", links);
+        }
+
         yyjson_mut_val* BuildControl(yyjson_mut_doc* a_document, const Definition& a_definition)
         {
             auto* control = yyjson_mut_obj(a_document);
@@ -396,9 +472,10 @@ namespace MPL::SliderCreator
                 !AddString(a_document, control, "id", a_definition.id) ||
                 !AddString(a_document, control, "label", a_definition.label))
                 return nullptr;
+            if (a_definition.advanced && !yyjson_mut_obj_add_bool(a_document, control, "advanced", true))
+                return nullptr;
 
-            if (!a_definition.filtered && a_definition.settings.size() == 1 &&
-                !a_definition.settings.front().ignoreLink)
+            if (!a_definition.filtered && a_definition.settings.size() == 1)
             {
                 if (!AddString(a_document, control, "setting", a_definition.settings.front().setting)) return nullptr;
             }
@@ -408,7 +485,7 @@ namespace MPL::SliderCreator
                 if (!settings) return nullptr;
                 for (const auto& target : a_definition.settings)
                 {
-                    if (!a_definition.filtered && !target.ignoreLink)
+                    if (!a_definition.filtered)
                     {
                         if (!yyjson_mut_arr_add_strncpy(
                                 a_document,
@@ -422,13 +499,14 @@ namespace MPL::SliderCreator
                     if (!setting || !AddString(a_document, setting, "setting", target.setting) ||
                         (a_definition.filtered &&
                             !yyjson_mut_obj_add_real(a_document, setting, "scale", target.scale)) ||
-                        (a_definition.filterDomain != FilterDomain::baseLight &&
-                            !yyjson_mut_obj_add_bool(a_document, setting, "ignoreLink", target.ignoreLink)) ||
                         !yyjson_mut_arr_append(settings, setting))
                         return nullptr;
                 }
                 if (!yyjson_mut_obj_add_val(a_document, control, "settings", settings)) return nullptr;
             }
+
+            if (a_definition.customLinks && !AddCustomLinks(a_document, control, *a_definition.customLinks))
+                return nullptr;
 
             if (a_definition.invert && !yyjson_mut_obj_add_bool(a_document, control, "invert", true)) return nullptr;
             if (a_definition.useTimes)
@@ -506,6 +584,83 @@ namespace MPL::SliderCreator
             return SliderSettingCatalog::Find(Trim(std::string(a_setting)));
         }
 
+        bool ValidateCustomLinks(
+            const Definition& a_definition,
+            const std::span<const SliderSettingCatalog::Entry* const> a_entries,
+            std::string& a_error)
+        {
+            if (!a_definition.customLinks) return true;
+
+            const bool weather = a_definition.filtered && a_definition.filterDomain == FilterDomain::weather;
+            const bool lighting =
+                (a_definition.filtered && a_definition.filterDomain == FilterDomain::lightingTemplate &&
+                    std::ranges::all_of(a_entries, [](const auto* a_entry)
+                        { return a_entry->filterOperation == SliderSettingCatalog::FilterOperation::brightness; })) ||
+                (!a_definition.filtered && std::ranges::all_of(a_definition.settings, [](const auto& a_target)
+                    { return IsInteriorLinkableSetting(a_target.setting); }));
+            if (!weather && !lighting)
+            {
+                a_error = "Custom links apply only to linkable Weather and Lighting sliders.";
+                return false;
+            }
+
+            static constexpr std::array weatherFields{
+                std::string_view{ "ambient" }, std::string_view{ "sunlight" },
+                std::string_view{ "effectLighting" }, std::string_view{ "fogFar" },
+                std::string_view{ "fogNear" }, std::string_view{ "water" },
+                std::string_view{ "skyStatics" }, std::string_view{ "skyUpper" },
+                std::string_view{ "skyLower" }, std::string_view{ "horizon" },
+                std::string_view{ "sun" }, std::string_view{ "sunGlare" },
+                std::string_view{ "moonGlare" }, std::string_view{ "stars" },
+                std::string_view{ "cloudLayers" }, std::string_view{ "volumetricLighting" },
+            };
+            static constexpr std::array lightingFields{
+                std::string_view{ "ambient" }, std::string_view{ "directional" },
+                std::string_view{ "ambientColors" }, std::string_view{ "fogFar" },
+                std::string_view{ "fogNear" },
+            };
+            const auto validField = [&](const std::string_view a_field)
+            {
+                if (weather)
+                    return std::ranges::any_of(weatherFields, [&](const auto a_candidate)
+                        { return IEquals(a_candidate, a_field); });
+                return std::ranges::any_of(lightingFields, [&](const auto a_candidate)
+                    { return IEquals(a_candidate, a_field); });
+            };
+            for (const auto& [target, link] : *a_definition.customLinks)
+            {
+                const auto& [source, scale] = link;
+                if (!validField(target) || !validField(source) || IEquals(target, source) || !std::isfinite(scale))
+                {
+                    a_error = "Every custom link must use two different valid fields and a finite scale.";
+                    return false;
+                }
+            }
+
+            for (const auto& [start, unused] : *a_definition.customLinks)
+            {
+                (void) unused;
+                std::vector<std::string> visited;
+                auto current = start;
+                while (true)
+                {
+                    const auto link = std::ranges::find_if(
+                        *a_definition.customLinks,
+                        [&](const auto& a_entry) { return IEquals(a_entry.first, current); });
+                    if (link == a_definition.customLinks->end()) break;
+                    if (std::ranges::any_of(visited, [&](const auto& a_field)
+                            { return IEquals(a_field, current); }))
+                    {
+                        a_error = "Custom links cannot contain a cycle.";
+                        return false;
+                    }
+                    visited.push_back(current);
+                    current = std::get<0>(link->second);
+                }
+            }
+            return true;
+        }
+
         bool Validate(const Definition& a_definition, std::string& a_error)
         {
             if (Trim(a_definition.label).empty())
@@ -536,11 +691,7 @@ namespace MPL::SliderCreator
                 }
                 entries.push_back(entry);
             }
-            if (!a_definition.filtered && std::ranges::any_of(entries, [](const auto* a_entry) { return a_entry->aggregate; }))
-            {
-                a_error = "All Hues is a creator shortcut; direct sliders must store its seven individual hue bands.";
-                return false;
-            }
+            if (!ValidateCustomLinks(a_definition, entries, a_error)) return false;
             if (a_definition.filtered)
             {
                 if (a_definition.filterDomain == FilterDomain::baseLight)
@@ -598,24 +749,14 @@ namespace MPL::SliderCreator
                 else
                 {
                     std::optional<SliderSettingCatalog::FilterOperation> operation;
-                    std::optional<bool> effectLighting;
                     for (const auto* entry : entries)
                     {
-                        const bool entryEffectLighting =
-                            entry->domain == SliderSettingCatalog::Domain::lighting &&
-                            entry->path.starts_with("fxEffectLighting.");
-                        if ((entry->domain != SliderSettingCatalog::Domain::weather && !entryEffectLighting) ||
+                        if (entry->domain != SliderSettingCatalog::Domain::weather ||
                             !SliderSettingCatalog::IsFilteredOperation(entry->filterOperation))
                         {
                             a_error = "Filtered sliders support only weather brightness, saturation, and hue-shift settings.";
                             return false;
                         }
-                        if (effectLighting && *effectLighting != entryEffectLighting)
-                        {
-                            a_error = "Every setting in a filtered slider must use the same filter domain.";
-                            return false;
-                        }
-                        effectLighting = entryEffectLighting;
                         if (operation && operation != entry->filterOperation)
                         {
                             a_error = "Every setting in a filtered slider must use the same operation.";
@@ -742,8 +883,8 @@ namespace MPL::SliderCreator
         bool KnownSliderKey(const std::string_view a_key)
         {
             static constexpr std::array keys{
-                "type", "id", "label", "tooltip", "link", "localLink", "hueScales", "setting", "settings",
-                "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "default", "min", "max", "step", "width", "format",
+                "type", "id", "label", "tooltip", "link", "localLink", "customLinks", "hueScales", "setting", "settings",
+                "advanced", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "default", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
         }
@@ -778,7 +919,7 @@ namespace MPL::SliderCreator
             auto* data = yyjson_mut_write(a_document, YYJSON_WRITE_PRETTY_TWO_SPACES, &length);
             if (!data)
             {
-                a_error = "The updated menu JSON could not be serialized.";
+                a_error = "The updated JSON could not be serialized.";
                 return false;
             }
             std::string output(data, length);
@@ -794,7 +935,7 @@ namespace MPL::SliderCreator
                     file.close();
                     std::error_code removeError;
                     std::filesystem::remove(temporaryPath, removeError);
-                    a_error = "The temporary menu file could not be written.";
+                    a_error = "The temporary JSON file could not be written.";
                     return false;
                 }
             }
@@ -807,7 +948,7 @@ namespace MPL::SliderCreator
             const std::error_code moveError(static_cast<int>(::GetLastError()), std::system_category());
             std::error_code removeError;
             std::filesystem::remove(temporaryPath, removeError);
-            a_error = std::format("The menu file could not be replaced: {}", moveError.message());
+            a_error = std::format("The JSON file could not be replaced: {}", moveError.message());
             return false;
         }
 
@@ -815,9 +956,7 @@ namespace MPL::SliderCreator
             const std::filesystem::path& a_path,
             const std::string_view a_key,
             const std::string_view a_value,
-            std::string& a_error,
-            const std::string_view a_booleanKey = {},
-            const bool a_booleanValue = false)
+            std::string& a_error)
         {
             const auto text = ReadText(a_path);
             Document source(text ?
@@ -848,16 +987,6 @@ namespace MPL::SliderCreator
                 a_error = std::format("{} could not be updated.", a_path.filename().string());
                 return false;
             }
-            if (!a_booleanKey.empty())
-            {
-                yyjson_mut_obj_remove_key(root, a_booleanKey.data());
-                auto* boolean = yyjson_mut_bool(document.get(), a_booleanValue);
-                if (!boolean || !yyjson_mut_obj_add_val(document.get(), root, a_booleanKey.data(), boolean))
-                {
-                    a_error = std::format("{} could not be updated.", a_path.filename().string());
-                    return false;
-                }
-            }
             return WriteDocument(a_path, document.get(), a_error);
         }
     }  // namespace
@@ -865,6 +994,111 @@ namespace MPL::SliderCreator
     bool IsRequiredProfileModuleKind(const std::string_view a_kind)
     {
         return std::ranges::any_of(kRequiredProfileModuleKinds, [&](const auto kind) { return IEquals(a_kind, kind); });
+    }
+
+    std::optional<ProfilePluginGating> LoadProfilePluginGating(
+        const std::filesystem::path& a_path,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document document(text ?
+                              yyjson_read(
+                                  const_cast<char*>(text->data()),
+                                  text->size(),
+                                  YYJSON_READ_NOFLAG) :
+                              nullptr);
+        auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
+        if (!yyjson_is_obj(root))
+        {
+            a_error = "profileSettings.json does not contain a JSON object.";
+            return std::nullopt;
+        }
+        auto disabledProfiles = StringArray(root, "DisableProfile");
+        if (const auto singleProfile = StringMember(root, "DisableProfile");
+            singleProfile && !Trim(*singleProfile).empty())
+        {
+            disabledProfiles.push_back(Trim(*singleProfile));
+        }
+        return ProfilePluginGating{
+            .dependencies = StringArray(root, "PluginDependency"),
+            .disabledProfiles = std::move(disabledProfiles),
+        };
+    }
+
+    bool SaveProfilePluginGating(
+        const std::filesystem::path& a_path,
+        const ProfilePluginGating& a_gating,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document source(text ?
+                            yyjson_read(
+                                const_cast<char*>(text->data()),
+                                text->size(),
+                                YYJSON_READ_NOFLAG) :
+                            nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        if (!yyjson_is_obj(sourceRoot))
+        {
+            a_error = "profileSettings.json does not contain a JSON object.";
+            return false;
+        }
+
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        if (!document || !root)
+        {
+            a_error = "profileSettings.json could not be copied for editing.";
+            return false;
+        }
+        yyjson_mut_doc_set_root(document.get(), root);
+        yyjson_mut_obj_remove_key(root, "PluginIndependency");
+        if (!ReplaceStringArray(document.get(), root, "PluginDependency", a_gating.dependencies) ||
+            !ReplaceStringArray(document.get(), root, "DisableProfile", a_gating.disabledProfiles))
+        {
+            a_error = "The profile plugin gating could not be updated.";
+            return false;
+        }
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
+    std::optional<std::string> LoadAmbientAnchorWeather(
+        const std::filesystem::path& a_path,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document document(text ?
+                              yyjson_read(
+                                  const_cast<char*>(text->data()),
+                                  text->size(),
+                                  YYJSON_READ_NOFLAG) :
+                              nullptr);
+        auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
+        if (!yyjson_is_obj(root))
+        {
+            a_error = "profileSettings.json does not contain a JSON object.";
+            return std::nullopt;
+        }
+        auto weather = Trim(StringMember(root, "ambientAnchorWeather").value_or("SkyrimClear"));
+        return weather.empty() ? std::string("SkyrimClear") : std::move(weather);
+    }
+
+    bool SaveAmbientAnchorWeather(
+        const std::filesystem::path& a_path,
+        const std::string_view a_weather,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto weather = Trim(std::string(a_weather));
+        if (weather.empty())
+        {
+            a_error = "Select an ambient anchor weather.";
+            return false;
+        }
+        return ReplaceRootStringMember(a_path, "ambientAnchorWeather", weather, a_error);
     }
 
     std::vector<Page> Load(const std::filesystem::path& a_path, std::string& a_error)
@@ -1076,9 +1310,7 @@ namespace MPL::SliderCreator
                     profileDirectory / "skseMenu.json",
                     "title",
                     profileName,
-                    a_error,
-                    "lockEditMode",
-                    false))
+                    a_error))
             {
                 const auto reason = a_error;
                 return copyFailure(reason);
@@ -1101,9 +1333,7 @@ namespace MPL::SliderCreator
                 profileDirectory / "skseMenu.json",
                 "title",
                 profileName,
-                a_error,
-                "lockEditMode",
-                false))
+                a_error))
         {
             const auto reason = a_error;
             removeIncompleteProfile();
@@ -1208,7 +1438,8 @@ namespace MPL::SliderCreator
         const std::string& a_label,
         const std::string& a_setting,
         const bool a_advanced,
-        std::string& a_error)
+        std::string& a_error,
+        const bool a_defaultOpen)
     {
         a_error.clear();
         const auto kind = Trim(a_kind);
@@ -1234,13 +1465,14 @@ namespace MPL::SliderCreator
         auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
         auto* module = yyjson_mut_obj(document.get());
         const auto labelKey = kind == "text" || kind == "separatorText" ||
-                                      kind == "boxStart" || kind == "dropdownBoxStart" ||
-                                      kind == "dropdownStart" ?
+                                      kind == "boxStart" || kind == "dropBoxStart" ?
                                   "label" : "header";
+        const auto dropBoxStart = kind == "dropBoxStart";
         if (!yyjson_mut_is_arr(modules) || !module || !AddString(document.get(), module, "type", kind) ||
             (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
             (!a_setting.empty() && !AddString(document.get(), module, "setting", a_setting)) ||
             (a_advanced && !yyjson_mut_obj_add_bool(document.get(), module, "advanced", true)) ||
+            (dropBoxStart && !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", a_defaultOpen)) ||
             !yyjson_mut_arr_append(modules, module))
         {
             a_error = "The module could not be added to this page.";
@@ -1429,7 +1661,8 @@ namespace MPL::SliderCreator
         const std::filesystem::path& a_path,
         const std::string& a_kind,
         const std::string& a_label,
-        std::string& a_error)
+        std::string& a_error,
+        const bool a_defaultOpen)
     {
         a_error.clear();
         const auto kind = Trim(a_kind);
@@ -1453,11 +1686,12 @@ namespace MPL::SliderCreator
         auto* modules = EnsureProfileModules(document.get(), root, sourceRoot);
         auto* module = yyjson_mut_obj(document.get());
         const auto labelKey = kind == "text" || kind == "separatorText" ||
-                                      kind == "boxStart" || kind == "dropdownBoxStart" ||
-                                      kind == "dropdownStart" ?
+                                      kind == "boxStart" || kind == "dropBoxStart" ?
                                   "label" : "";
+        const auto dropBoxStart = kind == "dropBoxStart";
         if (!modules || !module || !AddString(document.get(), module, "type", kind) ||
             (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
+            (dropBoxStart && !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", a_defaultOpen)) ||
             !yyjson_mut_arr_append(modules, module))
         {
             a_error = "The element could not be added to the Profile page.";

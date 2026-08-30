@@ -20,19 +20,12 @@ namespace MPL::TuningUtil
         hueShift,
     };
 
-    enum class FilteredWeatherDomain
-    {
-        weather,
-        effectLighting,
-    };
-
     struct FilteredWeatherSetting
     {
         FilteredWeatherOperation operation = FilteredWeatherOperation::brightness;
         std::string target;
         std::optional<std::string> hue;
         double scale = 1.0;
-        bool ignoreLink = true;
 
         bool operator==(const FilteredWeatherSetting&) const = default;
     };
@@ -41,8 +34,8 @@ namespace MPL::TuningUtil
     {
         std::string id;
         std::string controlID;
-        FilteredWeatherDomain domain = FilteredWeatherDomain::weather;
         std::vector<FilteredWeatherSetting> settings;
+        std::optional<WeatherPatcher::WeatherLinks> customLinks;
         std::array<bool, RE::TESWeather::ColorTime::kTotal> times{};
         WeatherFilter include;
         WeatherFilter exclude;
@@ -63,7 +56,6 @@ namespace MPL::TuningUtil
         FilteredLightingTemplateOperation operation = FilteredLightingTemplateOperation::brightness;
         std::string target;
         double scale = 1.0;
-        bool ignoreLink = false;
 
         bool operator==(const FilteredLightingTemplateSetting&) const = default;
     };
@@ -73,6 +65,7 @@ namespace MPL::TuningUtil
         std::string id;
         std::string controlID;
         std::vector<FilteredLightingTemplateSetting> settings;
+        std::optional<LightingPatcher::InteriorLinks> customLinks;
         WeatherFilter include;
         WeatherFilter exclude;
         std::vector<std::string> locationTypeInclusions;
@@ -121,12 +114,13 @@ namespace MPL::TuningUtil
         std::filesystem::path directory;
         std::string ambientAnchorWeather{ "SkyrimClear" };
         std::optional<double> runtimeAmbientAnchor;
+        std::vector<std::string> disabledProfiles;
         std::vector<std::string> defaultSettingRoots;
         std::vector<FilteredWeatherRule> filteredWeatherRules;
         std::vector<FilteredLightingTemplateRule> filteredLightingTemplateRules;
         std::vector<FilteredBaseLightRule> filteredBaseLightRules;
         std::vector<std::string> interiorSliderSettings;
-        std::vector<std::string> ignoredInteriorSliderLinks;
+        std::map<std::string, LightingPatcher::InteriorLinks, std::less<>> customInteriorSliderLinks;
         std::vector<std::string> interiorMenuSettings;
         std::vector<std::string> weatherMenuSettings;
     };
@@ -149,7 +143,10 @@ namespace MPL::TuningUtil
     const FilteredLightingTemplateRule* FindFilteredLightingTemplateRule(const std::string&, std::string_view);
     const std::vector<FilteredBaseLightRule>& GetFilteredBaseLightRules(const std::string&);
     const FilteredBaseLightRule* FindFilteredBaseLightRule(const std::string&, std::string_view);
-    bool IgnoresInteriorSliderLink(std::span<const std::string>, std::string_view);
+    LightingPatcher::InteriorLinks ResolveInteriorSliderLinks(
+        std::span<const std::string>,
+        std::string_view,
+        const LightingPatcher::InteriorLinks&);
     bool ReloadFilteredRules();
     bool SetSliderCreatorPreview(
         std::string&,

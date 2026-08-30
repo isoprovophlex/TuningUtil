@@ -33,6 +33,8 @@ namespace MPL::WeatherPatcher
         SettingLink stars;
         SettingLink cloudLayers = std::tuple{ std::string("sunlight"), 1.0 };
         SettingLink volumetricLighting = std::tuple{ std::string("sunlight"), 1.0 };
+
+        bool operator==(const WeatherLinks&) const = default;
     };
 
     struct WeatherBaseline
@@ -157,13 +159,6 @@ namespace MPL::WeatherPatcher
         double magenta = 0.0;
 
         bool operator==(const HueShiftBands&) const = default;
-    };
-
-    struct FXEffectLightingSettings
-    {
-        double brightnessMultiplier = 1.0;
-        double saturationMultiplier = 1.0;
-        HueShiftBands hueShift;
     };
 
     struct HueShiftSettings

@@ -33,7 +33,6 @@ namespace MPL::SliderSettingCatalog
         FilterOperation filterOperation = FilterOperation::none;
         bool linkable = false;
         bool hueScales = false;
-        bool aggregate = false;
         std::optional<double> neutralValue;
     };
 

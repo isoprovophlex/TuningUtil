@@ -27,6 +27,22 @@ namespace MPL::TuningUtil
         bool operator==(const PluginFilter&) const = default;
     };
 
+    struct LocationTypeFilter
+    {
+        std::vector<std::string> locationTypes;
+        std::vector<std::string> multiLocationExceptions;
+
+        bool operator==(const LocationTypeFilter&) const = default;
+    };
+
+    struct LightingTemplateFilter
+    {
+        LocationTypeFilter include;
+        LocationTypeFilter exclude;
+
+        bool operator==(const LightingTemplateFilter&) const = default;
+    };
+
     struct Settings
     {
         int profilePriority = 0;
@@ -43,9 +59,7 @@ namespace MPL::TuningUtil
         WeatherPatcher::CompressionSettings betweenWeatherCompression;
         WeatherPatcher::CompressionSettings withinWeatherCompression;
         WeatherPatcher::CompressionAnchorSettings compressionAnchor;
-        WeatherPatcher::DynamicAmbientSettings dynamicAmbientWithin;
         WeatherPatcher::DynamicAmbientSettings dynamicAmbientBetween;
-        WeatherPatcher::DynamicAmbientSettings dynamicSunlightWithin;
         WeatherPatcher::DynamicAmbientSettings dynamicSunlightBetween;
         WeatherFilter weatherInclusions;
         WeatherFilter weatherExclusions;
@@ -53,12 +67,6 @@ namespace MPL::TuningUtil
         PluginFilter pluginExclusions;
         std::map<std::string, double> filteredWeatherAdjustments;
         WeatherPatcher::ImageSpaceSettings exteriorImageSpace;
-
-        WeatherPatcher::FXEffectLightingSettings fxEffectLighting;
-        WeatherFilter effectPointLightInclusions;
-        WeatherFilter effectPointLightExclusions;
-        PluginFilter effectLightingPluginInclusions;
-        PluginFilter effectLightingPluginExclusions;
 
         LightingPatcher::InteriorColorSettings intBrightnessMultiplier;
         LightingPatcher::InteriorColorSettings intSaturationMultiplier;
@@ -71,6 +79,7 @@ namespace MPL::TuningUtil
         std::vector<std::string> lightingTemplateExclusions;
         PluginFilter lightingTemplatePluginInclusions;
         PluginFilter lightingTemplatePluginExclusions;
+        LightingTemplateFilter lightingTemplateFilter;
         std::map<std::string, double> filteredLightingTemplateAdjustments;
         std::vector<std::string> enableTemplateInherit;
         std::vector<std::string> cellExclusions;

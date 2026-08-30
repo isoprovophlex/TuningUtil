@@ -13,6 +13,8 @@ namespace MPL::LightingPatcher
         SettingLink ambientColors;
         SettingLink fogFar = std::tuple{ std::string("ambientColors"), 1.0 };
         SettingLink fogNear = std::tuple{ std::string("ambientColors"), 1.0 };
+
+        bool operator==(const InteriorLinks&) const = default;
     };
 
     struct InteriorColorSettings
