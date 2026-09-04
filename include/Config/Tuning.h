@@ -8,7 +8,7 @@ namespace MPL::TuningUtil
     struct Links
     {
         WeatherPatcher::WeatherLinks weather;
-        LightingPatcher::InteriorLinks interior;
+        LightingPatcher::LightingLinks lighting;
     };
 
     struct WeatherFilter
@@ -59,10 +59,9 @@ namespace MPL::TuningUtil
         WeatherPatcher::CompressionSettings betweenWeatherCompression;
         WeatherPatcher::CompressionSettings withinWeatherCompression;
         WeatherPatcher::CompressionAnchorSettings compressionAnchor;
-        WeatherPatcher::DynamicAmbientSettings dynamicAmbientBetween;
-        WeatherPatcher::DynamicAmbientSettings dynamicSunlightBetween;
         WeatherFilter weatherInclusions;
         WeatherFilter weatherExclusions;
+        PluginFilter weatherPluginOwnership;
         PluginFilter pluginInclusions;
         PluginFilter pluginExclusions;
         std::map<std::string, double> filteredWeatherAdjustments;
@@ -70,15 +69,17 @@ namespace MPL::TuningUtil
         WeatherFilter effectPointLightInclusions;
         WeatherFilter effectPointLightExclusions;
 
-        LightingPatcher::InteriorColorSettings intBrightnessMultiplier;
-        LightingPatcher::InteriorColorSettings intSaturationMultiplier;
-        LightingPatcher::InteriorHueShiftSettings intHueShift;
-        WeatherPatcher::AmbientHueScales intAmbientHueScales;
-        WeatherPatcher::HueRanges intHueRanges;
-        double intFogMaxMultiplier = 1.0;
-        WeatherPatcher::ImageSpaceSettings intImageSpace;
+        LightingPatcher::LightingColorSettings lightBrightnessMultiplier;
+        LightingPatcher::LightingColorSettings lightSaturationMultiplier;
+        LightingPatcher::LightingHueShiftSettings lightHueShift;
+        WeatherPatcher::AmbientHueScales lightAmbientHueScales;
+        WeatherPatcher::HueRanges lightHueRanges;
+        double lightFogPowerMultiplier = 1.0;
+        double lightFogMaxMultiplier = 1.0;
+        WeatherPatcher::ImageSpaceSettings lightImageSpace;
         std::vector<std::string> lightingTemplateInclusions;
         std::vector<std::string> lightingTemplateExclusions;
+        PluginFilter lightingTemplatePluginOwnership;
         PluginFilter lightingTemplatePluginInclusions;
         PluginFilter lightingTemplatePluginExclusions;
         LightingTemplateFilter lightingTemplateFilter;

@@ -20,7 +20,7 @@ namespace MPL::ImageSpacePatcher
         using ImageSpaceSet = std::unordered_set<RE::TESImageSpace*>;
         using SettingsMap = std::unordered_map<RE::TESImageSpace*, WeatherPatcher::ImageSpaceSettings>;
 
-        struct InteriorImageSpaceCache
+        struct LightingImageSpaceCache
         {
             bool initialized = false;
             ImageSpaceSet imageSpaces;
@@ -34,9 +34,9 @@ namespace MPL::ImageSpacePatcher
             bool refreshPending = false;
         };
 
-        InteriorImageSpaceCache& GetInteriorImageSpaceCache()
+        LightingImageSpaceCache& GetLightingImageSpaceCache()
         {
-            static InteriorImageSpaceCache cache;
+            static LightingImageSpaceCache cache;
             return cache;
         }
 
@@ -146,6 +146,7 @@ namespace MPL::ImageSpacePatcher
             apply(a_imageSpace->data.cinematic.saturation, a_settings.saturationMultiplier);
             apply(a_imageSpace->data.cinematic.brightness, a_settings.brightnessMultiplier);
             apply(a_imageSpace->data.cinematic.contrast, a_settings.contrastMultiplier);
+            apply(a_imageSpace->data.tint.amount, a_settings.tintStrengthMultiplier);
             apply(a_imageSpace->data.hdr.sunlightScale, a_settings.sunlightScaleMultiplier);
             apply(a_imageSpace->data.hdr.skyScale, a_settings.skyScaleMultiplier);
         }
@@ -155,11 +156,12 @@ namespace MPL::ImageSpacePatcher
             a_target.cinematic.saturation = a_source.cinematic.saturation;
             a_target.cinematic.brightness = a_source.cinematic.brightness;
             a_target.cinematic.contrast = a_source.cinematic.contrast;
+            a_target.tint.amount = a_source.tint.amount;
             a_target.hdr.sunlightScale = a_source.hdr.sunlightScale;
             a_target.hdr.skyScale = a_source.hdr.skyScale;
         }
 
-        void SynchronizeCurrentInteriorImageSpace(const SettingsMap& a_settings)
+        void SynchronizeCurrentLightingImageSpace(const SettingsMap& a_settings)
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto* cell = player ? player->GetParentCell() : nullptr;
@@ -193,16 +195,16 @@ namespace MPL::ImageSpacePatcher
             CopyAdjustedFields(manager->GetImageSpaceData().baseData, imageSpace->data);
         }
 
-        const ImageSpaceSet& GetInteriorImageSpaces()
+        const ImageSpaceSet& GetLightingImageSpaces()
         {
-            auto& cache = GetInteriorImageSpaceCache();
+            auto& cache = GetLightingImageSpaceCache();
             if (cache.initialized)
             {
                 return cache.imageSpaces;
             }
             cache.initialized = true;
 
-            std::size_t interiorCells = 0;
+            std::size_t lightingCells = 0;
             std::size_t imageSpaceReferences = 0;
             const auto& [forms, lock] = RE::TESForm::GetAllForms();
             const RE::BSReadLockGuard guard{ lock };
@@ -220,7 +222,7 @@ namespace MPL::ImageSpacePatcher
                 {
                     continue;
                 }
-                ++interiorCells;
+                ++lightingCells;
                 const auto* extra = cell->extraList.GetByType<RE::ExtraCellImageSpace>();
                 if (extra && extra->imageSpace)
                 {
@@ -230,10 +232,10 @@ namespace MPL::ImageSpacePatcher
             }
 
             logger::info(
-                "[Image Space] interior classification | records={} | references={} | cells={}",
+                "[Image Space] lighting classification | records={} | references={} | cells={}",
                 cache.imageSpaces.size(),
                 imageSpaceReferences,
-                interiorCells);
+                lightingCells);
             return cache.imageSpaces;
         }
 
@@ -261,14 +263,14 @@ namespace MPL::ImageSpacePatcher
             imageSpace->data.hdr.white = white;
         }
 
-        const auto& intImageSpaces = GetInteriorImageSpaces();
-        SettingsMap interiorSettings;
+        const auto& lightImageSpaces = GetLightingImageSpaces();
+        SettingsMap lightingSettings;
         SettingsMap exteriorSettings;
         ImageSpaceSet explicitWhiteTargets;
 
-        static constexpr std::array interiorRoots{ std::string_view{ "intImageSpace" } };
+        static constexpr std::array lightingRoots{ std::string_view{ "lightImageSpace" } };
         std::vector<std::string> activeLightingProfiles;
-        for (auto profileName : TuningUtil::GetProfilesWithSettings(interiorRoots))
+        for (auto profileName : TuningUtil::GetProfilesWithSettings(lightingRoots))
         {
             const auto& profileSettings = TuningUtil::GetSettings(profileName);
             if (profileSettings.EnableProfile)
@@ -279,15 +281,15 @@ namespace MPL::ImageSpacePatcher
         if (!activeLightingProfiles.empty())
         {
             const auto settings = TuningUtil::ResolveSettingsStack(activeLightingProfiles);
-            const auto& category = settings.intImageSpace;
-            for (auto* imageSpace : intImageSpaces)
+            const auto& category = settings.lightImageSpace;
+            for (auto* imageSpace : lightImageSpaces)
             {
-                interiorSettings[imageSpace] = category;
+                lightingSettings[imageSpace] = category;
             }
             DetailedLogging::Info(
-                "[Image Space] interior | profiles={} | targets={}",
+                "[Image Space] lighting | profiles={} | targets={}",
                 activeLightingProfiles.size(),
-                intImageSpaces.size());
+                lightImageSpaces.size());
         }
 
         struct ActiveWeatherProfile
@@ -295,10 +297,28 @@ namespace MPL::ImageSpacePatcher
             std::string profileName;
             TuningUtil::PluginFilter inclusions;
             TuningUtil::PluginFilter exclusions;
-            bool catchAll;
+        };
+
+        struct WeatherPluginOwner
+        {
+            std::string profileName;
+            TuningUtil::PluginFilter ownership;
         };
 
         std::vector<ActiveWeatherProfile> activeWeatherProfiles;
+        std::vector<WeatherPluginOwner> weatherPluginOwners;
+        for (const auto& profile : TuningUtil::GetProfiles())
+        {
+            auto profileName = profile.name;
+            const auto& settings = TuningUtil::GetSettings(profileName);
+            if (settings.EnableProfile && !PluginFilterEmpty(settings.weatherPluginOwnership))
+            {
+                weatherPluginOwners.push_back({
+                    profile.name,
+                    settings.weatherPluginOwnership,
+                });
+            }
+        }
         static constexpr std::array exteriorRoots{ std::string_view{ "exteriorImageSpace" } };
         for (auto& profileName : TuningUtil::GetProfilesWithSettings(exteriorRoots))
         {
@@ -314,12 +334,10 @@ namespace MPL::ImageSpacePatcher
             {
                 continue;
             }
-            const auto catchAll = PluginFilterEmpty(settings.pluginInclusions);
             activeWeatherProfiles.push_back({
                 profileName,
                 settings.pluginInclusions,
                 settings.pluginExclusions,
-                catchAll,
             });
         }
 
@@ -327,24 +345,28 @@ namespace MPL::ImageSpacePatcher
         std::unordered_map<std::string, TuningUtil::Settings> resolvedStacks;
         for (auto* imageSpace : dataHandler->GetFormArray<RE::TESImageSpace>())
         {
-            if (!imageSpace || intImageSpaces.contains(imageSpace))
+            if (!imageSpace || lightImageSpaces.contains(imageSpace))
             {
                 continue;
             }
-            const auto claimed = std::ranges::any_of(activeWeatherProfiles, [&](const auto& a_profile)
+            const WeatherPluginOwner* owner = nullptr;
+            for (const auto& candidate : weatherPluginOwners)
             {
-                return !a_profile.catchAll &&
-                       !MatchesPluginFilter(imageSpace, a_profile.exclusions) &&
-                       MatchesPluginFilter(imageSpace, a_profile.inclusions);
-            });
+                if (MatchesPluginFilter(imageSpace, candidate.ownership))
+                {
+                    owner = std::addressof(candidate);
+                }
+            }
             std::vector<std::string> matchingProfiles;
             std::string signature;
             for (const auto& profile : activeWeatherProfiles)
             {
                 const auto excluded = MatchesPluginFilter(imageSpace, profile.exclusions);
-                const auto targeted = !excluded &&
-                                      (profile.catchAll ? !claimed :
-                                                          MatchesPluginFilter(imageSpace, profile.inclusions));
+                const auto withinOwnership = !owner ||
+                                             Config::IEquals(owner->profileName, profile.profileName);
+                const auto targeted = withinOwnership && !excluded &&
+                                      (PluginFilterEmpty(profile.inclusions) ||
+                                       MatchesPluginFilter(imageSpace, profile.inclusions));
                 if (targeted)
                 {
                     matchingProfiles.push_back(profile.profileName);
@@ -367,10 +389,9 @@ namespace MPL::ImageSpacePatcher
         for (const auto& profile : activeWeatherProfiles)
         {
             DetailedLogging::Info(
-                "[Image Space] exterior | profile={} | targets={} | scope={}",
+                "[Image Space] exterior | profile={} | targets={}",
                 profile.profileName,
-                profileTargetCounts[profile.profileName],
-                profile.catchAll ? "unclaimed" : "plugin");
+                profileTargetCounts[profile.profileName]);
         }
 
         const auto applySettings = [&](const SettingsMap& a_settings)
@@ -384,15 +405,15 @@ namespace MPL::ImageSpacePatcher
                 }
             }
         };
-        applySettings(interiorSettings);
+        applySettings(lightingSettings);
         applySettings(exteriorSettings);
-        SynchronizeCurrentInteriorImageSpace(interiorSettings);
+        SynchronizeCurrentLightingImageSpace(lightingSettings);
 
         CSTonemapping::SetForcedTargets(explicitWhiteTargets);
 
         logger::info(
-            "[Image Space] apply | interior={} | exterior={} | forcedTonemapping={}",
-            intImageSpaces.size(),
+            "[Image Space] apply | lighting={} | exterior={} | forcedTonemapping={}",
+            lightImageSpaces.size(),
             exteriorSettings.size(),
             explicitWhiteTargets.size());
     }
@@ -452,7 +473,7 @@ namespace MPL::ImageSpacePatcher
 
     void ReleaseRuntimeState()
     {
-        GetInteriorImageSpaceCache() = {};
+        GetLightingImageSpaceCache() = {};
         auto& monitor = GetRuntimeMonitorCache();
         {
             const std::scoped_lock lock(monitor.lock);

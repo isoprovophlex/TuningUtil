@@ -160,11 +160,11 @@ namespace MPL::SliderCreator
             };
         }
 
-        bool IsInteriorLinkableSetting(const std::string_view a_setting)
+        bool IsLightingLinkableSetting(const std::string_view a_setting)
         {
-            return a_setting.starts_with("intBrightnessMultiplier.") ||
-                   a_setting.starts_with("intSaturationMultiplier.") ||
-                   a_setting.starts_with("intHueShift.");
+            return a_setting.starts_with("lightBrightnessMultiplier.") ||
+                   a_setting.starts_with("lightSaturationMultiplier.") ||
+                   a_setting.starts_with("lightHueShift.");
         }
 
         Definition ReadDefinition(yyjson_val* a_control)
@@ -174,9 +174,8 @@ namespace MPL::SliderCreator
             result.label = StringMember(a_control, "label").value_or("");
             result.customLinks = ReadCustomLinks(a_control);
             result.hueScales = ReadHueScales(a_control);
-            result.advanced = BooleanMember(a_control, "advanced");
+            result.ignoreProfileFilters = BooleanMember(a_control, "ignoreProfileFilters");
             result.invert = BooleanMember(a_control, "invert");
-            result.defaultValue = NumberMember(a_control, "default");
             result.minimum = NumberMember(a_control, "min");
             result.maximum = NumberMember(a_control, "max");
             result.step = NumberMember(a_control, "step");
@@ -233,7 +232,7 @@ namespace MPL::SliderCreator
                 result.include = ReadFilter(yyjson_obj_get(baseLightFilter, "include"));
                 result.exclude = ReadFilter(yyjson_obj_get(baseLightFilter, "exclude"));
             }
-            result.filtered = structured || result.useTimes ||
+            result.filtered = structured || result.ignoreProfileFilters || result.useTimes ||
                               result.hueScales ||
                               result.filterDomain == FilterDomain::lightingTemplate ||
                               result.filterDomain == FilterDomain::baseLight ||
@@ -290,7 +289,6 @@ namespace MPL::SliderCreator
                 std::string_view("text"),
                 std::string_view("description"),
                 std::string_view("separatorText"),
-                std::string_view("boxStart"),
                 std::string_view("dropBoxStart"),
                 std::string_view("ambientWithinGauge"),
                 std::string_view("ambientBetweenGauge"),
@@ -376,6 +374,13 @@ namespace MPL::SliderCreator
                    yyjson_mut_obj_add_val(a_document, a_parent, a_name.data(), filter);
         }
 
+        double NormalizeSliderNumber(const double a_value)
+        {
+            constexpr double precision = 1000.0;
+            const auto result = std::round(a_value * precision) / precision;
+            return result == 0.0 ? 0.0 : result;
+        }
+
         bool AddCustomLinks(
             yyjson_mut_doc* a_document,
             yyjson_mut_val* a_parent,
@@ -389,7 +394,7 @@ namespace MPL::SliderCreator
                 auto* value = yyjson_mut_arr(a_document);
                 if (!value ||
                     !yyjson_mut_arr_add_strncpy(a_document, value, source.data(), source.size()) ||
-                    !yyjson_mut_arr_add_real(a_document, value, scale) ||
+                    !yyjson_mut_arr_add_real(a_document, value, NormalizeSliderNumber(scale)) ||
                     !yyjson_mut_obj_add_val(a_document, links, target.c_str(), value))
                     return false;
             }
@@ -403,9 +408,6 @@ namespace MPL::SliderCreator
                 !AddString(a_document, control, "id", a_definition.id) ||
                 !AddString(a_document, control, "label", a_definition.label))
                 return nullptr;
-            if (a_definition.advanced && !yyjson_mut_obj_add_bool(a_document, control, "advanced", true))
-                return nullptr;
-
             if (!a_definition.filtered && a_definition.settings.size() == 1)
             {
                 if (!AddString(a_document, control, "setting", a_definition.settings.front().setting)) return nullptr;
@@ -429,7 +431,11 @@ namespace MPL::SliderCreator
                     auto* setting = yyjson_mut_obj(a_document);
                     if (!setting || !AddString(a_document, setting, "setting", target.setting) ||
                         (a_definition.filtered &&
-                            !yyjson_mut_obj_add_real(a_document, setting, "scale", target.scale)) ||
+                            !yyjson_mut_obj_add_real(
+                                a_document,
+                                setting,
+                                "scale",
+                                NormalizeSliderNumber(target.scale))) ||
                         !yyjson_mut_arr_append(settings, setting))
                         return nullptr;
                 }
@@ -439,6 +445,9 @@ namespace MPL::SliderCreator
             if (a_definition.customLinks && !AddCustomLinks(a_document, control, *a_definition.customLinks))
                 return nullptr;
 
+            if (a_definition.ignoreProfileFilters &&
+                !yyjson_mut_obj_add_bool(a_document, control, "ignoreProfileFilters", true))
+                return nullptr;
             if (a_definition.invert && !yyjson_mut_obj_add_bool(a_document, control, "invert", true)) return nullptr;
             if (a_definition.useTimes)
             {
@@ -479,23 +488,35 @@ namespace MPL::SliderCreator
             {
                 const auto& scales = *a_definition.hueScales;
                 auto* value = yyjson_mut_obj(a_document);
-                if (!value || !yyjson_mut_obj_add_real(a_document, value, "red", scales.red) ||
-                    !yyjson_mut_obj_add_real(a_document, value, "orange", scales.orange) ||
-                    !yyjson_mut_obj_add_real(a_document, value, "yellow", scales.yellow) ||
-                    !yyjson_mut_obj_add_real(a_document, value, "green", scales.green) ||
-                    !yyjson_mut_obj_add_real(a_document, value, "teal", scales.teal) ||
-                    !yyjson_mut_obj_add_real(a_document, value, "blue", scales.blue) ||
-                    !yyjson_mut_obj_add_real(a_document, value, "magenta", scales.magenta) ||
+                const auto addScale = [&](const char* a_key, const double a_scale)
+                {
+                    return yyjson_mut_obj_add_real(
+                        a_document,
+                        value,
+                        a_key,
+                        NormalizeSliderNumber(a_scale));
+                };
+                if (!value || !addScale("red", scales.red) ||
+                    !addScale("orange", scales.orange) ||
+                    !addScale("yellow", scales.yellow) ||
+                    !addScale("green", scales.green) ||
+                    !addScale("teal", scales.teal) ||
+                    !addScale("blue", scales.blue) ||
+                    !addScale("magenta", scales.magenta) ||
                     !yyjson_mut_obj_add_val(a_document, control, "hueScales", value))
                     return nullptr;
             }
 
             const auto addNumber = [&](const char* a_key, const std::optional<double> a_value)
             {
-                return !a_value || yyjson_mut_obj_add_real(a_document, control, a_key, *a_value);
+                return !a_value || yyjson_mut_obj_add_real(
+                                       a_document,
+                                       control,
+                                       a_key,
+                                       NormalizeSliderNumber(*a_value));
             };
-            if (!addNumber("default", a_definition.defaultValue) || !addNumber("min", a_definition.minimum) ||
-                !addNumber("max", a_definition.maximum) || !addNumber("step", a_definition.step) ||
+            if (!addNumber("min", a_definition.minimum) || !addNumber("max", a_definition.maximum) ||
+                !addNumber("step", a_definition.step) ||
                 !addNumber("width", a_definition.width))
                 return nullptr;
             if (!a_definition.format.empty() && !AddString(a_document, control, "format", a_definition.format)) return nullptr;
@@ -522,13 +543,16 @@ namespace MPL::SliderCreator
         {
             if (!a_definition.customLinks) return true;
 
-            const bool weather = a_definition.filtered && a_definition.filterDomain == FilterDomain::weather;
+            const bool weather = a_definition.filtered &&
+                                 a_definition.filterDomain == FilterDomain::weather &&
+                                 std::ranges::all_of(a_entries, [](const auto* a_entry)
+                                 { return a_entry->linkable; });
             const bool lighting =
                 (a_definition.filtered && a_definition.filterDomain == FilterDomain::lightingTemplate &&
                     std::ranges::all_of(a_entries, [](const auto* a_entry)
                         { return a_entry->filterOperation == SliderSettingCatalog::FilterOperation::brightness; })) ||
                 (!a_definition.filtered && std::ranges::all_of(a_definition.settings, [](const auto& a_target)
-                    { return IsInteriorLinkableSetting(a_target.setting); }));
+                    { return IsLightingLinkableSetting(a_target.setting); }));
             if (!weather && !lighting)
             {
                 a_error = "Custom links apply only to linkable Weather and Lighting sliders.";
@@ -623,6 +647,16 @@ namespace MPL::SliderCreator
                 entries.push_back(entry);
             }
             if (!ValidateCustomLinks(a_definition, entries, a_error)) return false;
+            if (a_definition.ignoreProfileFilters && !a_definition.filtered)
+            {
+                a_error = "Ignore Profile Filters applies only to sliders with record filters.";
+                return false;
+            }
+            if (a_definition.ignoreProfileFilters && a_definition.filterDomain == FilterDomain::baseLight)
+            {
+                a_error = "Base Light sliders do not have a profile-level record filter to ignore.";
+                return false;
+            }
             if (a_definition.filtered)
             {
                 if (a_definition.filterDomain == FilterDomain::baseLight)
@@ -656,12 +690,14 @@ namespace MPL::SliderCreator
                     for (const auto* entry : entries)
                     {
                         if (entry->domain != SliderSettingCatalog::Domain::lighting ||
-                            (!entry->path.starts_with("intBrightnessMultiplier.") &&
-                                entry->path != "intFogMaxMultiplier") ||
+                            (!entry->path.starts_with("lightBrightnessMultiplier.") &&
+                                entry->path != "lightFogPowerMultiplier" &&
+                                entry->path != "lightFogMaxMultiplier") ||
                             (entry->filterOperation != SliderSettingCatalog::FilterOperation::brightness &&
+                                entry->filterOperation != SliderSettingCatalog::FilterOperation::fogPower &&
                                 entry->filterOperation != SliderSettingCatalog::FilterOperation::fogStrength))
                         {
-                            a_error = "Lighting Template filters support only Lighting brightness and Fog Strength settings.";
+                            a_error = "Lighting Template filters support only Lighting brightness, Fog Power, and Fog Strength settings.";
                             return false;
                         }
                         if (operation && operation != entry->filterOperation)
@@ -685,7 +721,7 @@ namespace MPL::SliderCreator
                         if (entry->domain != SliderSettingCatalog::Domain::weather ||
                             !SliderSettingCatalog::IsFilteredOperation(entry->filterOperation))
                         {
-                            a_error = "Filtered sliders support only weather brightness, saturation, and hue-shift settings.";
+                            a_error = "Filtered sliders support only weather brightness, saturation, hue-shift, and volumetric-lighting intensity settings.";
                             return false;
                         }
                         if (operation && operation != entry->filterOperation)
@@ -814,8 +850,8 @@ namespace MPL::SliderCreator
         bool KnownSliderKey(const std::string_view a_key)
         {
             static constexpr std::array keys{
-                "type", "id", "label", "tooltip", "link", "localLink", "customLinks", "hueScales", "setting", "settings",
-                "advanced", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "default", "min", "max", "step", "width", "format",
+                "type", "id", "label", "customLinks", "hueScales", "setting", "settings",
+                "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
         }
@@ -920,6 +956,37 @@ namespace MPL::SliderCreator
             }
             return WriteDocument(a_path, document.get(), a_error);
         }
+
+        bool RemoveRootMember(
+            const std::filesystem::path& a_path,
+            const std::string_view a_key,
+            std::string& a_error)
+        {
+            const auto text = ReadText(a_path);
+            Document source(text ?
+                                yyjson_read(
+                                    const_cast<char*>(text->data()),
+                                    text->size(),
+                                    YYJSON_READ_NOFLAG) :
+                                nullptr);
+            auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+            if (!yyjson_is_obj(sourceRoot))
+            {
+                a_error = std::format("{} does not contain a JSON object.", a_path.filename().string());
+                return false;
+            }
+
+            MutableDocument document(yyjson_mut_doc_new(nullptr));
+            auto* root = document ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+            if (!document || !root)
+            {
+                a_error = std::format("{} could not be copied for editing.", a_path.filename().string());
+                return false;
+            }
+            yyjson_mut_doc_set_root(document.get(), root);
+            yyjson_mut_obj_remove_key(root, a_key.data());
+            return WriteDocument(a_path, document.get(), a_error);
+        }
     }  // namespace
 
     std::optional<ProfilePluginGating> LoadProfilePluginGating(
@@ -980,7 +1047,6 @@ namespace MPL::SliderCreator
             return false;
         }
         yyjson_mut_doc_set_root(document.get(), root);
-        yyjson_mut_obj_remove_key(root, "PluginIndependency");
         if (!ReplaceStringArray(document.get(), root, "PluginDependency", a_gating.dependencies) ||
             !ReplaceStringArray(document.get(), root, "DisableProfile", a_gating.disabledProfiles))
         {
@@ -1023,6 +1089,10 @@ namespace MPL::SliderCreator
         {
             a_error = "Select an ambient anchor weather.";
             return false;
+        }
+        if (IEquals(weather, "SkyrimClear"))
+        {
+            return RemoveRootMember(a_path, "ambientAnchorWeather", a_error);
         }
         return ReplaceRootStringMember(a_path, "ambientAnchorWeather", weather, a_error);
     }
@@ -1269,7 +1339,7 @@ namespace MPL::SliderCreator
         {
             std::ofstream settingsFile(profileDirectory / "profileSettings.json", std::ios::binary | std::ios::trunc);
             settingsFile << std::format(
-                "{{\n  \"profile\": \"{}\",\n  \"EnableProfile\": true,\n  \"ShowAdvanced\": false,\n  \"profilePriority\": 0\n}}\n",
+                "{{\n  \"profile\": \"{}\",\n  \"EnableProfile\": true\n}}\n",
                 profileName);
             if (!settingsFile)
             {
@@ -1355,7 +1425,6 @@ namespace MPL::SliderCreator
         const std::string& a_kind,
         const std::string& a_label,
         const std::string& a_setting,
-        const bool a_advanced,
         std::string& a_error,
         const bool a_defaultOpen)
     {
@@ -1383,13 +1452,12 @@ namespace MPL::SliderCreator
         auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
         auto* module = yyjson_mut_obj(document.get());
         const auto labelKey = kind == "text" || kind == "separatorText" ||
-                                      kind == "boxStart" || kind == "dropBoxStart" ?
+                                      kind == "dropBoxStart" ?
                                   "label" : "header";
         const auto dropBoxStart = kind == "dropBoxStart";
         if (!yyjson_mut_is_arr(modules) || !module || !AddString(document.get(), module, "type", kind) ||
-            (!a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
+            (kind != "boxStart" && !a_label.empty() && !AddString(document.get(), module, labelKey, a_label)) ||
             (!a_setting.empty() && !AddString(document.get(), module, "setting", a_setting)) ||
-            (a_advanced && !yyjson_mut_obj_add_bool(document.get(), module, "advanced", true)) ||
             (dropBoxStart && !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", a_defaultOpen)) ||
             !yyjson_mut_arr_append(modules, module))
         {
@@ -1572,6 +1640,87 @@ namespace MPL::SliderCreator
             return false;
         }
         if (!RenameMutableModule(document.get(), module, a_name, a_error)) return false;
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
+    bool UpdateModule(
+        const std::filesystem::path& a_path,
+        const std::size_t a_pageIndex,
+        const std::size_t a_controlIndex,
+        const ModuleUpdate& a_update,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        if (!root)
+        {
+            a_error = "The menu layout could not be read.";
+            return false;
+        }
+        yyjson_mut_doc_set_root(document.get(), root);
+        auto* pages = yyjson_mut_obj_get(root, "pages");
+        auto* page = yyjson_mut_is_arr(pages) ? yyjson_mut_arr_get(pages, a_pageIndex) : nullptr;
+        auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
+        auto* module = yyjson_mut_is_arr(modules) ? yyjson_mut_arr_get(modules, a_controlIndex) : nullptr;
+        auto* kindValue = yyjson_mut_is_obj(module) ? yyjson_mut_obj_get(module, "type") : nullptr;
+        if (!yyjson_mut_is_str(kindValue))
+        {
+            a_error = "The selected module is unavailable.";
+            return false;
+        }
+
+        const std::string_view kind(yyjson_mut_get_str(kindValue), yyjson_mut_get_len(kindValue));
+        const auto name = Trim(a_update.name);
+        if (IEquals(kind, "description"))
+        {
+            const auto description = a_update.text ? Trim(*a_update.text) : std::string{};
+            if (description.empty())
+            {
+                a_error = "Enter a description.";
+                return false;
+            }
+            yyjson_mut_obj_remove_key(module, "displayName");
+            yyjson_mut_obj_remove_key(module, "header");
+            yyjson_mut_obj_remove_key(module, "text");
+            yyjson_mut_obj_remove_key(module, "defaultOpen");
+            if ((!name.empty() && !AddString(document.get(), module, "header", name)) ||
+                !AddString(document.get(), module, "text", description) ||
+                (a_update.defaultOpen.value_or(false) &&
+                    !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", true)))
+            {
+                a_error = "The description could not be updated.";
+                return false;
+            }
+        }
+        else if (IEquals(kind, "text") || IEquals(kind, "separatorText") ||
+                 IEquals(kind, "dropBoxStart"))
+        {
+            yyjson_mut_obj_remove_key(module, "displayName");
+            yyjson_mut_obj_remove_key(module, "label");
+            if (!name.empty() && !AddString(document.get(), module, "label", name))
+            {
+                a_error = "The element text could not be updated.";
+                return false;
+            }
+            if (IEquals(kind, "dropBoxStart"))
+            {
+                yyjson_mut_obj_remove_key(module, "defaultOpen");
+                if (a_update.defaultOpen.value_or(false) &&
+                    !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", true))
+                {
+                    a_error = "The drop box state could not be updated.";
+                    return false;
+                }
+            }
+        }
+        else if (!RenameMutableModule(document.get(), module, name, a_error))
+        {
+            return false;
+        }
         return WriteDocument(a_path, document.get(), a_error);
     }
 

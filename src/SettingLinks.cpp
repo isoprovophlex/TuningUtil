@@ -150,7 +150,8 @@ namespace MPL::WeatherPatcher
                 LinkField{ "skyLower", &a_settings.skyLower }, LinkField{ "horizon", &a_settings.horizon },
                 LinkField{ "sun", &a_settings.sun }, LinkField{ "sunGlare", &a_settings.sunGlare },
                 LinkField{ "moonGlare", &a_settings.moonGlare }, LinkField{ "stars", &a_settings.stars },
-                LinkField{ "cloudLayers", &a_settings.cloudLayers }
+                LinkField{ "cloudLayers", &a_settings.cloudLayers },
+                LinkField{ "volumetricLighting", &a_settings.volumetricLighting }
             };
         }
 
@@ -182,7 +183,8 @@ namespace MPL::WeatherPatcher
                 a_settings.ambient, a_settings.sunlight, a_settings.effectLighting, a_settings.fogFar,
                 a_settings.fogNear, a_settings.water, a_settings.skyStatics, a_settings.skyUpper,
                 a_settings.skyLower, a_settings.horizon, a_settings.sun, a_settings.sunGlare,
-                a_settings.moonGlare, a_settings.stars, a_settings.cloudLayers },
+                a_settings.moonGlare, a_settings.stars, a_settings.cloudLayers,
+                a_settings.volumetricLighting },
             .links = links,
         };
     }
@@ -255,11 +257,14 @@ namespace MPL::WeatherPatcher
         return { .values = ResolveLinkedHueShift(HueShiftValues(a_settings), links), .links = links };
     }
 
-    AnchorValues ResolveAnchors(const CompressionAnchorSettings& a_settings, const WeatherLinks& a_links)
+    AnchorValues ResolveAnchors(
+        const CompressionAnchorSettings& a_settings,
+        const WeatherLinks& a_links,
+        const WeatherCompressionAnchors& a_weatherAnchors)
     {
         const auto links = ResolveLinks("links.weather", WeatherFields(a_links));
         const auto values = ResolveLinkedValues(std::array{
-            a_settings.ambient, a_settings.sunlight, a_settings.effectLighting, a_settings.fogFar,
+            a_weatherAnchors.ambient, a_weatherAnchors.sunlight, a_settings.effectLighting, a_settings.fogFar,
             a_settings.fogNear, a_settings.water, a_settings.skyStatics, a_settings.skyUpper,
             a_settings.skyLower, a_settings.horizon, a_settings.sun, a_settings.sunGlare,
             a_settings.moonGlare, a_settings.stars
@@ -271,11 +276,11 @@ namespace MPL::WeatherPatcher
 
 namespace MPL::LightingPatcher
 {
-    InteriorLinkTopology ResolveInteriorLinks(const InteriorLinks& a_links)
+    LightingLinkTopology ResolveLightingLinks(const LightingLinks& a_links)
     {
         using WeatherPatcher::LinkField;
         using WeatherPatcher::ResolveLinks;
-        return ResolveLinks("links.interior", std::array{
+        return ResolveLinks("links.lighting", std::array{
             LinkField{ "ambient", &a_links.ambient },
             LinkField{ "directional", &a_links.directional },
             LinkField{ "ambientColors", &a_links.ambientColors },

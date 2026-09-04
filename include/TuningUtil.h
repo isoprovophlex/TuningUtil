@@ -40,6 +40,7 @@ namespace MPL::TuningUtil
         std::array<bool, RE::TESWeather::ColorTime::kTotal> times{};
         WeatherFilter include;
         WeatherFilter exclude;
+        bool ignoreProfileFilters = false;
         std::optional<WeatherPatcher::AmbientHueScales> hueScales;
         double defaultValue = 1.0;
 
@@ -49,6 +50,7 @@ namespace MPL::TuningUtil
     enum class FilteredLightingTemplateOperation
     {
         brightness,
+        fogPower,
         fogStrength,
     };
 
@@ -66,13 +68,14 @@ namespace MPL::TuningUtil
         std::string id;
         std::string controlID;
         std::vector<FilteredLightingTemplateSetting> settings;
-        std::optional<LightingPatcher::InteriorLinks> customLinks;
+        std::optional<LightingPatcher::LightingLinks> customLinks;
         WeatherFilter include;
         WeatherFilter exclude;
         std::vector<std::string> locationTypeInclusions;
         std::vector<std::string> locationTypeExclusions;
         std::vector<std::string> inclusionMultiLocationExceptions;
         std::vector<std::string> exclusionMultiLocationExceptions;
+        bool ignoreProfileFilters = false;
         double defaultValue = 1.0;
 
         bool operator==(const FilteredLightingTemplateRule&) const = default;
@@ -114,15 +117,15 @@ namespace MPL::TuningUtil
         int priority = 0;
         std::filesystem::path directory;
         std::string ambientAnchorWeather{ "SkyrimClear" };
-        std::optional<double> runtimeAmbientAnchor;
+        std::optional<WeatherPatcher::WeatherCompressionAnchors> runtimeCompressionAnchors;
         std::vector<std::string> disabledProfiles;
         std::vector<std::string> defaultSettingRoots;
         std::vector<FilteredWeatherRule> filteredWeatherRules;
         std::vector<FilteredLightingTemplateRule> filteredLightingTemplateRules;
         std::vector<FilteredBaseLightRule> filteredBaseLightRules;
-        std::vector<std::string> interiorSliderSettings;
-        std::map<std::string, LightingPatcher::InteriorLinks, std::less<>> customInteriorSliderLinks;
-        std::vector<std::string> interiorMenuSettings;
+        std::vector<std::string> lightingSliderSettings;
+        std::map<std::string, LightingPatcher::LightingLinks, std::less<>> customLightingSliderLinks;
+        std::vector<std::string> lightingMenuSettings;
         std::vector<std::string> weatherMenuSettings;
     };
 
@@ -144,10 +147,13 @@ namespace MPL::TuningUtil
     const FilteredLightingTemplateRule* FindFilteredLightingTemplateRule(const std::string&, std::string_view);
     const std::vector<FilteredBaseLightRule>& GetFilteredBaseLightRules(const std::string&);
     const FilteredBaseLightRule* FindFilteredBaseLightRule(const std::string&, std::string_view);
-    LightingPatcher::InteriorLinks ResolveInteriorSliderLinks(
+    LightingPatcher::LightingLinks ResolveLightingSliderLinks(
         std::span<const std::string>,
         std::string_view,
-        const LightingPatcher::InteriorLinks&);
+        const LightingPatcher::LightingLinks&);
+    std::map<std::string, LightingPatcher::LightingLinks, std::less<>> ResolveLightingSliderLinkOverrides(
+        std::span<const std::string>,
+        std::string_view);
     bool ReloadFilteredRules();
     bool SetSliderCreatorPreview(
         std::string&,
@@ -158,6 +164,7 @@ namespace MPL::TuningUtil
         std::string&);
     Settings& GetSettings(std::string&);
     Settings ResolveSettingsStack(std::span<const std::string>);
+    WeatherPatcher::WeatherCompressionAnchors ResolveCompressionAnchors(std::span<const std::string>);
     std::optional<std::string> SerializePresetSettings(std::string&, std::string&);
     std::optional<std::string> ResolvePresetResetSettings(
         std::string&,
@@ -174,7 +181,6 @@ namespace MPL::TuningUtil
     bool SaveSettings(std::string&);
     bool SaveProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);
     bool RestoreProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);
-    bool PromoteUserSettingsToProfile(std::string&, std::string&);
     bool SavePageSettings(std::string&, const std::vector<std::string>&);
     bool RestoreSettings(std::string&);
     bool RestorePageSettings(std::string&, const std::vector<std::string>&);

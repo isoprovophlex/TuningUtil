@@ -4,6 +4,7 @@
 #include <PointLightPatcher.h>
 #include <RecordFilter.h>
 #include <SettingLinks.h>
+#include <SliderLinkMath.h>
 #include <WeatherPatcher.h>
 #include <atomic>
 #include <algorithm>
@@ -80,32 +81,37 @@ namespace MPL::LightingPatcher
         struct Resolution
         {
             std::array<double, kFieldCount> values{};
-            InteriorLinkTopology links{};
+            LightingLinkTopology links{};
         };
 
-        struct InteriorHueShiftResolution
+        struct LightingHueShiftResolution
         {
             std::array<WeatherPatcher::HueShiftBands, kFieldCount> values{};
         };
 
-        InteriorLinkTopology ResolveCategoryLinks(
-            const InteriorLinks& a_links,
+        struct LightingBrightnessResolution
+        {
+            Resolution linked;
+            std::array<double, kFieldCount> direct;
+        };
+
+        LightingLinkTopology ResolveCategoryLinks(
+            const LightingLinks& a_links,
             const std::span<const std::string> a_profileNames,
             const std::string_view a_settingRoot)
         {
-            return ResolveInteriorLinks(TuningUtil::ResolveInteriorSliderLinks(
+            return ResolveLightingLinks(TuningUtil::ResolveLightingSliderLinks(
                 a_profileNames,
                 a_settingRoot,
                 a_links));
         }
 
         Resolution ResolveCategory(
-            const InteriorColorSettings& a_settings,
-            const InteriorLinkTopology& a_links)
+            const std::array<double, kFieldCount>& a_values,
+            const LightingLinkTopology& a_links)
         {
             Resolution result{
-                .values = { a_settings.ambient, a_settings.directional, a_settings.ambientColors,
-                    a_settings.fogFar, a_settings.fogNear },
+                .values = a_values,
                 .links = a_links,
             };
             std::array<bool, kFieldCount> resolved{};
@@ -123,11 +129,37 @@ namespace MPL::LightingPatcher
             return result;
         }
 
-        InteriorHueShiftResolution ResolveHueShiftCategory(
-            const InteriorHueShiftSettings& a_settings,
-            const InteriorLinkTopology& a_links)
+        Resolution ResolveCategory(
+            const LightingColorSettings& a_settings,
+            const LightingLinkTopology& a_links)
         {
-            InteriorHueShiftResolution result{ .values = {
+            return ResolveCategory(std::array{ a_settings.ambient, a_settings.directional, a_settings.ambientColors,
+                                       a_settings.fogFar, a_settings.fogNear }, a_links);
+        }
+
+        LightingBrightnessResolution ResolveBrightnessCategory(
+            const Settings& a_settings,
+            const std::span<const std::string> a_profileNames)
+        {
+            const auto& brightness = a_settings.lightBrightnessMultiplier;
+            std::array values{ brightness.ambient, brightness.directional, brightness.ambientColors,
+                brightness.fogFar, brightness.fogNear };
+            std::array<std::optional<LightingLinkTopology>, kFieldCount> overrides;
+            const auto customLinks = TuningUtil::ResolveLightingSliderLinkOverrides(a_profileNames, "lightBrightnessMultiplier");
+            for (std::size_t field = 0; field < kFieldCount; ++field)
+            {
+                if (const auto custom = customLinks.find(NormalizeProfileName(kFieldNames[field])); custom != customLinks.end())
+                    overrides[field] = ResolveLightingLinks(custom->second);
+            }
+            const auto direct = SliderLinkMath::SeparateContributions(values, overrides);
+            return { ResolveCategory(values, ResolveLightingLinks(a_settings.links.lighting)), direct };
+        }
+
+        LightingHueShiftResolution ResolveHueShiftCategory(
+            const LightingHueShiftSettings& a_settings,
+            const LightingLinkTopology& a_links)
+        {
+            LightingHueShiftResolution result{ .values = {
                 a_settings.ambient,
                 a_settings.directional,
                 a_settings.ambientColors,
@@ -409,45 +441,10 @@ namespace MPL::LightingPatcher
             const std::array<bool, kFieldCount>& a_active,
             const std::array<double, kFieldCount>* a_directMultipliers = nullptr)
         {
-            std::array<double, kFieldCount> gains{};
-            std::array<bool, kFieldCount> resolved{};
-            std::function<double(std::size_t)> resolveGain = [&](const std::size_t a_field)
-            {
-                if (resolved[a_field])
-                {
-                    return gains[a_field];
-                }
-                if (const auto link = a_settings.links[a_field])
-                {
-                    gains[a_field] = std::max(0.0, 1.0 + ((resolveGain(link->index) - 1.0) * link->scale));
-                }
-                else
-                {
-                    gains[a_field] = ConstrainFieldGain(a_data, a_ambientColors, a_field, a_settings.values[a_field]);
-                }
-                resolved[a_field] = true;
-                return gains[a_field];
-            };
-
-            for (std::size_t field = 0; field < kFieldCount; ++field)
-            {
-                resolveGain(field);
-            }
-            if (a_directMultipliers)
-            {
-                for (std::size_t field = 0; field < kFieldCount; ++field)
-                {
-                    const auto multiplier = (*a_directMultipliers)[field];
-                    if (std::abs(multiplier - 1.0) > 0.0001)
-                    {
-                        gains[field] = ConstrainFieldGain(
-                            a_data,
-                            a_ambientColors,
-                            field,
-                            gains[field] * multiplier);
-                    }
-                }
-            }
+            const auto gains = SliderLinkMath::ResolveBrightnessGains(
+                a_settings.values, a_settings.links, a_directMultipliers,
+                [&](const std::size_t a_field, const double a_multiplier)
+                { return ConstrainFieldGain(a_data, a_ambientColors, a_field, a_multiplier); });
             for (std::size_t field = 0; field < kFieldCount; ++field)
             {
                 if (!a_active[field] || std::abs(gains[field] - 1.0) <= 0.0001)
@@ -474,6 +471,19 @@ namespace MPL::LightingPatcher
             const auto baseline = useZeroBaseline ? kZeroFogMaxBaseline : static_cast<double>(a_data.fogClamp);
             const auto value = baseline * multiplier;
             a_data.fogClamp = static_cast<float>(std::clamp(
+                value,
+                -static_cast<double>(std::numeric_limits<float>::max()),
+                static_cast<double>(std::numeric_limits<float>::max())));
+        }
+
+        void ApplyFogPower(RE::INTERIOR_DATA& a_data, const double a_multiplier, const bool a_active)
+        {
+            if (!a_active)
+            {
+                return;
+            }
+            const auto value = static_cast<double>(a_data.fogPower) * std::max(0.0, a_multiplier);
+            a_data.fogPower = static_cast<float>(std::clamp(
                 value,
                 -static_cast<double>(std::numeric_limits<float>::max()),
                 static_cast<double>(std::numeric_limits<float>::max())));
@@ -507,7 +517,7 @@ namespace MPL::LightingPatcher
         void ApplyHueShift(
             RE::INTERIOR_DATA& a_data,
             RE::BGSDirectionalAmbientLightingColors& a_ambientColors,
-            const InteriorHueShiftResolution& a_settings,
+            const LightingHueShiftResolution& a_settings,
             const WeatherPatcher::HueRanges& a_hueRanges,
             const std::array<bool, kFieldCount>& a_active)
         {
@@ -540,6 +550,7 @@ namespace MPL::LightingPatcher
                 .ambientColors = a_ambientColors,
                 .fogFar = a_data.fogColorFar,
                 .fogNear = a_data.fogColorNear,
+                .fogPower = a_data.fogPower,
                 .fogMax = a_data.fogClamp,
             };
         }
@@ -554,6 +565,7 @@ namespace MPL::LightingPatcher
             a_ambientColors = a_baseline.ambientColors;
             a_data.fogColorFar = a_baseline.fogFar;
             a_data.fogColorNear = a_baseline.fogNear;
+            a_data.fogPower = a_baseline.fogPower;
             a_data.fogClamp = a_baseline.fogMax;
         }
 
@@ -576,9 +588,9 @@ namespace MPL::LightingPatcher
                 {
                     continue;
                 }
-                if (auto* interior = cell->GetRuntimeData().cellData.interior)
+                if (auto* lightingData = cell->GetRuntimeData().cellData.interior)
                 {
-                    RestoreBaseline(*interior, interior->directionalAmbientLightingColors, baseline);
+                    RestoreBaseline(*lightingData, lightingData->directionalAmbientLightingColors, baseline);
                 }
             }
         }
@@ -602,6 +614,11 @@ namespace MPL::LightingPatcher
             return (a_data.lightingTemplateInheritanceFlags & RE::INTERIOR_DATA::Inherit::kFogMax).underlying() == 0;
         }
 
+        bool CellFogPowerActive(const RE::INTERIOR_DATA& a_data)
+        {
+            return (a_data.lightingTemplateInheritanceFlags & RE::INTERIOR_DATA::Inherit::kFogPower).underlying() == 0;
+        }
+
         void BuildStartupFilteredLocationTypeFilters();
         void ApplyStartupCellSettings();
 
@@ -613,15 +630,15 @@ namespace MPL::LightingPatcher
         {
             return;
         }
-        auto* interior = a_cell->GetRuntimeData().cellData.interior;
-        if (!interior)
+        auto* lightingData = a_cell->GetRuntimeData().cellData.interior;
+        if (!lightingData)
         {
             return;
         }
 
         Config::StatData::GetSingleton()->cellLightingBaselines.try_emplace(
             a_cell,
-            MakeBaseline(*interior, interior->directionalAmbientLightingColors));
+            MakeBaseline(*lightingData, lightingData->directionalAmbientLightingColors));
     }
 
     void ApplyDataLoaded()
@@ -651,6 +668,7 @@ namespace MPL::LightingPatcher
         {
             std::array<double, kFieldCount> brightness{ 1.0, 1.0, 1.0, 1.0, 1.0 };
             std::array<double, kFieldCount> directBrightness{ 1.0, 1.0, 1.0, 1.0, 1.0 };
+            double fogPower = 1.0;
             double fogStrength = 1.0;
         };
 
@@ -955,26 +973,23 @@ namespace MPL::LightingPatcher
             const FilteredLightingTemplateAdjustments& a_filtered)
         {
             auto* stat = Config::StatData::GetSingleton();
-            const auto brightnessLinks = ResolveCategoryLinks(
-                a_settings.links.interior,
-                a_profileNames,
-                "intBrightnessMultiplier");
             const auto saturationLinks = ResolveCategoryLinks(
-                a_settings.links.interior,
+                a_settings.links.lighting,
                 a_profileNames,
-                "intSaturationMultiplier");
+                "lightSaturationMultiplier");
             const auto hueShiftLinks = ResolveCategoryLinks(
-                a_settings.links.interior,
+                a_settings.links.lighting,
                 a_profileNames,
-                "intHueShift");
-            auto brightness = ResolveCategory(a_settings.intBrightnessMultiplier, brightnessLinks);
-            for (std::size_t field = 0; field < brightness.values.size(); ++field)
+                "lightHueShift");
+            auto brightness = ResolveBrightnessCategory(a_settings, a_profileNames);
+            for (std::size_t field = 0; field < kFieldCount; ++field)
             {
-                brightness.values[field] *= a_filtered.brightness[field];
+                brightness.linked.values[field] *= a_filtered.brightness[field];
+                brightness.direct[field] *= a_filtered.directBrightness[field];
             }
-            const auto saturation = ResolveCategory(a_settings.intSaturationMultiplier, saturationLinks);
-            const auto hueShift = ResolveHueShiftCategory(a_settings.intHueShift, hueShiftLinks);
-            const auto hueScales = WeatherPatcher::ResolveHueScales(a_settings.intAmbientHueScales);
+            const auto saturation = ResolveCategory(a_settings.lightSaturationMultiplier, saturationLinks);
+            const auto hueShift = ResolveHueShiftCategory(a_settings.lightHueShift, hueShiftLinks);
+            const auto hueScales = WeatherPatcher::ResolveHueScales(a_settings.lightAmbientHueScales);
             constexpr std::array<bool, kFieldCount> allFields{ true, true, true, true, true };
 
             std::size_t count = 0;
@@ -998,46 +1013,48 @@ namespace MPL::LightingPatcher
                 ApplyBrightness(
                     lightingTemplate->data,
                     lightingTemplate->directionalAmbientLightingColors,
-                    brightness,
+                    brightness.linked,
                     allFields,
-                    std::addressof(a_filtered.directBrightness));
+                    std::addressof(brightness.direct));
                 ApplyFogMax(
                     lightingTemplate->data,
-                    a_settings.intFogMaxMultiplier * a_filtered.fogStrength,
+                    a_settings.lightFogMaxMultiplier * a_filtered.fogStrength,
+                    true);
+                ApplyFogPower(
+                    lightingTemplate->data,
+                    a_settings.lightFogPowerMultiplier * a_filtered.fogPower,
                     true);
                 ApplySaturation(
                     lightingTemplate->data,
                     lightingTemplate->directionalAmbientLightingColors,
                     saturation,
                     hueScales,
-                    a_settings.intHueRanges,
+                    a_settings.lightHueRanges,
                     allFields);
                 ApplyHueShift(
                     lightingTemplate->data,
                     lightingTemplate->directionalAmbientLightingColors,
                     hueShift,
-                    a_settings.intHueRanges,
+                    a_settings.lightHueRanges,
                     allFields);
                 ++count;
             }
             return count;
         }
 
-        std::size_t ApplyInteriorCells(
+        std::size_t ApplyLightingCells(
             const Settings& a_settings,
             const std::span<const std::string> a_profileNames)
         {
             auto* stat = Config::StatData::GetSingleton();
-            const auto brightness = ResolveCategory(
-                a_settings.intBrightnessMultiplier,
-                ResolveCategoryLinks(a_settings.links.interior, a_profileNames, "intBrightnessMultiplier"));
+            const auto brightness = ResolveBrightnessCategory(a_settings, a_profileNames);
             const auto saturation = ResolveCategory(
-                a_settings.intSaturationMultiplier,
-                ResolveCategoryLinks(a_settings.links.interior, a_profileNames, "intSaturationMultiplier"));
+                a_settings.lightSaturationMultiplier,
+                ResolveCategoryLinks(a_settings.links.lighting, a_profileNames, "lightSaturationMultiplier"));
             const auto hueShift = ResolveHueShiftCategory(
-                a_settings.intHueShift,
-                ResolveCategoryLinks(a_settings.links.interior, a_profileNames, "intHueShift"));
-            const auto hueScales = WeatherPatcher::ResolveHueScales(a_settings.intAmbientHueScales);
+                a_settings.lightHueShift,
+                ResolveCategoryLinks(a_settings.links.lighting, a_profileNames, "lightHueShift"));
+            const auto hueScales = WeatherPatcher::ResolveHueScales(a_settings.lightAmbientHueScales);
 
             std::size_t count = 0;
             for (auto& [cell, baseline] : stat->cellLightingBaselines)
@@ -1046,28 +1063,30 @@ namespace MPL::LightingPatcher
                 {
                     continue;
                 }
-                auto* interior = cell->GetRuntimeData().cellData.interior;
-                if (!interior)
+                auto* lightingData = cell->GetRuntimeData().cellData.interior;
+                if (!lightingData)
                 {
                     continue;
                 }
 
-                RestoreBaseline(*interior, interior->directionalAmbientLightingColors, baseline);
-                const auto activeFields = CellActiveFields(*interior);
-                ApplyBrightness(*interior, interior->directionalAmbientLightingColors, brightness, activeFields);
-                ApplyFogMax(*interior, a_settings.intFogMaxMultiplier, CellFogMaxActive(*interior));
+                RestoreBaseline(*lightingData, lightingData->directionalAmbientLightingColors, baseline);
+                const auto activeFields = CellActiveFields(*lightingData);
+                ApplyBrightness(*lightingData, lightingData->directionalAmbientLightingColors,
+                    brightness.linked, activeFields, std::addressof(brightness.direct));
+                ApplyFogMax(*lightingData, a_settings.lightFogMaxMultiplier, CellFogMaxActive(*lightingData));
+                ApplyFogPower(*lightingData, a_settings.lightFogPowerMultiplier, CellFogPowerActive(*lightingData));
                 ApplySaturation(
-                    *interior,
-                    interior->directionalAmbientLightingColors,
+                    *lightingData,
+                    lightingData->directionalAmbientLightingColors,
                     saturation,
                     hueScales,
-                    a_settings.intHueRanges,
+                    a_settings.lightHueRanges,
                     activeFields);
                 ApplyHueShift(
-                    *interior,
-                    interior->directionalAmbientLightingColors,
+                    *lightingData,
+                    lightingData->directionalAmbientLightingColors,
                     hueShift,
-                    a_settings.intHueRanges,
+                    a_settings.lightHueRanges,
                     activeFields);
                 ++count;
             }
@@ -1174,12 +1193,13 @@ namespace MPL::LightingPatcher
         std::vector<std::string> GetActiveDirectCellProfiles()
         {
             static constexpr std::array roots{
-                std::string_view{ "intBrightnessMultiplier" },
-                std::string_view{ "intSaturationMultiplier" },
-                std::string_view{ "intHueShift" },
-                std::string_view{ "intAmbientHueScales" },
-                std::string_view{ "intHueRanges" },
-                std::string_view{ "intFogMaxMultiplier" },
+                std::string_view{ "lightBrightnessMultiplier" },
+                std::string_view{ "lightSaturationMultiplier" },
+                std::string_view{ "lightHueShift" },
+                std::string_view{ "lightAmbientHueScales" },
+                std::string_view{ "lightHueRanges" },
+                std::string_view{ "lightFogPowerMultiplier" },
+                std::string_view{ "lightFogMaxMultiplier" },
             };
             std::vector<std::string> result;
             for (auto profile : TuningUtil::GetProfilesWithSettings(roots))
@@ -1202,9 +1222,9 @@ namespace MPL::LightingPatcher
             {
                 return;
             }
-            auto* interior = a_cell->GetRuntimeData().cellData.interior;
+            auto* lightingData = a_cell->GetRuntimeData().cellData.interior;
             auto* lightingTemplate = a_cell->GetRuntimeData().lightingTemplate;
-            if (!interior || !lightingTemplate)
+            if (!lightingData || !lightingTemplate)
             {
                 return;
             }
@@ -1220,7 +1240,7 @@ namespace MPL::LightingPatcher
                 {
                     continue;
                 }
-                interior->lightingTemplateInheritanceFlags |= profile.flags;
+                lightingData->lightingTemplateInheritanceFlags |= profile.flags;
                 if (a_profileTargetCounts)
                 {
                     ++(*a_profileTargetCounts)[profile.name];
@@ -1258,8 +1278,9 @@ namespace MPL::LightingPatcher
             std::string name;
             Settings settings;
             RecordFilter::Resolved filter;
-            RecordFilter::Resolved pluginOwnershipFilter;
-            bool ownsPluginTemplates = false;
+            RecordFilter::Resolved ownershipFilter;
+            bool appliesStandardSettings = false;
+            bool declaresOwnership = false;
             struct FilteredRule
             {
                 const TuningUtil::FilteredLightingTemplateRule* rule = nullptr;
@@ -1307,25 +1328,10 @@ namespace MPL::LightingPatcher
                     active[index] = true;
                 }
 
-                const auto links = ResolveInteriorLinks(*a_rule.customLinks);
-                std::array<std::uint8_t, kFieldCount> states{};
-                std::function<bool(std::size_t)> resolve = [&](const std::size_t a_field)
-                {
-                    if (states[a_field] == 2) return active[a_field];
-                    if (states[a_field] == 1) return false;
-                    states[a_field] = 1;
-                    if (links[a_field])
-                    {
-                        const auto source = links[a_field]->index;
-                        active[a_field] = resolve(source);
-                        if (active[a_field])
-                            values[a_field] = 1.0 + ((values[source] - 1.0) * links[a_field]->scale);
-                    }
-                    states[a_field] = 2;
-                    return active[a_field];
-                };
+                const auto links = ResolveLightingLinks(*a_rule.customLinks);
+                const auto contribution = SliderLinkMath::ResolveContribution(values, active, links);
                 for (std::size_t field = 0; field < kFieldCount; ++field)
-                    if (resolve(field)) a_adjustments.directBrightness[field] *= values[field];
+                    a_adjustments.directBrightness[field] *= contribution[field];
                 return;
             }
 
@@ -1335,6 +1341,11 @@ namespace MPL::LightingPatcher
                 if (setting.operation == TuningUtil::FilteredLightingTemplateOperation::fogStrength)
                 {
                     a_adjustments.fogStrength *= multiplier;
+                    continue;
+                }
+                if (setting.operation == TuningUtil::FilteredLightingTemplateOperation::fogPower)
+                {
+                    a_adjustments.fogPower *= multiplier;
                     continue;
                 }
                 const auto field = std::ranges::find_if(kFieldNames, [&](const auto a_name)
@@ -1348,12 +1359,13 @@ namespace MPL::LightingPatcher
         std::vector<ActiveTemplateProfile> GetActiveTemplateProfiles()
         {
             static constexpr std::array roots{
-                std::string_view{ "intBrightnessMultiplier" },
-                std::string_view{ "intSaturationMultiplier" },
-                std::string_view{ "intHueShift" },
-                std::string_view{ "intAmbientHueScales" },
-                std::string_view{ "intHueRanges" },
-                std::string_view{ "intFogMaxMultiplier" },
+                std::string_view{ "lightBrightnessMultiplier" },
+                std::string_view{ "lightSaturationMultiplier" },
+                std::string_view{ "lightHueShift" },
+                std::string_view{ "lightAmbientHueScales" },
+                std::string_view{ "lightHueRanges" },
+                std::string_view{ "lightFogPowerMultiplier" },
+                std::string_view{ "lightFogMaxMultiplier" },
                 std::string_view{ "lightingTemplateInclusions" },
                 std::string_view{ "lightingTemplateExclusions" },
                 std::string_view{ "lightingTemplatePluginInclusions" },
@@ -1364,14 +1376,20 @@ namespace MPL::LightingPatcher
             auto directProfiles = TuningUtil::GetProfilesWithSettings(roots);
             for (const auto& discovered : TuningUtil::GetProfiles())
             {
-                const auto ownsDirectSettings = std::ranges::any_of(directProfiles, [&](const auto& a_profile)
+                const auto appliesStandardSettings = std::ranges::any_of(directProfiles, [&](const auto& a_profile)
                     { return Config::IEquals(a_profile, discovered.name); });
                 const auto& filteredRules = TuningUtil::GetFilteredLightingTemplateRules(discovered.name);
-                if (!ownsDirectSettings && filteredRules.empty()) continue;
 
                 auto profile = discovered.name;
                 const auto& settings = TuningUtil::GetSettings(profile);
                 if (!settings.EnableProfile)
+                {
+                    continue;
+                }
+                const auto declaresOwnership =
+                    !settings.lightingTemplatePluginOwnership.exact.empty() ||
+                    !settings.lightingTemplatePluginOwnership.contains.empty();
+                if (!appliesStandardSettings && filteredRules.empty() && !declaresOwnership)
                 {
                     continue;
                 }
@@ -1382,13 +1400,11 @@ namespace MPL::LightingPatcher
                     .name = std::move(profile),
                     .settings = settings,
                     .filter = std::move(lightingTemplateFilter),
-                    .pluginOwnershipFilter = {
-                        .includedPlugins = settings.lightingTemplatePluginInclusions,
-                        .excludedPlugins = settings.lightingTemplatePluginExclusions,
+                    .ownershipFilter = {
+                        .includedPlugins = settings.lightingTemplatePluginOwnership,
                     },
-                    .ownsPluginTemplates =
-                        !settings.lightingTemplatePluginInclusions.exact.empty() ||
-                        !settings.lightingTemplatePluginInclusions.contains.empty(),
+                    .appliesStandardSettings = appliesStandardSettings,
+                    .declaresOwnership = declaresOwnership,
                 };
                 for (const auto& rule : filteredRules)
                 {
@@ -1402,53 +1418,51 @@ namespace MPL::LightingPatcher
             return result;
         }
 
-        bool OwnsLightingTemplate(
-            const ActiveTemplateProfile& a_profile,
-            const RE::BGSLightingTemplate* a_lightingTemplate)
-        {
-            return a_profile.ownsPluginTemplates &&
-                   RecordFilter::Matches(
-                       a_lightingTemplate,
-                       a_profile.pluginOwnershipFilter);
-        }
-
-        bool LightingTemplateIsClaimed(
+        const ActiveTemplateProfile* LightingTemplateOwner(
             const RE::BGSLightingTemplate* a_lightingTemplate,
             const std::span<const ActiveTemplateProfile> a_profiles)
         {
-            return std::ranges::any_of(
-                a_profiles,
-                [&](const ActiveTemplateProfile& a_profile)
+            const ActiveTemplateProfile* owner = nullptr;
+            for (const auto& profile : a_profiles)
+            {
+                if (profile.declaresOwnership &&
+                    RecordFilter::Matches(a_lightingTemplate, profile.ownershipFilter))
                 {
-                    return OwnsLightingTemplate(a_profile, a_lightingTemplate);
-                });
+                    owner = std::addressof(profile);
+                }
+            }
+            return owner;
         }
-
-        constexpr bool ShouldTargetLightingTemplate(
-            const bool a_matchesFilter,
-            const bool a_ownsPluginTemplates,
-            const bool a_ownsTemplate,
-            const bool a_claimed)
-        {
-            return a_matchesFilter &&
-                   (a_ownsTemplate || (!a_ownsPluginTemplates && !a_claimed));
-        }
-
-        static_assert(ShouldTargetLightingTemplate(true, true, true, true));
-        static_assert(!ShouldTargetLightingTemplate(true, true, false, true));
-        static_assert(ShouldTargetLightingTemplate(true, false, false, false));
-        static_assert(!ShouldTargetLightingTemplate(true, false, false, true));
 
         bool TargetsLightingTemplate(
             const ActiveTemplateProfile& a_profile,
             const RE::BGSLightingTemplate* a_lightingTemplate,
-            const bool a_claimed)
+            const ActiveTemplateProfile* a_owner)
         {
-            return ShouldTargetLightingTemplate(
-                RecordFilter::Matches(a_lightingTemplate, a_profile.filter),
-                a_profile.ownsPluginTemplates,
-                OwnsLightingTemplate(a_profile, a_lightingTemplate),
-                a_claimed);
+            return a_profile.appliesStandardSettings &&
+                   (!a_owner || Config::IEquals(a_owner->name, a_profile.name)) &&
+                   RecordFilter::Matches(a_lightingTemplate, a_profile.filter);
+        }
+
+        bool WithinLightingTemplateOwnership(
+            const ActiveTemplateProfile& a_profile,
+            const ActiveTemplateProfile* a_owner)
+        {
+            return !a_owner || Config::IEquals(a_owner->name, a_profile.name);
+        }
+
+        bool MatchesFilteredLightingTemplateRule(
+            const RE::BGSLightingTemplate* a_lightingTemplate,
+            const ActiveTemplateProfile::FilteredRule& a_filtered,
+            const bool a_matchesProfileFilter)
+        {
+            if (!a_filtered.rule || !RecordFilter::Matches(a_lightingTemplate, a_filtered.filter))
+                return false;
+            const auto& rule = *a_filtered.rule;
+            const bool hasInclusions = !rule.include.formIDs.empty() ||
+                                       !rule.include.contains.empty() ||
+                                       !rule.locationTypeInclusions.empty();
+            return hasInclusions || rule.ignoreProfileFilters || a_matchesProfileFilter;
         }
 
         RecordFilter::Resolved ResolveFilteredBaseLightFilter(
@@ -1486,61 +1500,94 @@ namespace MPL::LightingPatcher
             return nullptr;
         }
 
-        bool ApplyFilteredBaseLightRule(
-            PointLightSettings& a_target,
-            const Settings& a_profileSettings,
-            const TuningUtil::FilteredBaseLightRule& a_rule)
+        template <class T>
+        const double* BaseLightHueBand(const T& a_settings, const std::string_view a_hue)
         {
-            const auto value = FilteredBaseLightValue(a_profileSettings, a_rule);
-            const bool hueShift = a_rule.settings.front().operation ==
-                                  TuningUtil::FilteredBaseLightOperation::hueShift;
-            const auto neutral = hueShift ? 0.0 : 1.0;
-            if (std::abs(value - neutral) <= 0.0001) return false;
+            if (a_hue == "red") return &a_settings.red;
+            if (a_hue == "orange") return &a_settings.orange;
+            if (a_hue == "yellow") return &a_settings.yellow;
+            if (a_hue == "green") return &a_settings.green;
+            if (a_hue == "teal") return &a_settings.teal;
+            if (a_hue == "blue") return &a_settings.blue;
+            if (a_hue == "magenta") return &a_settings.magenta;
+            return nullptr;
+        }
 
-            auto changed = false;
-            for (const auto& setting : a_rule.settings)
+        double* FilteredBaseLightSettingValue(
+            PointLightSettings& a_settings,
+            const TuningUtil::FilteredBaseLightSetting& a_setting)
+        {
+            switch (a_setting.operation)
             {
-                if (setting.operation == TuningUtil::FilteredBaseLightOperation::hueShift)
-                {
-                    if (!setting.hue) continue;
-                    if (auto* target = BaseLightHueBand(a_target.hueShift, *setting.hue))
-                    {
-                        *target += value * setting.scale;
-                        changed = true;
-                    }
-                    continue;
-                }
-
-                const auto multiplier = std::max(0.0, 1.0 + ((value - 1.0) * setting.scale));
-                switch (setting.operation)
-                {
-                case TuningUtil::FilteredBaseLightOperation::brightness:
-                    a_target.fadeMultiplier *= multiplier;
-                    changed = true;
-                    break;
-                case TuningUtil::FilteredBaseLightOperation::effect:
-                    a_target.effectFadeMultiplier *= multiplier;
-                    changed = true;
-                    break;
-                case TuningUtil::FilteredBaseLightOperation::saturation:
-                    a_target.saturationMultiplier *= multiplier;
-                    changed = true;
-                    break;
-                case TuningUtil::FilteredBaseLightOperation::hueScale:
-                    if (setting.hue)
-                    {
-                        if (auto* target = BaseLightHueBand(a_target.hueScales, *setting.hue))
-                        {
-                            *target *= multiplier;
-                            changed = true;
-                        }
-                    }
-                    break;
-                case TuningUtil::FilteredBaseLightOperation::hueShift:
-                    break;
-                }
+            case TuningUtil::FilteredBaseLightOperation::brightness:
+                return &a_settings.fadeMultiplier;
+            case TuningUtil::FilteredBaseLightOperation::effect:
+                return &a_settings.effectFadeMultiplier;
+            case TuningUtil::FilteredBaseLightOperation::saturation:
+                return &a_settings.saturationMultiplier;
+            case TuningUtil::FilteredBaseLightOperation::hueScale:
+                return a_setting.hue ? BaseLightHueBand(a_settings.hueScales, *a_setting.hue) : nullptr;
+            case TuningUtil::FilteredBaseLightOperation::hueShift:
+                return a_setting.hue ? BaseLightHueBand(a_settings.hueShift, *a_setting.hue) : nullptr;
             }
-            return changed;
+            return nullptr;
+        }
+
+        const double* FilteredBaseLightSettingValue(
+            const PointLightSettings& a_settings,
+            const TuningUtil::FilteredBaseLightSetting& a_setting)
+        {
+            switch (a_setting.operation)
+            {
+            case TuningUtil::FilteredBaseLightOperation::brightness:
+                return &a_settings.fadeMultiplier;
+            case TuningUtil::FilteredBaseLightOperation::effect:
+                return &a_settings.effectFadeMultiplier;
+            case TuningUtil::FilteredBaseLightOperation::saturation:
+                return &a_settings.saturationMultiplier;
+            case TuningUtil::FilteredBaseLightOperation::hueScale:
+                return a_setting.hue ? BaseLightHueBand(a_settings.hueScales, *a_setting.hue) : nullptr;
+            case TuningUtil::FilteredBaseLightOperation::hueShift:
+                return a_setting.hue ? BaseLightHueBand(a_settings.hueShift, *a_setting.hue) : nullptr;
+            }
+            return nullptr;
+        }
+
+        std::string FilteredBaseLightSettingTarget(
+            const TuningUtil::FilteredBaseLightSetting& a_setting)
+        {
+            switch (a_setting.operation)
+            {
+            case TuningUtil::FilteredBaseLightOperation::brightness:
+                return "brightness";
+            case TuningUtil::FilteredBaseLightOperation::effect:
+                return "effect";
+            case TuningUtil::FilteredBaseLightOperation::saturation:
+                return "saturation";
+            case TuningUtil::FilteredBaseLightOperation::hueScale:
+                return "hueScale." + a_setting.hue.value_or("");
+            case TuningUtil::FilteredBaseLightOperation::hueShift:
+                return "hueShift." + a_setting.hue.value_or("");
+            }
+            return {};
+        }
+
+        bool ApplyFilteredBaseLightSetting(
+            PointLightSettings& a_target,
+            const double a_value,
+            const TuningUtil::FilteredBaseLightSetting& a_setting)
+        {
+            auto* target = FilteredBaseLightSettingValue(a_target, a_setting);
+            if (!target) return false;
+
+            if (a_setting.operation == TuningUtil::FilteredBaseLightOperation::hueShift)
+            {
+                *target += a_value * a_setting.scale;
+                return true;
+            }
+
+            *target *= std::max(0.0, 1.0 + ((a_value - 1.0) * a_setting.scale));
+            return true;
         }
 
         struct FilteredBaseLightResolution
@@ -1556,8 +1603,10 @@ namespace MPL::LightingPatcher
             {
                 std::string profile;
                 Settings settings;
+                PointLightSettings ownedBaseSettings;
                 const TuningUtil::FilteredBaseLightRule* rule = nullptr;
                 RecordFilter::Resolved filter;
+                std::vector<std::string> settingTargets;
             };
 
             std::vector<ActiveRule> rules;
@@ -1568,12 +1617,19 @@ namespace MPL::LightingPatcher
                 if (!settings.EnableProfile) continue;
                 for (const auto& rule : TuningUtil::GetFilteredBaseLightRules(discovered.name))
                 {
-                    rules.push_back({
+                    ActiveRule active{
                         .profile = discovered.name,
                         .settings = settings,
+                        .ownedBaseSettings = settings.pointLights,
                         .rule = std::addressof(rule),
                         .filter = ResolveFilteredBaseLightFilter(rule),
-                    });
+                    };
+                    active.settingTargets.reserve(rule.settings.size());
+                    for (const auto& setting : rule.settings)
+                    {
+                        active.settingTargets.push_back(FilteredBaseLightSettingTarget(setting));
+                    }
+                    rules.push_back(std::move(active));
                 }
             }
 
@@ -1582,18 +1638,53 @@ namespace MPL::LightingPatcher
             for (auto* light : a_dataHandler->GetFormArray<RE::TESObjectLIGH>())
             {
                 if (!light) continue;
-                auto settings = a_baseSettings;
-                auto changed = false;
+                std::vector<const ActiveRule*> matchingRules;
+                std::unordered_map<std::string, const ActiveRule*> settingOwners;
                 for (const auto& active : rules)
                 {
                     if (!RecordFilter::Matches(light, active.filter)) continue;
-                    if (ApplyFilteredBaseLightRule(settings, active.settings, *active.rule))
+                    matchingRules.push_back(std::addressof(active));
+                    for (const auto& target : active.settingTargets)
                     {
-                        changed = true;
-                        profileTargets[active.profile].insert(light->GetFormID());
+                        if (!target.empty()) settingOwners[target] = std::addressof(active);
                     }
                 }
-                if (changed) result.settings.emplace(light->GetFormID(), std::move(settings));
+                if (matchingRules.empty()) continue;
+
+                auto settings = a_baseSettings;
+                for (const auto& [target, owner] : settingOwners)
+                {
+                    const auto setting = std::ranges::find(owner->settingTargets, target);
+                    if (setting == owner->settingTargets.end()) continue;
+                    const auto index = static_cast<std::size_t>(std::distance(owner->settingTargets.begin(), setting));
+                    auto* destination = FilteredBaseLightSettingValue(settings, owner->rule->settings[index]);
+                    const auto* source = FilteredBaseLightSettingValue(owner->ownedBaseSettings, owner->rule->settings[index]);
+                    if (destination && source) *destination = *source;
+                }
+
+                for (const auto* active : matchingRules)
+                {
+                    const auto value = FilteredBaseLightValue(active->settings, *active->rule);
+                    const auto hueShift = active->rule->settings.front().operation ==
+                                          TuningUtil::FilteredBaseLightOperation::hueShift;
+                    const auto neutral = hueShift ? 0.0 : 1.0;
+                    if (std::abs(value - neutral) <= 0.0001) continue;
+                    for (std::size_t index = 0; index < active->rule->settings.size(); ++index)
+                    {
+                        const auto owner = settingOwners.find(active->settingTargets[index]);
+                        if (owner == settingOwners.end() ||
+                            !Config::IEquals(owner->second->profile, active->profile))
+                            continue;
+                        ApplyFilteredBaseLightSetting(settings, value, active->rule->settings[index]);
+                    }
+                }
+                if (settings == a_baseSettings) continue;
+                result.settings.emplace(light->GetFormID(), std::move(settings));
+                for (const auto& [target, owner] : settingOwners)
+                {
+                    (void)target;
+                    profileTargets[owner->profile].insert(light->GetFormID());
+                }
             }
             for (const auto& discovered : TuningUtil::GetProfiles())
             {
@@ -1626,7 +1717,7 @@ namespace MPL::LightingPatcher
         const auto activeCellProfiles = GetActiveDirectCellProfiles();
         if (!activeCellProfiles.empty())
         {
-            const auto cellCount = ApplyInteriorCells(
+            const auto cellCount = ApplyLightingCells(
                 TuningUtil::ResolveSettingsStack(activeCellProfiles),
                 activeCellProfiles);
             DetailedLogging::Info(
@@ -1649,31 +1740,44 @@ namespace MPL::LightingPatcher
             std::string signature;
             std::vector<std::string> matchingProfiles;
             FilteredLightingTemplateAdjustments filteredAdjustments;
-            const auto claimed = LightingTemplateIsClaimed(
+            auto hasFilteredMatch = false;
+            const auto* owner = LightingTemplateOwner(
                 lightingTemplate,
                 templateProfiles);
             for (const auto& profile : templateProfiles)
             {
-                if (TargetsLightingTemplate(profile, lightingTemplate, claimed))
+                const auto withinOwnership = WithinLightingTemplateOwnership(
+                    profile,
+                    owner);
+                if (!withinOwnership) continue;
+                const auto matchesProfileFilter = RecordFilter::Matches(
+                    lightingTemplate,
+                    profile.filter);
+                if (profile.appliesStandardSettings && matchesProfileFilter)
                 {
                     matchingProfiles.push_back(profile.name);
                     signature.append(profile.name).push_back('\x1F');
                     ++profileTargetCounts[profile.name];
-                    for (const auto& filtered : profile.filteredRules)
-                    {
-                        if (!filtered.rule || !RecordFilter::Matches(lightingTemplate, filtered.filter)) continue;
-                        AccumulateFilteredLightingTemplateAdjustments(
-                            filteredAdjustments,
-                            profile.settings,
-                            *filtered.rule);
-                        signature.append(profile.name)
-                            .append("\x1E")
-                            .append(filtered.rule->id)
-                            .push_back('\x1F');
-                    }
+                }
+                for (const auto& filtered : profile.filteredRules)
+                {
+                    if (!MatchesFilteredLightingTemplateRule(
+                            lightingTemplate,
+                            filtered,
+                            matchesProfileFilter))
+                        continue;
+                    AccumulateFilteredLightingTemplateAdjustments(
+                        filteredAdjustments,
+                        profile.settings,
+                        *filtered.rule);
+                    signature.append(profile.name)
+                        .append("\x1E")
+                        .append(filtered.rule->id)
+                        .push_back('\x1F');
+                    hasFilteredMatch = true;
                 }
             }
-            if (!matchingProfiles.empty())
+            if (!matchingProfiles.empty() || hasFilteredMatch)
             {
                 templateGroups[signature].push_back(lightingTemplate);
                 groupProfiles.try_emplace(signature, std::move(matchingProfiles));
@@ -1696,7 +1800,7 @@ namespace MPL::LightingPatcher
                 "[Lighting Template] {} | targets={} | scope={}",
                 profile.name,
                 profileTargetCounts[profile.name],
-                profile.ownsPluginTemplates ? "owned" : "unclaimed");
+                profile.declaresOwnership ? "owner" : "shared");
         }
         logger::info(
             "[Lighting Template] apply | stacks={} | targets={}",
@@ -1705,7 +1809,7 @@ namespace MPL::LightingPatcher
 
         static constexpr std::array pointLightRoots{
             std::string_view{ "pointLights" },
-            std::string_view{ "intHueRanges" },
+            std::string_view{ "lightHueRanges" },
             std::string_view{ "effectPointLightInclusions" },
             std::string_view{ "effectPointLightExclusions" },
         };
@@ -1732,11 +1836,11 @@ namespace MPL::LightingPatcher
             pointLightSettings.pointLights,
             filteredBaseLightSettings.settings,
             effectPointLightFilter,
-            pointLightSettings.intHueRanges,
+            pointLightSettings.lightHueRanges,
             a_commitLightPlacer);
     }
 
-    bool ProfilesShareInteriorTarget(
+    bool ProfilesShareLightingTarget(
         const std::string& a_leftProfile,
         const std::string& a_rightProfile)
     {
@@ -1757,10 +1861,10 @@ namespace MPL::LightingPatcher
             if (profile == templateProfiles.end()) return result;
             for (auto* lightingTemplate : dataHandler->GetFormArray<RE::BGSLightingTemplate>())
             {
-                const auto claimed = LightingTemplateIsClaimed(
+                const auto* owner = LightingTemplateOwner(
                     lightingTemplate,
                     templateProfiles);
-                if (TargetsLightingTemplate(*profile, lightingTemplate, claimed))
+                if (TargetsLightingTemplate(*profile, lightingTemplate, owner))
                 {
                     result.insert(lightingTemplate->GetFormID());
                 }
@@ -1800,11 +1904,14 @@ namespace MPL::LightingPatcher
                 a_profileName);
             for (auto* lightingTemplate : dataHandler->GetFormArray<RE::BGSLightingTemplate>())
             {
-                const auto claimed = LightingTemplateIsClaimed(
+                const auto* owner = LightingTemplateOwner(
                     lightingTemplate,
                     templateProfiles);
-                if (TargetsLightingTemplate(*profile, lightingTemplate, claimed) &&
-                    RecordFilter::Matches(lightingTemplate, ruleFilter))
+                if (WithinLightingTemplateOwnership(*profile, owner) &&
+                    MatchesFilteredLightingTemplateRule(
+                        lightingTemplate,
+                        { rule, ruleFilter },
+                        RecordFilter::Matches(lightingTemplate, profile->filter)))
                 {
                     result.insert(lightingTemplate->GetFormID());
                 }

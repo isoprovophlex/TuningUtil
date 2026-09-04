@@ -6,7 +6,7 @@ namespace MPL::LightingPatcher
 {
     using WeatherPatcher::SettingLink;
 
-    struct InteriorLinks
+    struct LightingLinks
     {
         SettingLink ambient = std::tuple{ std::string("ambientColors"), 1.0 };
         SettingLink directional = std::tuple{ std::string("ambientColors"), 1.0 };
@@ -14,10 +14,10 @@ namespace MPL::LightingPatcher
         SettingLink fogFar = std::tuple{ std::string("ambientColors"), 1.0 };
         SettingLink fogNear = std::tuple{ std::string("ambientColors"), 1.0 };
 
-        bool operator==(const InteriorLinks&) const = default;
+        bool operator==(const LightingLinks&) const = default;
     };
 
-    struct InteriorColorSettings
+    struct LightingColorSettings
     {
         double ambient = 1.0;
         double directional = 1.0;
@@ -26,7 +26,7 @@ namespace MPL::LightingPatcher
         double fogNear = 1.0;
     };
 
-    struct InteriorHueShiftSettings
+    struct LightingHueShiftSettings
     {
         WeatherPatcher::HueShiftBands ambient;
         WeatherPatcher::HueShiftBands directional;
@@ -53,6 +53,7 @@ namespace MPL::LightingPatcher
         RE::BGSDirectionalAmbientLightingColors ambientColors;
         RE::Color fogFar;
         RE::Color fogNear;
+        float fogPower;
         float fogMax;
     };
 }  // namespace MPL::LightingPatcher

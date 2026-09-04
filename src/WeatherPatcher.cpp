@@ -100,6 +100,23 @@ namespace MPL::WeatherPatcher
         a_color.blue = ClampByte(a_color.blue * multiplier);
     }
 
+    void MultiplyBrightnessColor(RE::NiColor& a_color, double a_multiplier)
+    {
+        double multiplier = std::max(0.1, a_multiplier);
+        if (multiplier > 1.0)
+        {
+            const double value = std::max({ a_color.red, a_color.green, a_color.blue });
+            if (value > 0.0)
+            {
+                multiplier = std::min(multiplier, 1.0 / value);
+            }
+        }
+
+        a_color.red = static_cast<float>(std::clamp(a_color.red * multiplier, 0.0, 1.0));
+        a_color.green = static_cast<float>(std::clamp(a_color.green * multiplier, 0.0, 1.0));
+        a_color.blue = static_cast<float>(std::clamp(a_color.blue * multiplier, 0.0, 1.0));
+    }
+
     double CompressedBrightnessValue(
         const double a_value,
         const double a_compress,
@@ -412,7 +429,7 @@ namespace MPL::WeatherPatcher
         a_color.blue = static_cast<float>(rgb[2]);
     }
 
-    bool BrightnessIsActive(const BrightnessValues& a_settings)
+    bool WeatherBrightnessIsActive(const BrightnessValues& a_settings)
     {
         return std::abs(a_settings.ambientMultiplier - 1.0) > 0.0001 ||
                std::abs(a_settings.sunlightMultiplier - 1.0) > 0.0001 ||
@@ -429,6 +446,12 @@ namespace MPL::WeatherPatcher
                std::abs(a_settings.moonGlareMultiplier - 1.0) > 0.0001 ||
                std::abs(a_settings.starsMultiplier - 1.0) > 0.0001 ||
                std::abs(a_settings.cloudLayers - 1.0) > 0.0001;
+    }
+
+    bool BrightnessIsActive(const BrightnessValues& a_settings)
+    {
+        return WeatherBrightnessIsActive(a_settings) ||
+               std::abs(a_settings.volumetricLightingMultiplier - 1.0) > 0.0001;
     }
 
     bool AmbientCompressionIsActive(const CompressionValues& a_settings)
@@ -689,12 +712,15 @@ namespace MPL::WeatherPatcher
     bool IsStaticWeather(const RE::TESWeather* a_weather);
     void CaptureBaselineIfNeeded(RE::TESWeather* a_weather);
 
-    constexpr std::size_t kBrightnessFieldCount = 15;
+    constexpr std::size_t kWeatherBrightnessFieldCount = 15;
+    constexpr std::size_t kBrightnessFieldCount = 16;
+    constexpr std::size_t kVolumetricLightingBrightnessField = kWeatherBrightnessFieldCount;
     constexpr std::size_t kAmbientBrightnessField = 0;
     constexpr std::size_t kSunlightBrightnessField = 1;
     constexpr std::array<std::string_view, kBrightnessFieldCount> kBrightnessFieldNames{
         "ambient", "sunlight", "effectLighting", "fogFar", "fogNear", "water", "skyStatics", "skyUpper",
-        "skyLower", "horizon", "sun", "sunGlare", "moonGlare", "stars", "cloudLayers"
+        "skyLower", "horizon", "sun", "sunGlare", "moonGlare", "stars", "cloudLayers",
+        "volumetricLighting"
     };
     constexpr std::array<RE::TESWeather::ColorType, 13> kWeatherColorTypes{
         RE::TESWeather::ColorType::kSunlight,
@@ -720,7 +746,7 @@ namespace MPL::WeatherPatcher
             a_fn(a_weather->colorData[RE::TESWeather::ColorType::kAmbient][a_time]);
             return;
         }
-        if (a_field == kBrightnessFieldCount - 1)
+        if (a_field == kWeatherBrightnessFieldCount - 1)
         {
             for (std::uint32_t layer = 0; layer < RE::TESWeather::kTotalLayers; ++layer)
             {
@@ -780,14 +806,11 @@ namespace MPL::WeatherPatcher
         {
             return 0.0;
         }
-        if (a_field == DynamicBrightnessField::ambient)
-        {
-            return AmbientZMinusHSVValue(a_weather, RE::TESWeather::ColorTime::kDay);
-        }
-        return AnalyzeDynamicWeatherRange(a_weather, a_field).bright;
+        return DynamicBrightnessHSVValue(a_weather, RE::TESWeather::ColorTime::kDay, a_field);
     }
 
-    std::optional<double> ReadWeatherAmbientAnchor(const std::string_view a_weatherEditorID)
+    std::optional<WeatherCompressionAnchors> ReadWeatherCompressionAnchors(
+        const std::string_view a_weatherEditorID)
     {
         RE::TESWeather* weather = nullptr;
         auto* stat = Config::StatData::GetSingleton();
@@ -819,7 +842,7 @@ namespace MPL::WeatherPatcher
         if (!weather)
         {
             logger::warn(
-                "[Weather] ambient anchor | originalEditorID={} | status=unavailable",
+                "[Weather] compression anchors | originalEditorID={} | status=unavailable",
                 a_weatherEditorID);
             return std::nullopt;
         }
@@ -829,20 +852,27 @@ namespace MPL::WeatherPatcher
         if (baseline == stat->weatherBaselines.end())
         {
             logger::warn(
-                "[Weather] ambient anchor | originalEditorID={} | status=baseline unavailable",
+                "[Weather] compression anchors | originalEditorID={} | status=baseline unavailable",
                 a_weatherEditorID);
             return std::nullopt;
         }
-        const auto anchor = std::clamp(
-            HSVValue(baseline->second.dalc[RE::TESWeather::ColorTime::kDay].directional.z.min),
-            1.0,
-            255.0);
+        const WeatherCompressionAnchors anchors{
+            .ambient = std::clamp(
+                HSVValue(baseline->second.dalc[RE::TESWeather::ColorTime::kDay].directional.z.min),
+                1.0,
+                255.0),
+            .sunlight = std::clamp(
+                HSVValue(baseline->second.sunlight[RE::TESWeather::ColorTime::kDay]),
+                1.0,
+                255.0),
+        };
         logger::info(
-            "[Weather] ambient anchor | originalEditorID={} | form={:08X} | baselineDayZMinus={:.0f}",
+            "[Weather] compression anchors | originalEditorID={} | form={:08X} | baselineDayZMinus={:.0f} | baselineDaySunlight={:.0f}",
             a_weatherEditorID,
             weather->GetFormID(),
-            anchor);
-        return anchor;
+            anchors.ambient,
+            anchors.sunlight);
+        return anchors;
     }
 
     DynamicAmbientRange AnalyzeDynamicAmbientRange(
@@ -865,14 +895,6 @@ namespace MPL::WeatherPatcher
                 {
                     continue;
                 }
-                if (!result.available || brightness < result.darkLimit)
-                {
-                    result.darkWeather = weather;
-                }
-                if (!result.available || brightness > result.brightLimit)
-                {
-                    result.brightWeather = weather;
-                }
                 result.darkLimit = std::min(result.darkLimit, brightness);
                 result.brightLimit = std::max(result.brightLimit, brightness);
                 result.available = true;
@@ -885,14 +907,6 @@ namespace MPL::WeatherPatcher
                 continue;
             }
 
-            if (!result.available || weatherRange.dark < result.darkLimit)
-            {
-                result.darkWeather = weather;
-            }
-            if (!result.available || weatherRange.bright > result.brightLimit)
-            {
-                result.brightWeather = weather;
-            }
             result.darkLimit = std::min(result.darkLimit, weatherRange.dark);
             result.brightLimit = std::max(result.brightLimit, weatherRange.bright);
             result.available = true;
@@ -905,24 +919,18 @@ namespace MPL::WeatherPatcher
         return result;
     }
 
-    struct DynamicBetweenBrightnessBaseline
+    DynamicAmbientRange AnchorGaugeRange(
+        const DynamicAmbientRange& a_source,
+        const double a_anchor)
     {
-        DynamicAmbientRange range;
-        std::vector<double> weatherPeaks;
-    };
-
-    DynamicBetweenBrightnessBaseline CaptureDynamicBetweenBrightnessBaseline(
-        const SourceWeatherSet& a_weatherSet,
-        const DynamicBrightnessField a_field)
-    {
-        DynamicBetweenBrightnessBaseline result{
-            .range = AnalyzeDynamicAmbientRange(a_weatherSet, DynamicAmbientMode::between, a_field),
-        };
-        result.weatherPeaks.reserve(a_weatherSet.size());
-        for (const auto* weather : a_weatherSet)
+        if (!a_source.available)
         {
-            result.weatherPeaks.push_back(BetweenWeatherBrightnessValue(weather, a_field));
+            return a_source;
         }
+
+        auto result = a_source;
+        result.brightLimit = std::clamp(a_anchor, 0.0, 255.0);
+        result.darkLimit = std::clamp(result.darkLimit, 0.0, result.brightLimit);
         return result;
     }
 
@@ -978,159 +986,6 @@ namespace MPL::WeatherPatcher
         return status;
     }
 
-    DynamicAmbientRange ResolveDynamicAmbientTarget(
-        const DynamicAmbientRange& a_source,
-        const DynamicAmbientSettings& a_settings)
-    {
-        if (!a_source.available)
-        {
-            return a_source;
-        }
-        const double first = std::clamp(a_settings.darkLimit.value_or(a_source.darkLimit), 0.0, 255.0);
-        const double second = std::clamp(a_settings.brightLimit.value_or(a_source.brightLimit), 0.0, 255.0);
-        return {
-            .darkLimit = std::min(first, second),
-            .brightLimit = std::max(first, second),
-            .available = true,
-        };
-    }
-
-    double RemapDynamicAmbientValue(
-        const double a_value,
-        const DynamicAmbientRange& a_source,
-        const DynamicAmbientRange& a_target)
-    {
-        const double sourceSpan = a_source.brightLimit - a_source.darkLimit;
-        if (sourceSpan <= 0.0001)
-        {
-            return (a_target.darkLimit + a_target.brightLimit) * 0.5;
-        }
-        const double position = std::clamp((a_value - a_source.darkLimit) / sourceSpan, 0.0, 1.0);
-        return a_target.darkLimit + ((a_target.brightLimit - a_target.darkLimit) * position);
-    }
-
-    void ApplyDynamicBrightnessGain(
-        RE::TESWeather* a_weather,
-        const std::uint32_t a_time,
-        const double a_masterGain,
-        const DynamicBrightnessField a_field,
-        const BrightnessResolution& a_brightness)
-    {
-        if (std::abs(a_masterGain - 1.0) <= 0.0001)
-        {
-            return;
-        }
-
-        constexpr std::size_t ambientIndex = 0;
-        constexpr std::size_t sunlightIndex = 1;
-        const auto masterIndex =
-            a_field == DynamicBrightnessField::ambient ?
-                ambientIndex :
-                sunlightIndex;
-        std::array<double, kBrightnessFieldCount> gains{};
-        std::array<bool, kBrightnessFieldCount> resolved{};
-        std::function<double(std::size_t)> resolveGain = [&](const std::size_t a_index)
-        {
-            if (!resolved[a_index])
-            {
-                if (a_index == masterIndex)
-                {
-                    gains[a_index] = a_masterGain;
-                }
-                else if (const auto link = a_brightness.links[a_index])
-                {
-                    gains[a_index] = std::max(
-                        0.0,
-                        1.0 + ((resolveGain(link->index) - 1.0) * link->scale));
-                }
-                else
-                {
-                    gains[a_index] = 1.0;
-                }
-                resolved[a_index] = true;
-            }
-            return gains[a_index];
-        };
-
-        for (std::size_t index = 0; index < kBrightnessFieldCount; ++index)
-        {
-            const double gain = resolveGain(index);
-            if (std::abs(gain - 1.0) > 0.0001)
-            {
-                ForEachFieldColor(a_weather, index, a_time, [&](RE::Color& a_color)
-                {
-                    if (gain <= 0.0001)
-                    {
-                        a_color.red = 0;
-                        a_color.green = 0;
-                        a_color.blue = 0;
-                    }
-                    else
-                    {
-                        ApplyCompressionGain(a_color, gain);
-                    }
-                });
-            }
-        }
-    }
-
-    bool ApplyDynamicBrightnessBetween(
-        const SourceWeatherSet& a_weatherSet,
-        const DynamicAmbientSettings& a_settings,
-        const DynamicBetweenBrightnessBaseline& a_baseline,
-        const DynamicBrightnessField a_field,
-        const BrightnessResolution& a_brightness,
-        DynamicBrightnessStatus& a_status)
-    {
-        const auto& source = a_baseline.range;
-        a_status = {
-            .source = source,
-            .result = source,
-            .compression =
-                source.available && source.brightLimit - source.darkLimit > 0.0001 ?
-                    std::optional{ 0.0 } :
-                    std::nullopt,
-            .available = source.available,
-        };
-        if (!source.available || (!a_settings.darkLimit && !a_settings.brightLimit))
-        {
-            return false;
-        }
-        const auto target = ResolveDynamicAmbientTarget(source, a_settings);
-
-        assert(a_baseline.weatherPeaks.size() == a_weatherSet.size());
-        for (std::size_t index = 0; index < a_weatherSet.size(); ++index)
-        {
-            auto* weather = a_weatherSet[index];
-            if (!weather)
-            {
-                continue;
-            }
-            const double baselinePeak = a_baseline.weatherPeaks[index];
-            const double currentPeak = BetweenWeatherBrightnessValue(weather, a_field);
-            if (baselinePeak <= 0.0001)
-            {
-                continue;
-            }
-
-            const double gain =
-                RemapDynamicAmbientValue(baselinePeak, source, target) /
-                std::max(1.0, currentPeak);
-            for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
-            {
-                ApplyDynamicBrightnessGain(weather, time, gain, a_field, a_brightness);
-            }
-        }
-        a_status.result = AnalyzeDynamicAmbientRange(a_weatherSet, DynamicAmbientMode::between, a_field);
-        const double sourceSpan = source.brightLimit - source.darkLimit;
-        const double targetSpan = target.brightLimit - target.darkLimit;
-        a_status.compression =
-            sourceSpan > 0.0001 ?
-                std::optional{ 100.0 * (1.0 - targetSpan / sourceSpan) } :
-                std::nullopt;
-        return true;
-    }
-
     std::array<double, kBrightnessFieldCount> BaseBrightnessMultipliers(const BrightnessValues& a_values)
     {
         return {
@@ -1138,15 +993,22 @@ namespace MPL::WeatherPatcher
             a_values.fogFarMultiplier, a_values.fogNearMultiplier, a_values.waterMultiplier,
             a_values.skyStaticsMultiplier, a_values.skyUpperMultiplier, a_values.skyLowerMultiplier,
             a_values.horizonMultiplier, a_values.sunMultiplier, a_values.sunGlareMultiplier,
-            a_values.moonGlareMultiplier, a_values.starsMultiplier, a_values.cloudLayers
+            a_values.moonGlareMultiplier, a_values.starsMultiplier, a_values.cloudLayers,
+            a_values.volumetricLightingMultiplier
         };
     }
 
     double ConstrainMasterGain(
-        const SourceWeatherSet& a_weatherSet,
+        RE::TESWeather* a_weather,
         const std::size_t a_field,
+        const std::uint32_t a_time,
         const double a_requestedGain)
     {
+        if (!a_weather)
+        {
+            return 1.0;
+        }
+
         const double requestedGain = std::max(0.1, a_requestedGain);
         if (std::abs(requestedGain - 1.0) <= 0.0001)
         {
@@ -1155,35 +1017,24 @@ namespace MPL::WeatherPatcher
 
         double maximumValue = 0.0;
         double minimumFloorValue = 256.0;
-        for (auto* weather : a_weatherSet)
+        const auto inspectColor = [&](const RE::Color& a_color)
         {
-            if (!weather)
+            const double value = HSVValue(a_color);
+            maximumValue = std::max(maximumValue, value);
+            if (value >= 10.0)
             {
-                continue;
+                minimumFloorValue = std::min(minimumFloorValue, value);
             }
+        };
 
-            for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
-            {
-                const auto inspectColor = [&](const RE::Color& a_color)
-                    {
-                        const double value = HSVValue(a_color);
-                        maximumValue = std::max(maximumValue, value);
-                        if (value >= 10.0)
-                        {
-                            minimumFloorValue = std::min(minimumFloorValue, value);
-                        }
-                    };
-
-                if (a_field == 0)
-                {
-                ForEachDALCColor(weather->directionalAmbientLightingColors[time], inspectColor);
-                    inspectColor(weather->colorData[RE::TESWeather::ColorType::kAmbient][time]);
-                }
-                else
-                {
-                    ForEachFieldColor(weather, a_field, time, inspectColor);
-                }
-            }
+        if (a_field == kAmbientBrightnessField)
+        {
+            ForEachDALCColor(a_weather->directionalAmbientLightingColors[a_time], inspectColor);
+            inspectColor(a_weather->colorData[RE::TESWeather::ColorType::kAmbient][a_time]);
+        }
+        else
+        {
+            ForEachFieldColor(a_weather, a_field, a_time, inspectColor);
         }
 
         if (maximumValue <= 0.0)
@@ -1199,7 +1050,8 @@ namespace MPL::WeatherPatcher
 
     std::array<double, kBrightnessFieldCount> ApplyBrightness(
         const SourceWeatherSet& a_weatherSet,
-        const BrightnessResolution& a_brightness)
+        const BrightnessResolution& a_brightness,
+        const AnchorValues& a_anchors)
     {
         const auto requested = BaseBrightnessMultipliers(a_brightness.values);
         std::array<double, kBrightnessFieldCount> gains{};
@@ -1227,7 +1079,15 @@ namespace MPL::WeatherPatcher
             }
             else
             {
-                gains[a_field] = ConstrainMasterGain(a_weatherSet, a_field, requested[a_field]);
+                gains[a_field] = a_field == kAmbientBrightnessField ?
+                                     CompressionMath::AnchorConstrainedGain(
+                                         requested[a_field],
+                                         a_anchors.ambientAnchor) :
+                                 a_field == kSunlightBrightnessField ?
+                                     CompressionMath::AnchorConstrainedGain(
+                                         requested[a_field],
+                                         a_anchors.sunlightAnchor) :
+                                     std::max(0.1, requested[a_field]);
                 if (std::abs(gains[a_field] - std::max(0.0, requested[a_field])) > 0.0001)
                 {
         DetailedLogging::Info(
@@ -1255,14 +1115,50 @@ namespace MPL::WeatherPatcher
             }
             for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
             {
+                std::array<double, kBrightnessFieldCount> localGains{};
+                std::array<bool, kBrightnessFieldCount> localResolved{};
+                std::array<bool, kBrightnessFieldCount> localResolving{};
+                std::function<double(std::size_t)> resolveLocalGain = [&](const std::size_t a_field)
+                {
+                    if (localResolved[a_field])
+                    {
+                        return localGains[a_field];
+                    }
+                    if (localResolving[a_field])
+                    {
+                        return 1.0;
+                    }
+
+                    localResolving[a_field] = true;
+                    const auto link = a_brightness.links[a_field];
+                    if (link && link->index < kBrightnessFieldCount)
+                    {
+                        const double masterGain = resolveLocalGain(link->index);
+                        localGains[a_field] = std::max(0.1, 1.0 + ((masterGain - 1.0) * link->scale));
+                    }
+                    else
+                    {
+                        localGains[a_field] = a_field < kWeatherBrightnessFieldCount ?
+                                                  ConstrainMasterGain(weather, a_field, time, gains[a_field]) :
+                                                  gains[a_field];
+                    }
+                    localResolving[a_field] = false;
+                    localResolved[a_field] = true;
+                    return localGains[a_field];
+                };
+
                 for (std::size_t field = 0; field < kBrightnessFieldCount; ++field)
                 {
-                    if (std::abs(gains[field] - 1.0) <= 0.0001)
+                    resolveLocalGain(field);
+                }
+                for (std::size_t field = 0; field < kWeatherBrightnessFieldCount; ++field)
+                {
+                    if (std::abs(localGains[field] - 1.0) <= 0.0001)
                     {
                         continue;
                     }
                     ForEachFieldColor(weather, field, time, [&](RE::Color& a_color)
-                        { MultiplyBrightnessColor(a_color, gains[field]); });
+                        { MultiplyBrightnessColor(a_color, localGains[field]); });
                 }
             }
         }
@@ -1326,11 +1222,15 @@ namespace MPL::WeatherPatcher
             }
 
             double peak = 1.0;
-            if (a_index == kAmbientBrightnessField)
+            if (a_index == kAmbientBrightnessField || a_index == kSunlightBrightnessField)
             {
                 peak = std::max(
                     peak,
-                    BetweenWeatherBrightnessValue(a_weather, DynamicBrightnessField::ambient));
+                    BetweenWeatherBrightnessValue(
+                        a_weather,
+                        a_index == kAmbientBrightnessField ?
+                            DynamicBrightnessField::ambient :
+                            DynamicBrightnessField::sunlight));
             }
             else
             {
@@ -1417,7 +1317,17 @@ namespace MPL::WeatherPatcher
             {
                 anchors[field] = std::max(
                     anchors[field],
-                    AnalyzeDynamicWeatherRange(a_weather, DynamicBrightnessField::ambient).bright);
+                    AmbientZMinusHSVValue(a_weather, RE::TESWeather::ColorTime::kDay));
+                continue;
+            }
+            if (field == kSunlightBrightnessField)
+            {
+                anchors[field] = std::max(
+                    anchors[field],
+                    DynamicBrightnessHSVValue(
+                        a_weather,
+                        RE::TESWeather::ColorTime::kDay,
+                        DynamicBrightnessField::sunlight));
                 continue;
             }
             for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
@@ -1667,6 +1577,7 @@ namespace MPL::WeatherPatcher
     ChangedVolumetricLightingSet ApplyVolumetricLightingSettings(
         const SourceWeatherSet& a_weatherSet,
         double a_intensityMultiplier,
+        double a_brightnessMultiplier,
         const SaturationResolution& a_saturation,
         const AmbientHueScaleValues& a_hueScales,
         const HueShiftResolution& a_hueShift,
@@ -1676,8 +1587,10 @@ namespace MPL::WeatherPatcher
         std::unordered_set<RE::BGSVolumetricLighting*> records;
         ChangedVolumetricLightingSet changed;
         const double intensityMultiplier = std::max(0.0, a_intensityMultiplier);
+        const double brightnessMultiplier = std::max(0.1, a_brightnessMultiplier);
         const bool intensityActive = std::abs(intensityMultiplier - 1.0) > 0.0001;
-        const bool colorActive = VolumetricLightingSaturationIsActive(a_saturation, a_hueScales) ||
+        const bool colorActive = std::abs(brightnessMultiplier - 1.0) > 0.0001 ||
+                                 VolumetricLightingSaturationIsActive(a_saturation, a_hueScales) ||
                                  VolumetricLightingHueShiftIsActive(a_hueShift);
         if (!intensityActive && !colorActive)
         {
@@ -1731,6 +1644,10 @@ namespace MPL::WeatherPatcher
                 const double colorMultiplier = a_saturation.values.volumetricLightingMultiplier *
                                                SaturationHueScale(colorBaseline->second, a_hueScales, a_hueRanges);
                 auto adjustedColor = colorBaseline->second;
+                if (std::abs(brightnessMultiplier - 1.0) > 0.0001)
+                {
+                    MultiplyBrightnessColor(adjustedColor, brightnessMultiplier);
+                }
                 if (std::abs(colorMultiplier - 1.0) > 0.0001)
                 {
                     SaturateColor(adjustedColor, colorMultiplier);
@@ -1906,20 +1823,6 @@ namespace MPL::WeatherPatcher
         return TuningUtil::GetSettings(a_sourceFile);
     }
 
-    void AppendUniquePlugins(
-        std::vector<std::string>& a_target,
-        const std::vector<std::string>& a_source)
-    {
-        for (const auto& pluginName : a_source)
-        {
-            if (!pluginName.empty() && !std::ranges::any_of(a_target, [&](const std::string& name)
-                                           { return Config::IEquals(name, pluginName); }))
-            {
-                a_target.push_back(pluginName);
-            }
-        }
-    }
-
     bool PluginFilterEmpty(const TuningUtil::PluginFilter& a_filter)
     {
         return a_filter.exact.empty() && a_filter.contains.empty();
@@ -1964,25 +1867,25 @@ namespace MPL::WeatherPatcher
 
     struct ProfilePluginTargets
     {
-        bool catchAll = true;
         std::vector<std::string> included;
         std::vector<std::string> excluded;
     };
 
     ProfilePluginTargets ResolveProfilePluginTargets(
         const Settings& a_settings,
-        const std::unordered_map<std::string, SourceWeatherSet>& a_weatherSets)
+        const std::unordered_map<std::string, SourceWeatherSet>& a_weatherSets,
+        const bool a_applyProfileFilters = true)
     {
         ProfilePluginTargets result;
-        result.catchAll = PluginFilterEmpty(a_settings.pluginInclusions);
+        const auto includeAll = !a_applyProfileFilters || PluginFilterEmpty(a_settings.pluginInclusions);
         for (const auto& [pluginName, weathers] : a_weatherSets)
         {
             (void)weathers;
-            if (PluginNameMatches(pluginName, a_settings.pluginExclusions))
+            if (a_applyProfileFilters && PluginNameMatches(pluginName, a_settings.pluginExclusions))
             {
                 result.excluded.push_back(pluginName);
             }
-            else if (!result.catchAll && PluginNameMatches(pluginName, a_settings.pluginInclusions))
+            else if (includeAll || PluginNameMatches(pluginName, a_settings.pluginInclusions))
             {
                 result.included.push_back(pluginName);
             }
@@ -1997,6 +1900,50 @@ namespace MPL::WeatherPatcher
         return result;
     }
 
+    using WeatherOwnerMap = std::unordered_map<RE::FormID, std::string>;
+
+    WeatherOwnerMap ResolveWeatherOwners(
+        const std::unordered_map<std::string, SourceWeatherSet>& a_weatherSets)
+    {
+        WeatherOwnerMap result;
+        for (const auto& discovered : TuningUtil::GetProfiles())
+        {
+            auto profileName = discovered.name;
+            const auto settings = LoadSettings(profileName);
+            if (!settings || !settings->EnableProfile ||
+                PluginFilterEmpty(settings->weatherPluginOwnership))
+            {
+                continue;
+            }
+            for (const auto& [pluginName, weathers] : a_weatherSets)
+            {
+                if (!PluginNameMatches(pluginName, settings->weatherPluginOwnership))
+                {
+                    continue;
+                }
+                for (const auto* weather : weathers)
+                {
+                    if (weather) result[weather->GetFormID()] = discovered.name;
+                }
+            }
+        }
+        return result;
+    }
+
+    SourceWeatherSet RemoveWeathersOwnedByOtherProfiles(
+        SourceWeatherSet a_weathers,
+        const WeatherOwnerMap& a_owners,
+        const std::string_view a_profileName)
+    {
+        std::erase_if(a_weathers, [&](const auto* a_weather)
+        {
+            if (!a_weather) return true;
+            const auto owner = a_owners.find(a_weather->GetFormID());
+            return owner != a_owners.end() && !Config::IEquals(owner->second, a_profileName);
+        });
+        return a_weathers;
+    }
+
     std::vector<std::string> GetOrderedSettingsProfiles()
     {
         static constexpr std::array roots{
@@ -2009,8 +1956,6 @@ namespace MPL::WeatherPatcher
             std::string_view{ "betweenWeatherCompression" },
             std::string_view{ "withinWeatherCompression" },
             std::string_view{ "compressionAnchor" },
-            std::string_view{ "dynamicAmbientBetween" },
-            std::string_view{ "dynamicSunlightBetween" },
             std::string_view{ "weatherInclusions" },
             std::string_view{ "weatherExclusions" },
             std::string_view{ "pluginInclusions" },
@@ -2084,37 +2029,6 @@ namespace MPL::WeatherPatcher
         return result;
     }
 
-    SourceWeatherSet BuildUnclaimedWeatherSet(
-        RE::TESDataHandler* a_dataHandler,
-        const std::unordered_map<std::string, SourceWeatherSet>& a_weatherSets,
-        const std::vector<std::string>& a_claimedPlugins)
-    {
-        std::unordered_set<RE::FormID> claimedFormIDs;
-        for (const auto& pluginName : a_claimedPlugins)
-        {
-            if (const auto* weatherSet = FindWeatherSet(a_weatherSets, pluginName))
-            {
-                for (const auto* weather : *weatherSet)
-                {
-                    if (weather)
-                    {
-                        claimedFormIDs.insert(weather->GetFormID());
-                    }
-                }
-            }
-        }
-
-        SourceWeatherSet result;
-        for (auto* weather : a_dataHandler->GetFormArray<RE::TESWeather>())
-        {
-            if (weather && !claimedFormIDs.contains(weather->GetFormID()))
-            {
-                result.push_back(weather);
-            }
-        }
-        return result;
-    }
-
     SourceWeatherSet RemovePluginExcludedWeathers(
         SourceWeatherSet a_weathers,
         const std::unordered_map<std::string, SourceWeatherSet>& a_weatherSets,
@@ -2140,7 +2054,6 @@ namespace MPL::WeatherPatcher
     {
         std::vector<std::string> targetPlugins;
         SourceWeatherSet weathers;
-        bool excludesTargetPlugins = false;
     };
 
     struct CachedResolvedWeatherFilter
@@ -2233,33 +2146,18 @@ namespace MPL::WeatherPatcher
     SourceWeatherSet ResolveProfileWeatherSet(
         RE::TESDataHandler* a_dataHandler,
         const std::vector<std::string>& a_targetPlugins,
-        const std::string& a_profileName,
-        bool a_excludeTargetPlugins = false)
+        const std::string& a_profileName)
     {
         const auto& sourceWeatherSets = ResolveSourceWeatherSets(a_dataHandler);
         auto& profileCache = GetWeatherResolutionCache().profileWeatherSets[ProfileNameFromKey(a_profileName)];
-        if (profileCache.excludesTargetPlugins != a_excludeTargetPlugins ||
-            !SameTargetPlugins(profileCache.targetPlugins, a_targetPlugins))
+        if (!SameTargetPlugins(profileCache.targetPlugins, a_targetPlugins))
         {
             profileCache.targetPlugins = a_targetPlugins;
-            profileCache.excludesTargetPlugins = a_excludeTargetPlugins;
-            if (a_excludeTargetPlugins)
-            {
-                profileCache.weathers = BuildUnclaimedWeatherSet(a_dataHandler, sourceWeatherSets, a_targetPlugins);
-            DetailedLogging::Info(
-                "[Weather] {} | scope=unclaimed | targets={} | claimedPlugins={}",
-                    a_profileName,
-                    profileCache.weathers.size(),
-                    a_targetPlugins.size());
-            }
-            else
-            {
-                profileCache.weathers = BuildProfileWeatherSet(sourceWeatherSets, a_targetPlugins, a_profileName);
+            profileCache.weathers = BuildProfileWeatherSet(sourceWeatherSets, a_targetPlugins, a_profileName);
             DetailedLogging::Info(
                 "[Weather] {} | targets={}",
-                    a_profileName,
-                    profileCache.weathers.size());
-            }
+                a_profileName,
+                profileCache.weathers.size());
         }
         return profileCache.weathers;
     }
@@ -2443,7 +2341,7 @@ namespace MPL::WeatherPatcher
         {
             return locallyIncluded;
         }
-        return a_globallyIncluded;
+        return a_rule.ignoreProfileFilters || a_globallyIncluded;
     }
 
     std::size_t ApplySettingsToWeatherSet(
@@ -2464,20 +2362,12 @@ namespace MPL::WeatherPatcher
         const bool brightnessActive = BrightnessIsActive(brightness.values);
         const bool compressionActive = CompressionIsActive(compression.values);
         const bool withinWeatherCompressionActive = CompressionIsActive(withinWeatherCompression.values);
-        const bool dynamicAmbientActive =
-            a_settings.dynamicAmbientBetween.darkLimit ||
-            a_settings.dynamicAmbientBetween.brightLimit;
-        const bool dynamicSunlightActive =
-            a_settings.dynamicSunlightBetween.darkLimit ||
-            a_settings.dynamicSunlightBetween.brightLimit;
         const bool saturationActive = SaturationIsActive(saturation) || HueScalesAreActive(hueScales);
         const bool hueShiftActive = HueShiftIsActive(hueShift);
         const bool weatherColorActive =
-            brightnessActive ||
+            WeatherBrightnessIsActive(brightness.values) ||
             compressionActive ||
             withinWeatherCompressionActive ||
-            dynamicAmbientActive ||
-            dynamicSunlightActive ||
             saturationActive ||
             hueShiftActive;
 
@@ -2508,21 +2398,19 @@ namespace MPL::WeatherPatcher
             a_weatherSet,
             DynamicAmbientMode::between,
             DynamicBrightnessField::sunlight);
+        const auto ambientWithinGaugeSource = AnchorGaugeRange(
+            ambientWithinCompressionSource,
+            a_anchors.ambientAnchor);
+        const auto ambientBetweenGaugeSource = AnchorGaugeRange(
+            ambientBetweenCompressionSource,
+            a_anchors.ambientAnchor);
+        const auto sunlightWithinGaugeSource = AnchorGaugeRange(
+            sunlightWithinCompressionSource,
+            a_anchors.sunlightAnchor);
+        const auto sunlightBetweenGaugeSource = AnchorGaugeRange(
+            sunlightBetweenCompressionSource,
+            a_anchors.sunlightAnchor);
 
-        const auto changedVolumetricLighting = ApplyVolumetricLightingSettings(
-            a_weatherSet,
-            a_settings.volumetricLightingIntensityMultiplier,
-            saturation,
-            hueScales,
-            hueShift,
-            a_settings.hueRanges);
-        if (!changedVolumetricLighting.empty())
-        {
-        DetailedLogging::Info(
-            "[Weather] VOLI | intensity={:.4f}x | targets={}",
-                std::max(0.0, a_settings.volumetricLightingIntensityMultiplier),
-                changedVolumetricLighting.size());
-        }
         if (compressionActive)
         {
             for (auto* weather : a_weatherSet)
@@ -2549,51 +2437,46 @@ namespace MPL::WeatherPatcher
         brightnessGains.fill(1.0);
         if (brightnessActive)
         {
-            brightnessGains = ApplyBrightness(a_weatherSet, brightness);
+            brightnessGains = ApplyBrightness(a_weatherSet, brightness, a_anchors);
         }
 
-        const auto dynamicAmbientBetweenBaseline = CaptureDynamicBetweenBrightnessBaseline(
+        const auto changedVolumetricLighting = ApplyVolumetricLightingSettings(
             a_weatherSet,
-            DynamicBrightnessField::ambient);
-        const auto dynamicSunlightBetweenBaseline = CaptureDynamicBetweenBrightnessBaseline(
-            a_weatherSet,
-            DynamicBrightnessField::sunlight);
-        DynamicBrightnessStatus dynamicAmbientBetweenStatus;
-        DynamicBrightnessStatus dynamicSunlightBetweenStatus;
-        ApplyDynamicBrightnessBetween(
-            a_weatherSet,
-            a_settings.dynamicAmbientBetween,
-            dynamicAmbientBetweenBaseline,
-            DynamicBrightnessField::ambient,
-            brightness,
-            dynamicAmbientBetweenStatus);
-        ApplyDynamicBrightnessBetween(
-            a_weatherSet,
-            a_settings.dynamicSunlightBetween,
-            dynamicSunlightBetweenBaseline,
-            DynamicBrightnessField::sunlight,
-            brightness,
-            dynamicSunlightBetweenStatus);
+            a_settings.volumetricLightingIntensityMultiplier,
+            brightnessGains[kVolumetricLightingBrightnessField],
+            saturation,
+            hueScales,
+            hueShift,
+            a_settings.hueRanges);
+        if (!changedVolumetricLighting.empty())
+        {
+            DetailedLogging::Info(
+                "[Weather] VOLI | intensity={:.4f}x | brightness={:.4f}x | targets={}",
+                std::max(0.0, a_settings.volumetricLightingIntensityMultiplier),
+                brightnessGains[kVolumetricLightingBrightnessField],
+                changedVolumetricLighting.size());
+        }
+
         const auto ambientWithinCompressionStatus = BuildCompressionStatus(
-            ambientWithinCompressionSource,
+            ambientWithinGaugeSource,
             withinWeatherCompression.values.ambientCompression,
-            ambientWithinCompressionSource.brightLimit,
+            a_anchors.ambientAnchor,
             brightnessGains[kAmbientBrightnessField],
             false);
         const auto ambientBetweenCompressionStatus = BuildCompressionStatus(
-            ambientBetweenCompressionSource,
+            ambientBetweenGaugeSource,
             compression.values.ambientCompression,
             a_anchors.ambientAnchor,
             brightnessGains[kAmbientBrightnessField],
             true);
         const auto sunlightWithinCompressionStatus = BuildCompressionStatus(
-            sunlightWithinCompressionSource,
+            sunlightWithinGaugeSource,
             withinWeatherCompression.values.sunlightCompression,
-            sunlightWithinCompressionSource.brightLimit,
+            a_anchors.sunlightAnchor,
             brightnessGains[kSunlightBrightnessField],
             false);
         const auto sunlightBetweenCompressionStatus = BuildCompressionStatus(
-            sunlightBetweenCompressionSource,
+            sunlightBetweenGaugeSource,
             compression.values.sunlightCompression,
             a_anchors.sunlightAnchor,
             brightnessGains[kSunlightBrightnessField],
@@ -2663,8 +2546,8 @@ namespace MPL::WeatherPatcher
     {
         std::string name;
         Settings settings;
-        ProfilePluginTargets plugins;
         SourceWeatherSet targets;
+        SourceWeatherSet profileFilteredTargets;
     };
 
     struct FilteredHueComponent
@@ -2694,7 +2577,7 @@ namespace MPL::WeatherPatcher
         }
     };
 
-    constexpr std::size_t kFilteredWeatherFieldCount = kBrightnessFieldCount + 1;
+    constexpr std::size_t kFilteredWeatherFieldCount = kBrightnessFieldCount;
     using FilteredWeatherAdjustments =
         std::array<std::array<FilteredColorAdjustment, RE::TESWeather::ColorTime::kTotal>, kFilteredWeatherFieldCount>;
 
@@ -2703,10 +2586,6 @@ namespace MPL::WeatherPatcher
         const auto target = LowercaseKey(std::string(a_target));
         const auto found = std::ranges::find_if(kBrightnessFieldNames, [&](const auto a_name)
             { return LowercaseKey(std::string(a_name)) == target; });
-        if (found == kBrightnessFieldNames.end() && target == "volumetriclighting")
-        {
-            return kBrightnessFieldCount;
-        }
         return found != kBrightnessFieldNames.end() ?
                    std::optional<std::size_t>{ static_cast<std::size_t>(std::distance(kBrightnessFieldNames.begin(), found)) } :
                    std::nullopt;
@@ -2853,7 +2732,7 @@ namespace MPL::WeatherPatcher
             const auto resolved = ResolveSaturation(a_settings.saturationMultiplier, configuredLinks);
             links = resolved.links;
         }
-        else
+        else if (result.operation == TuningUtil::FilteredWeatherOperation::hueShift)
         {
             const auto resolved = ResolveHueShift(a_settings.hueShift, configuredLinks);
             links = resolved.links;
@@ -2950,9 +2829,8 @@ namespace MPL::WeatherPatcher
 
         for (const auto& profile : a_profiles)
         {
-            const auto globallyIncluded = FilterProfileWeathers(profile.settings, profile.targets, profile.name);
             std::unordered_set<RE::FormID> globallyIncludedFormIDs;
-            for (const auto* weather : globallyIncluded)
+            for (const auto* weather : profile.profileFilteredTargets)
             {
                 if (weather) globallyIncludedFormIDs.insert(weather->GetFormID());
             }
@@ -3019,7 +2897,7 @@ namespace MPL::WeatherPatcher
                         for (std::size_t field = 0; field < resolved.active.size(); ++field)
                         {
                             if (!resolved.active[field]) continue;
-                            if (field < kBrightnessFieldCount)
+                            if (field < kWeatherBrightnessFieldCount)
                             {
                                 accumulate(weatherAdjustments[field][time], field);
                             }
@@ -3044,7 +2922,7 @@ namespace MPL::WeatherPatcher
             }
             CaptureBaselineIfNeeded(weather);
             auto weatherChanged = false;
-            for (std::size_t field = 0; field < kBrightnessFieldCount; ++field)
+            for (std::size_t field = 0; field < kWeatherBrightnessFieldCount; ++field)
             {
                 for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
                 {
@@ -3080,7 +2958,7 @@ namespace MPL::WeatherPatcher
             patched += weatherChanged ? 1 : 0;
         }
 
-        std::size_t volumetricPatched = 0;
+        std::unordered_set<RE::BGSVolumetricLighting*> volumetricPatched;
         auto* stat = MPL::Config::StatData::GetSingleton();
         for (auto& [volumetricLighting, adjustment] : volumetricAdjustments)
         {
@@ -3100,7 +2978,7 @@ namespace MPL::WeatherPatcher
                 hueShift += ColorHueShiftDegrees(adjustedColor, component.shift, component.ranges);
             ShiftHue(adjustedColor, hueShift);
             volumetricLighting->color = adjustedColor;
-            ++volumetricPatched;
+            volumetricPatched.insert(volumetricLighting);
         }
 
         if (activeRules > 0)
@@ -3109,9 +2987,9 @@ namespace MPL::WeatherPatcher
                 "[Weather] filtered sliders | rules={} | weather={} | VOLI={}",
                 activeRules,
                 patched,
-                volumetricPatched);
+                volumetricPatched.size());
         }
-        return patched + volumetricPatched;
+        return patched + volumetricPatched.size();
     }
 
     void ApplyAllSettings()
@@ -3120,7 +2998,6 @@ namespace MPL::WeatherPatcher
         {
             std::string name;
             Settings settings;
-            ProfilePluginTargets plugins;
             std::unordered_set<RE::TESWeather*> targets;
         };
 
@@ -3150,7 +3027,7 @@ namespace MPL::WeatherPatcher
         std::size_t weathersApplied = 0;
         std::vector<ActiveProfile> profiles;
         std::vector<ActiveFilteredWeatherProfile> filteredProfiles;
-        std::vector<std::string> claimedPlugins;
+        const auto weatherOwners = ResolveWeatherOwners(weatherSets);
 
         for (auto& profileName : GetOrderedSettingsProfiles())
         {
@@ -3165,9 +3042,7 @@ namespace MPL::WeatherPatcher
                 continue;
             }
 
-            auto pluginTargets = ResolveProfilePluginTargets(*settings, weatherSets);
-            if (!pluginTargets.catchAll) AppendUniquePlugins(claimedPlugins, pluginTargets.included);
-            profiles.push_back({ profileName, std::move(*settings), std::move(pluginTargets), {} });
+            profiles.push_back({ profileName, std::move(*settings), {} });
         }
 
         for (const auto& profile : TuningUtil::GetProfiles())
@@ -3182,49 +3057,57 @@ namespace MPL::WeatherPatcher
             {
                 continue;
             }
-            auto pluginTargets = ResolveProfilePluginTargets(*settings, weatherSets);
-            if (!pluginTargets.catchAll) AppendUniquePlugins(claimedPlugins, pluginTargets.included);
-            filteredProfiles.push_back({ profile.name, std::move(*settings), std::move(pluginTargets), {} });
+            filteredProfiles.push_back({ profile.name, std::move(*settings), {}, {} });
         }
 
         for (auto& profile : profiles)
         {
-            auto resolutionPlugins = profile.plugins.included;
-            if (profile.plugins.catchAll)
-            {
-                resolutionPlugins = claimedPlugins;
-                AppendUniquePlugins(resolutionPlugins, profile.plugins.excluded);
-            }
+            const auto pluginTargets = ResolveProfilePluginTargets(profile.settings, weatherSets);
             auto profileWeatherSet = ResolveProfileWeatherSet(
                 dataHandler,
-                resolutionPlugins,
-                profile.name,
-                profile.plugins.catchAll);
+                pluginTargets.included,
+                profile.name);
             profileWeatherSet = RemovePluginExcludedWeathers(
                 std::move(profileWeatherSet),
                 weatherSets,
-                profile.plugins.excluded);
+                pluginTargets.excluded);
+            profileWeatherSet = RemoveWeathersOwnedByOtherProfiles(
+                std::move(profileWeatherSet),
+                weatherOwners,
+                profile.name);
             profileWeatherSet = FilterProfileWeathers(profile.settings, profileWeatherSet, profile.name);
             profile.targets.insert(profileWeatherSet.begin(), profileWeatherSet.end());
         }
 
         for (auto& profile : filteredProfiles)
         {
-            auto resolutionPlugins = profile.plugins.included;
-            if (profile.plugins.catchAll)
-            {
-                resolutionPlugins = claimedPlugins;
-                AppendUniquePlugins(resolutionPlugins, profile.plugins.excluded);
-            }
+            const auto allPlugins = ResolveProfilePluginTargets(profile.settings, weatherSets, false);
             profile.targets = ResolveProfileWeatherSet(
                 dataHandler,
-                resolutionPlugins,
-                profile.name,
-                profile.plugins.catchAll);
-            profile.targets = RemovePluginExcludedWeathers(
+                allPlugins.included,
+                profile.name);
+            profile.targets = RemoveWeathersOwnedByOtherProfiles(
                 std::move(profile.targets),
+                weatherOwners,
+                profile.name);
+
+            const auto profilePlugins = ResolveProfilePluginTargets(profile.settings, weatherSets);
+            profile.profileFilteredTargets = BuildProfileWeatherSet(
                 weatherSets,
-                profile.plugins.excluded);
+                profilePlugins.included,
+                profile.name);
+            profile.profileFilteredTargets = RemovePluginExcludedWeathers(
+                std::move(profile.profileFilteredTargets),
+                weatherSets,
+                profilePlugins.excluded);
+            profile.profileFilteredTargets = RemoveWeathersOwnedByOtherProfiles(
+                std::move(profile.profileFilteredTargets),
+                weatherOwners,
+                profile.name);
+            profile.profileFilteredTargets = FilterProfileWeathers(
+                profile.settings,
+                profile.profileFilteredTargets,
+                profile.name);
         }
 
         SourceWeatherSet targetedWeathers;
@@ -3271,7 +3154,10 @@ namespace MPL::WeatherPatcher
         {
             auto settings = TuningUtil::ResolveSettingsStack(stack.profiles);
             const auto& profileLabel = stack.profiles.back();
-            const auto profileAnchors = ResolveAnchors(settings.compressionAnchor, settings.links.weather);
+            const auto profileAnchors = ResolveAnchors(
+                settings.compressionAnchor,
+                settings.links.weather,
+                TuningUtil::ResolveCompressionAnchors(stack.profiles));
             const auto profileWeathersApplied = ApplySettingsToWeatherSet(
                 settings,
                 stack.weathers,
@@ -3337,7 +3223,7 @@ namespace MPL::WeatherPatcher
 
     SourceWeatherSet GetProfileTargetWeathers(
         std::string& a_profileName,
-        const bool a_applyWeatherFilter)
+        const bool a_applyProfileFilters)
     {
         if (ProfileNameFromKey(a_profileName).empty())
         {
@@ -3353,49 +3239,29 @@ namespace MPL::WeatherPatcher
 
         const auto& weatherSets = ResolveSourceWeatherSets(dataHandler);
         const auto settings = GetOrCreateSettings(a_profileName);
-        const auto pluginTargets = ResolveProfilePluginTargets(settings, weatherSets);
-        std::vector<std::string> claimedPlugins;
-        for (auto& profileName : GetOrderedSettingsProfiles())
-        {
-            const auto* profileSettings = Config::IEquals(profileName, a_profileName) ?
-                                              std::addressof(settings) :
-                                              nullptr;
-            const auto loaded = profileSettings ? std::optional<Settings>{} : LoadSettings(profileName);
-            if (!profileSettings && loaded)
-            {
-                profileSettings = std::addressof(*loaded);
-            }
-            if (profileSettings && profileSettings->EnableProfile)
-            {
-                const auto targets = ResolveProfilePluginTargets(*profileSettings, weatherSets);
-                if (!targets.catchAll)
-                {
-                    AppendUniquePlugins(claimedPlugins, targets.included);
-                }
-            }
-        }
-        auto resolutionPlugins = pluginTargets.included;
-        if (pluginTargets.catchAll)
-        {
-            resolutionPlugins = claimedPlugins;
-            AppendUniquePlugins(resolutionPlugins, pluginTargets.excluded);
-        }
+        const auto pluginTargets = ResolveProfilePluginTargets(
+            settings,
+            weatherSets,
+            a_applyProfileFilters);
         auto profileWeatherSet = ResolveProfileWeatherSet(
             dataHandler,
-            resolutionPlugins,
-            a_profileName,
-            pluginTargets.catchAll);
+            pluginTargets.included,
+            a_profileName);
         profileWeatherSet = RemovePluginExcludedWeathers(
             std::move(profileWeatherSet),
             weatherSets,
             pluginTargets.excluded);
-        if (a_applyWeatherFilter)
+        profileWeatherSet = RemoveWeathersOwnedByOtherProfiles(
+            std::move(profileWeatherSet),
+            ResolveWeatherOwners(weatherSets),
+            a_profileName);
+        if (a_applyProfileFilters)
         {
             profileWeatherSet = FilterProfileWeathers(settings, profileWeatherSet, a_profileName);
         }
         const auto enumerationKey =
             LowercaseKey(ProfileNameFromKey(a_profileName)) +
-            (a_applyWeatherFilter ?
+            (a_applyProfileFilters ?
                     "\x1F" "selectable" :
                     "\x1F" "filterable");
         if (GetWeatherResolutionCache()
@@ -3406,7 +3272,7 @@ namespace MPL::WeatherPatcher
             DetailedLogging::Info(
                 "[Weather] {} enumeration | {}={}",
                 a_profileName,
-                a_applyWeatherFilter ? "selectable" : "filterable",
+                a_applyProfileFilters ? "selectable" : "filterable",
                 profileWeatherSet.size());
         }
         return profileWeatherSet;
@@ -3447,6 +3313,10 @@ namespace MPL::WeatherPatcher
         const auto targetsFor = [&](std::string a_profileName)
         {
             SourceWeatherSet result;
+            const auto owningProfiles = GetOrderedSettingsProfiles();
+            if (!std::ranges::any_of(owningProfiles, [&](const auto& a_owner)
+                    { return Config::IEquals(a_owner, a_profileName); }))
+                return result;
             const auto* rule = TuningUtil::FindFilteredWeatherRule(a_profileName, a_ruleID);
             if (!rule)
             {
@@ -3454,8 +3324,8 @@ namespace MPL::WeatherPatcher
             }
 
             auto targets = GetProfileTargetWeathers(a_profileName, false);
-            const auto& settings = GetOrCreateSettings(a_profileName);
-            const auto globallyIncluded = FilterProfileWeathers(settings, targets, a_profileName);
+            auto globallyIncludedProfile = a_profileName;
+            const auto globallyIncluded = GetProfileTargetWeathers(globallyIncludedProfile, true);
             std::unordered_set<RE::FormID> globallyIncludedFormIDs;
             for (const auto* weather : globallyIncluded)
             {

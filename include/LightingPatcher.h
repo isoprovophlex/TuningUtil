@@ -9,7 +9,7 @@ namespace MPL::LightingPatcher
     void ApplyDataLoaded();
     void ApplyAllSettings(bool a_commitLightPlacer = true);
     void ReleaseRuntimeState();
-    bool ProfilesShareInteriorTarget(const std::string&, const std::string&);
+    bool ProfilesShareLightingTarget(const std::string&, const std::string&);
     bool ProfilesShareFilteredLightingTemplateTarget(const std::string&, const std::string&, std::string_view);
     bool ProfilesShareFilteredBaseLightTarget(const std::string&, const std::string&, std::string_view);
 

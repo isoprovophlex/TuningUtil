@@ -103,6 +103,14 @@ option(TUNINGUTIL_BUILD_TESTS "Build TuningUtil tests" ON)
 if(TUNINGUTIL_BUILD_TESTS)
   enable_testing()
 
+  add_executable(MenuBoxGeometryTests tests/MenuBoxGeometryTests.cpp)
+  target_compile_features(MenuBoxGeometryTests PRIVATE cxx_std_23)
+  target_include_directories(MenuBoxGeometryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+  add_executable(SliderLinkMathTests tests/SliderLinkMathTests.cpp)
+  target_compile_features(SliderLinkMathTests PRIVATE cxx_std_23)
+  target_include_directories(SliderLinkMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
   add_executable(
     JsonOverlayTests
     tests/JsonOverlayTests.cpp
@@ -165,7 +173,7 @@ if(TUNINGUTIL_BUILD_TESTS)
   endif()
 
   if(MSVC)
-    foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests)
+    foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests MenuBoxGeometryTests SliderLinkMathTests)
       target_compile_options(
         ${test_target}
         PRIVATE
@@ -186,6 +194,8 @@ if(TUNINGUTIL_BUILD_TESTS)
   endif()
 
   add_test(NAME JsonOverlayTests COMMAND JsonOverlayTests)
+  add_test(NAME MenuBoxGeometryTests COMMAND MenuBoxGeometryTests)
+  add_test(NAME SliderLinkMathTests COMMAND SliderLinkMathTests)
   add_test(NAME SliderCreatorTests COMMAND SliderCreatorTests)
   if(TARGET TuningUtilAddressLibraryTests)
     add_test(

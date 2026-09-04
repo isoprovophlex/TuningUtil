@@ -45,7 +45,7 @@ namespace MPL::SliderSettingCatalog
         constexpr std::array imageSpaceValues{
             NamedPath{ "saturationMultiplier", "Saturation" }, NamedPath{ "brightnessMultiplier", "Brightness" },
             NamedPath{ "contrastMultiplier", "Contrast" }, NamedPath{ "sunlightScaleMultiplier", "Sunlight Scale" },
-            NamedPath{ "skyScaleMultiplier", "Sky Scale" },
+            NamedPath{ "skyScaleMultiplier", "Sky Scale" }, NamedPath{ "tintStrengthMultiplier", "Tint Strength" },
         };
 
         bool IEquals(const std::string_view a_left, const std::string_view a_right)
@@ -193,7 +193,7 @@ namespace MPL::SliderSettingCatalog
             entries.reserve(320);
 
             AddColorCategory(entries, Domain::weather, "Brightness", "brightnessMultiplier",
-                std::span(weatherColors).first(15), FilterOperation::brightness, true, false, 1.0);
+                weatherColors, FilterOperation::brightness, true, false, 1.0);
             AddColorCategory(entries, Domain::weather, "Saturation", "saturationMultiplier",
                 weatherColors, FilterOperation::saturation, true, true, 1.0);
             AddHueShiftCategory(entries, Domain::weather, "Hue Shift", "hueShift",
@@ -202,35 +202,45 @@ namespace MPL::SliderSettingCatalog
                 compressionColors, FilterOperation::none, true);
             AddColorCategory(entries, Domain::weather, "Within Weather Compression", "withinWeatherCompression",
                 compressionColors, FilterOperation::none, true);
-            AddColorCategory(entries, Domain::weather, "Compression Anchors", "compressionAnchor",
-                compressionColors, FilterOperation::none, true);
             AddHueValues(entries, Domain::weather, "Saturation Scales", "hueScales", 1.0);
             AddHueRanges(entries, Domain::weather, "Hue Ranges", "hueRanges");
             Add(entries, Domain::weather, "Volumetric Lighting", "Intensity",
                 "volumetricLightingIntensityMultiplier", {}, {}, FilterOperation::none, false, false, 1.0);
             AddImageSpace(entries, Domain::weather, "Image Space", "exteriorImageSpace");
 
-            AddColorCategory(entries, Domain::lighting, "Brightness", "intBrightnessMultiplier",
+            AddColorCategory(entries, Domain::lighting, "Brightness", "lightBrightnessMultiplier",
                 lightingColors, FilterOperation::brightness, true, false, 1.0);
-            AddColorCategory(entries, Domain::lighting, "Saturation", "intSaturationMultiplier",
+            AddColorCategory(entries, Domain::lighting, "Saturation", "lightSaturationMultiplier",
                 lightingColors, FilterOperation::none, true, false, 1.0);
-            AddHueShiftCategory(entries, Domain::lighting, "Hue Shift", "intHueShift",
+            AddHueShiftCategory(entries, Domain::lighting, "Hue Shift", "lightHueShift",
                 lightingColors, FilterOperation::none, true);
-            AddHueValues(entries, Domain::lighting, "Saturation Scales", "intAmbientHueScales", 1.0);
-            AddHueRanges(entries, Domain::lighting, "Hue Ranges", "intHueRanges");
+            AddHueValues(entries, Domain::lighting, "Saturation Scales", "lightAmbientHueScales", 1.0);
+            AddHueRanges(entries, Domain::lighting, "Hue Ranges", "lightHueRanges");
+            Add(
+                entries,
+                Domain::lighting,
+                "Fog",
+                "Fog Power",
+                "lightFogPowerMultiplier",
+                {},
+                {},
+                FilterOperation::fogPower,
+                false,
+                false,
+                1.0);
             Add(
                 entries,
                 Domain::lighting,
                 "Fog",
                 "Fog Strength",
-                "intFogMaxMultiplier",
+                "lightFogMaxMultiplier",
                 {},
                 {},
                 FilterOperation::fogStrength,
                 false,
                 false,
                 1.0);
-            AddImageSpace(entries, Domain::lighting, "Image Space", "intImageSpace");
+            AddImageSpace(entries, Domain::lighting, "Image Space", "lightImageSpace");
             Add(entries, Domain::lighting, "Point Lights", "Brightness", "pointLights.fadeMultiplier",
                 "brightness", {}, FilterOperation::brightness, false, false, 1.0);
             Add(entries, Domain::lighting, "Point Lights", "Effect Brightness", "pointLights.effectFadeMultiplier",

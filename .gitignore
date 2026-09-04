@@ -3,4 +3,6 @@ build*
 .cache
 compile_commands.json
 /res
-/tests
+/tests/*
+!/tests/MenuBoxGeometryTests.cpp
+!/tests/SliderLinkMathTests.cpp

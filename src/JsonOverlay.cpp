@@ -34,8 +34,10 @@ namespace MPL::JsonOverlay
             std::string_view{ "lightingTemplateExclusions" },
         };
         constexpr std::array kPluginFilterKeys{
+            std::string_view{ "weatherPluginOwnership" },
             std::string_view{ "pluginInclusions" },
             std::string_view{ "pluginExclusions" },
+            std::string_view{ "lightingTemplatePluginOwnership" },
             std::string_view{ "lightingTemplatePluginInclusions" },
             std::string_view{ "lightingTemplatePluginExclusions" },
         };

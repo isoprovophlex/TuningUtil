@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <ranges>
+#include <unordered_map>
 
 namespace MPL::RecordFilter
 {
@@ -91,6 +92,30 @@ namespace MPL::RecordFilter
             }
             return result;
         }
+
+        const std::unordered_map<RE::FormID, std::string>& RuntimeEditorIDs()
+        {
+            static const auto editorIDs = []
+            {
+                std::unordered_map<RE::FormID, std::string> result;
+                const auto& [forms, lock] = RE::TESForm::GetAllFormsByEditorID();
+                const RE::BSReadLockGuard guard{ lock };
+                if (!forms)
+                {
+                    return result;
+                }
+                result.reserve(forms->size());
+                for (const auto& [editorID, form] : *forms)
+                {
+                    if (form && !editorID.empty())
+                    {
+                        result.try_emplace(form->GetFormID(), editorID.c_str());
+                    }
+                }
+                return result;
+            }();
+            return editorIDs;
+        }
     }  // namespace
 
     Resolved Resolve(
@@ -169,8 +194,13 @@ namespace MPL::RecordFilter
                 }
             }
         }
-        const auto* editorID = a_form->GetFormEditorID();
-        return editorID ? editorID : "";
+        if (const auto* editorID = a_form->GetFormEditorID(); editorID && *editorID)
+        {
+            return editorID;
+        }
+        const auto& runtimeEditorIDs = RuntimeEditorIDs();
+        const auto editorID = runtimeEditorIDs.find(a_form->GetFormID());
+        return editorID != runtimeEditorIDs.end() ? editorID->second : std::string{};
     }
 
     std::string DisplayName(const RE::TESForm* a_form)

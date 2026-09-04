@@ -22,7 +22,7 @@ namespace MPL::WeatherPatcher
 
     void ApplyAllSettings();
     void ApplyDataLoaded();
-    std::optional<double> ReadWeatherAmbientAnchor(std::string_view);
+    std::optional<WeatherCompressionAnchors> ReadWeatherCompressionAnchors(std::string_view);
     void ReleaseRuntimeState();
     void InvalidatePresetCache();
     SourceWeatherSet GetSelectableWeathers(std::string&);

@@ -23,6 +23,7 @@ namespace MPL::WeatherPatcher
         double moonGlareMultiplier;
         double starsMultiplier;
         double cloudLayers;
+        double volumetricLightingMultiplier;
     };
 
     struct CompressionValues
@@ -58,7 +59,7 @@ namespace MPL::WeatherPatcher
     struct BrightnessResolution
     {
         BrightnessValues values;
-        std::array<std::optional<SettingLinkResolution>, 15> links;
+        std::array<std::optional<SettingLinkResolution>, 16> links;
     };
 
     struct SaturationValues
@@ -128,11 +129,14 @@ namespace MPL::WeatherPatcher
     SaturationResolution ResolveSaturation(const SaturationSettings&, const WeatherLinks&);
     AmbientHueScaleValues ResolveHueScales(const AmbientHueScales&);
     HueShiftResolution ResolveHueShift(const HueShiftSettings&, const WeatherLinks&);
-    AnchorValues ResolveAnchors(const CompressionAnchorSettings&, const WeatherLinks&);
+    AnchorValues ResolveAnchors(
+        const CompressionAnchorSettings&,
+        const WeatherLinks&,
+        const WeatherCompressionAnchors&);
 }  // namespace MPL::WeatherPatcher
 
 namespace MPL::LightingPatcher
 {
-    using InteriorLinkTopology = std::array<std::optional<WeatherPatcher::SettingLinkResolution>, 5>;
-    InteriorLinkTopology ResolveInteriorLinks(const InteriorLinks&);
+    using LightingLinkTopology = std::array<std::optional<WeatherPatcher::SettingLinkResolution>, 5>;
+    LightingLinkTopology ResolveLightingLinks(const LightingLinks&);
 }  // namespace MPL::LightingPatcher

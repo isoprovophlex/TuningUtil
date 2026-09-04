@@ -13,6 +13,12 @@ namespace MPL::WeatherPatcher
     constexpr double kDefaultSunlightAnchor = 255.0;
     constexpr double kDefaultWeatherColorAnchor = 255.0;
 
+    struct WeatherCompressionAnchors
+    {
+        double ambient = kDefaultDalcAnchor;
+        double sunlight = kDefaultSunlightAnchor;
+    };
+
     using SettingLink = std::optional<std::tuple<std::string, double>>;
 
     struct WeatherLinks
@@ -74,6 +80,7 @@ namespace MPL::WeatherPatcher
         double moonGlare = 1.0;
         double stars = 1.0;
         double cloudLayers = 1.0;
+        double volumetricLighting = 1.0;
     };
 
     struct CompressionSettings
@@ -183,7 +190,6 @@ namespace MPL::WeatherPatcher
 
     struct CompressionAnchorSettings
     {
-        double ambient = kDefaultDalcAnchor;
         double sunlight = kDefaultSunlightAnchor;
         double effectLighting = kDefaultWeatherColorAnchor;
         double fogFar = kDefaultWeatherColorAnchor;
@@ -199,19 +205,11 @@ namespace MPL::WeatherPatcher
         double stars = kDefaultWeatherColorAnchor;
     };
 
-    struct DynamicAmbientSettings
-    {
-        std::optional<double> darkLimit;
-        std::optional<double> brightLimit;
-    };
-
     struct DynamicAmbientRange
     {
         double darkLimit = 0.0;
         double brightLimit = 255.0;
         bool available = false;
-        const RE::TESWeather* darkWeather = nullptr;
-        const RE::TESWeather* brightWeather = nullptr;
     };
 
     struct DynamicBrightnessStatus
@@ -240,6 +238,7 @@ namespace MPL::WeatherPatcher
         double saturationMultiplier = 1.0;
         double brightnessMultiplier = 1.0;
         double contrastMultiplier = 1.0;
+        double tintStrengthMultiplier = 1.0;
         double sunlightScaleMultiplier = 1.0;
         double skyScaleMultiplier = 1.0;
     };

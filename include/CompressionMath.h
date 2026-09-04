@@ -5,6 +5,19 @@
 
 namespace MPL::CompressionMath
 {
+    inline double AnchorConstrainedGain(
+        const double a_requestedGain,
+        const double a_anchor,
+        const double a_ceiling = 255.0)
+    {
+        const double requestedGain = std::max(0.1, a_requestedGain);
+        if (requestedGain <= 1.0 || a_anchor <= 0.0001 || a_ceiling <= 0.0001)
+        {
+            return requestedGain;
+        }
+        return std::min(requestedGain, a_ceiling / a_anchor);
+    }
+
     inline double BetweenCompressionValue(
         const double a_value,
         const double a_compression,

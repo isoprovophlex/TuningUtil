@@ -84,15 +84,14 @@ namespace MPL::SliderCreator
         std::vector<Target> settings;
         std::optional<CustomLinks> customLinks;
         std::optional<HueScales> hueScales;
-        bool advanced = false;
         bool filtered = true;
         FilterDomain filterDomain = FilterDomain::weather;
+        bool ignoreProfileFilters = false;
         bool invert = false;
         bool useTimes = false;
         std::array<bool, 4> times{ true, true, true, true };
         Filter include;
         Filter exclude;
-        std::optional<double> defaultValue;
         std::optional<double> minimum;
         std::optional<double> maximum;
         std::optional<double> step;
@@ -136,7 +135,6 @@ namespace MPL::SliderCreator
         const std::string&,
         const std::string&,
         const std::string&,
-        bool,
         std::string&,
         bool = false);
     bool AddDescriptionModule(
@@ -162,6 +160,18 @@ namespace MPL::SliderCreator
         std::size_t,
         std::size_t,
         const std::string&,
+        std::string&);
+    struct ModuleUpdate
+    {
+        std::string name;
+        std::optional<std::string> text;
+        std::optional<bool> defaultOpen;
+    };
+    bool UpdateModule(
+        const std::filesystem::path&,
+        std::size_t,
+        std::size_t,
+        const ModuleUpdate&,
         std::string&);
     bool RenameModule(
         const std::filesystem::path&,
