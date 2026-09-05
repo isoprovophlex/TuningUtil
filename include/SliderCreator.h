@@ -16,6 +16,7 @@ namespace MPL::SliderCreator
         weather,
         lightingTemplate,
         baseLight,
+        baseObject,
     };
 
     inline constexpr std::array<std::string_view, 4> kRequiredProfileModuleKinds{

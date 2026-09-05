@@ -256,6 +256,30 @@ namespace MPL::SliderSettingCatalog
                     "pointLights.hueShift." + std::string(hue.key),
                     "hueShift", hue.key, FilterOperation::hueShift);
             }
+            Add(
+                entries,
+                Domain::lighting,
+                "Object Effect Lighting",
+                "Emissive Multiplier",
+                "objectEffectLighting.emissiveMultiplier",
+                "emissiveMultiplier",
+                {},
+                FilterOperation::brightness,
+                false,
+                false,
+                1.0);
+            Add(
+                entries,
+                Domain::lighting,
+                "Object Effect Lighting",
+                "Base Color Scale",
+                "objectEffectLighting.baseColorScale",
+                "baseColorScale",
+                {},
+                FilterOperation::brightness,
+                false,
+                false,
+                1.0);
             return entries;
         }
     }

@@ -1,5 +1,6 @@
 #include <LumaAPI.h>
 #include <LumaClient.h>
+#include <ObjectLightingPatcher.h>
 #include <PointLightPatcher.h>
 #include <REL/Version.h>
 #include <SKSE/API.h>
@@ -21,15 +22,18 @@ namespace
         case SKSE::MessagingInterface::kDataLoaded:
             {
                 MPL::PointLightPatcher::InstallRuntimeEvents();
+                MPL::ObjectLightingPatcher::InstallRuntimeEvents();
                 MPL::TuningUtil::ApplyDataLoaded();
                 MPL::TuningMenu::Register();
                 break;
             }
         case SKSE::MessagingInterface::kPreLoadGame:
             MPL::PointLightPatcher::ResetCellTracking();
+            MPL::ObjectLightingPatcher::ResetReferenceTracking();
             break;
         case SKSE::MessagingInterface::kNewGame:
             MPL::PointLightPatcher::ResetCellTracking();
+            MPL::ObjectLightingPatcher::ResetReferenceTracking();
             break;
         default:
             break;

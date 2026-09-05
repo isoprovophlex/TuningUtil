@@ -6,3 +6,4 @@ compile_commands.json
 /tests/*
 !/tests/MenuBoxGeometryTests.cpp
 !/tests/SliderLinkMathTests.cpp
+/test-results

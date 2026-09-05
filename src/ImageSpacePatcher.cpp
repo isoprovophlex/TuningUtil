@@ -46,25 +46,6 @@ namespace MPL::ImageSpacePatcher
             return cache;
         }
 
-        const HeliosphanAPI::Interface* GetHeliosphanAPI()
-        {
-            static const auto* api = []
-            {
-                const auto module = GetModuleHandleW(L"Heliosphan.dll");
-                const auto request = module ?
-                                         reinterpret_cast<HeliosphanAPI::RequestInterface>(
-                                             GetProcAddress(module, "Heliosphan_RequestAPI")) :
-                                         nullptr;
-                const auto* result = request ? request(HeliosphanAPI::kVersion) : nullptr;
-                return result && result->version == HeliosphanAPI::kVersion &&
-                               result->IsAutoCSTonemappingApplied &&
-                               result->SetAutoCSTonemappingSuppressed ?
-                           result :
-                           nullptr;
-            }();
-            return api;
-        }
-
         RuntimeMonitor CaptureRuntimeMonitor()
         {
             RuntimeMonitor result;
@@ -323,7 +304,7 @@ namespace MPL::ImageSpacePatcher
         for (auto& profileName : TuningUtil::GetProfilesWithSettings(exteriorRoots))
         {
             const auto& settings = TuningUtil::GetSettings(profileName);
-            if (const auto* api = GetHeliosphanAPI())
+            if (const auto* api = CSTonemapping::GetHeliosphanAPI())
             {
                 const auto force = settings.exteriorImageSpace.ForceCSTonemapping;
                 api->SetAutoCSTonemappingSuppressed(
@@ -420,7 +401,7 @@ namespace MPL::ImageSpacePatcher
 
     std::optional<bool> IsAutoCSTonemappingApplied(const std::string_view a_profile)
     {
-        const auto* api = GetHeliosphanAPI();
+        const auto* api = CSTonemapping::GetHeliosphanAPI();
         if (!api)
         {
             return std::nullopt;

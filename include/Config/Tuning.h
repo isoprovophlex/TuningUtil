@@ -88,5 +88,6 @@ namespace MPL::TuningUtil
         std::vector<std::string> cellExclusions;
         LightingPatcher::PointLightSettings pointLights;
         std::map<std::string, double> filteredBaseLightAdjustments;
+        std::map<std::string, double> filteredObjectLightingAdjustments;
     };
 }  // namespace MPL::TuningUtil

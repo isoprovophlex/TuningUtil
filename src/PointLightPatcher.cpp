@@ -930,8 +930,13 @@ namespace MPL::PointLightPatcher
             heliosphanAPI = requestHeliosphan ?
                                 requestHeliosphan(HeliosphanAPI::kVersion) :
                                 nullptr;
+            if (!heliosphanAPI && requestHeliosphan)
+            {
+                heliosphanAPI = requestHeliosphan(HeliosphanAPI::kLegacyVersion);
+            }
             if (!heliosphanAPI ||
-                heliosphanAPI->version != HeliosphanAPI::kVersion ||
+                (heliosphanAPI->version != HeliosphanAPI::kVersion &&
+                    heliosphanAPI->version != HeliosphanAPI::kLegacyVersion) ||
                 !heliosphanAPI->RegisterLightPlacerTransformer ||
                 !heliosphanAPI->RequestLightPlacerReload ||
                 !heliosphanAPI->RegisterReferenceClient)

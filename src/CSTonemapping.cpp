@@ -1,9 +1,11 @@
 #include <CSTonemapping.h>
+#include <HeliosphanAPI.h>
 
 #include <cmath>
 #include <mutex>
 #include <ranges>
 #include <unordered_map>
+#include <vector>
 
 namespace MPL::CSTonemapping
 {
@@ -27,6 +29,7 @@ namespace MPL::CSTonemapping
             std::unordered_set<RE::TESImageSpace*>
                 appliedForcedTargets;
             bool initialized = false;
+            bool coordinated = false;
         };
 
         State& GetState()
@@ -76,6 +79,16 @@ namespace MPL::CSTonemapping
             if (!dataHandler)
             {
                 return;
+            }
+            if (const auto* api = GetHeliosphanAPI();
+                api && api->version == HeliosphanAPI::kVersion && api->SetCSTonemappingForcedTargets)
+            {
+                const std::vector targets(a_state.forcedTargets.begin(), a_state.forcedTargets.end());
+                if (api->SetCSTonemappingForcedTargets(targets.data(), targets.size()))
+                {
+                    a_state.coordinated = true;
+                    return;
+                }
             }
             CaptureBaselines(a_state, dataHandler);
 
@@ -140,6 +153,23 @@ namespace MPL::CSTonemapping
         }
     }
 
+    const HeliosphanAPI::Interface* GetHeliosphanAPI()
+    {
+        static const auto* api = []
+        {
+            const auto module = GetModuleHandleW(L"Heliosphan.dll");
+            const auto request = module ? reinterpret_cast<HeliosphanAPI::RequestInterface>(
+                GetProcAddress(module, "Heliosphan_RequestAPI")) : nullptr;
+            auto* result = request ? request(HeliosphanAPI::kVersion) : nullptr;
+            if (!result && request) result = request(HeliosphanAPI::kLegacyVersion);
+            return result && (result->version == HeliosphanAPI::kVersion ||
+                                  result->version == HeliosphanAPI::kLegacyVersion) &&
+                           result->IsAutoCSTonemappingApplied && result->SetAutoCSTonemappingSuppressed ?
+                result : nullptr;
+        }();
+        return api;
+    }
+
     void Initialize()
     {
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
@@ -151,7 +181,6 @@ namespace MPL::CSTonemapping
 
         auto& state = GetState();
         std::scoped_lock lock(state.lock);
-        CaptureBaselines(state, dataHandler);
         state.initialized = true;
         ApplyLocked(state);
     }
@@ -161,6 +190,10 @@ namespace MPL::CSTonemapping
     {
         auto& state = GetState();
         std::scoped_lock lock(state.lock);
+        if (state.coordinated && state.forcedTargets == a_targets)
+        {
+            return;
+        }
         state.forcedTargets = a_targets;
         if (state.initialized)
         {
@@ -178,5 +211,6 @@ namespace MPL::CSTonemapping
         state.forcedTargets.clear();
         state.appliedForcedTargets.clear();
         state.initialized = false;
+        state.coordinated = false;
     }
 }

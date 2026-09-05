@@ -111,6 +111,32 @@ namespace MPL::TuningUtil
         bool operator==(const FilteredBaseLightRule&) const = default;
     };
 
+    enum class FilteredObjectLightingOperation
+    {
+        emissiveMultiplier,
+        baseColorScale,
+    };
+
+    struct FilteredObjectLightingSetting
+    {
+        FilteredObjectLightingOperation operation = FilteredObjectLightingOperation::emissiveMultiplier;
+        double scale = 1.0;
+
+        bool operator==(const FilteredObjectLightingSetting&) const = default;
+    };
+
+    struct FilteredObjectLightingRule
+    {
+        std::string id;
+        std::string controlID;
+        std::vector<FilteredObjectLightingSetting> settings;
+        WeatherFilter include;
+        WeatherFilter exclude;
+        double defaultValue = 1.0;
+
+        bool operator==(const FilteredObjectLightingRule&) const = default;
+    };
+
     struct Profile
     {
         std::string name;
@@ -123,6 +149,7 @@ namespace MPL::TuningUtil
         std::vector<FilteredWeatherRule> filteredWeatherRules;
         std::vector<FilteredLightingTemplateRule> filteredLightingTemplateRules;
         std::vector<FilteredBaseLightRule> filteredBaseLightRules;
+        std::vector<FilteredObjectLightingRule> filteredObjectLightingRules;
         std::vector<std::string> lightingSliderSettings;
         std::map<std::string, LightingPatcher::LightingLinks, std::less<>> customLightingSliderLinks;
         std::vector<std::string> lightingMenuSettings;
@@ -147,6 +174,8 @@ namespace MPL::TuningUtil
     const FilteredLightingTemplateRule* FindFilteredLightingTemplateRule(const std::string&, std::string_view);
     const std::vector<FilteredBaseLightRule>& GetFilteredBaseLightRules(const std::string&);
     const FilteredBaseLightRule* FindFilteredBaseLightRule(const std::string&, std::string_view);
+    const std::vector<FilteredObjectLightingRule>& GetFilteredObjectLightingRules(const std::string&);
+    const FilteredObjectLightingRule* FindFilteredObjectLightingRule(const std::string&, std::string_view);
     LightingPatcher::LightingLinks ResolveLightingSliderLinks(
         std::span<const std::string>,
         std::string_view,

@@ -232,10 +232,18 @@ namespace MPL::SliderCreator
                 result.include = ReadFilter(yyjson_obj_get(baseLightFilter, "include"));
                 result.exclude = ReadFilter(yyjson_obj_get(baseLightFilter, "exclude"));
             }
+            if (auto* baseObjectFilter = yyjson_obj_get(a_control, "baseObjectFilter");
+                yyjson_is_obj(baseObjectFilter))
+            {
+                result.filterDomain = FilterDomain::baseObject;
+                result.include = ReadFilter(yyjson_obj_get(baseObjectFilter, "include"));
+                result.exclude = ReadFilter(yyjson_obj_get(baseObjectFilter, "exclude"));
+            }
             result.filtered = structured || result.ignoreProfileFilters || result.useTimes ||
                               result.hueScales ||
                               result.filterDomain == FilterDomain::lightingTemplate ||
                               result.filterDomain == FilterDomain::baseLight ||
+                              result.filterDomain == FilterDomain::baseObject ||
                               !result.include.formIDs.empty() || !result.include.contains.empty() ||
                               !result.exclude.formIDs.empty() || !result.exclude.contains.empty();
             return result;
@@ -479,6 +487,8 @@ namespace MPL::SliderCreator
                             "lightingTemplateFilter" :
                         a_definition.filterDomain == FilterDomain::baseLight ?
                             "baseLightFilter" :
+                        a_definition.filterDomain == FilterDomain::baseObject ?
+                            "baseObjectFilter" :
                             "weatherFilter",
                         filter))
                     return nullptr;
@@ -652,14 +662,42 @@ namespace MPL::SliderCreator
                 a_error = "Ignore Profile Filters applies only to sliders with record filters.";
                 return false;
             }
-            if (a_definition.ignoreProfileFilters && a_definition.filterDomain == FilterDomain::baseLight)
+            if (a_definition.ignoreProfileFilters &&
+                (a_definition.filterDomain == FilterDomain::baseLight ||
+                    a_definition.filterDomain == FilterDomain::baseObject))
             {
-                a_error = "Base Light sliders do not have a profile-level record filter to ignore.";
+                a_error = "Base Light and Base Object sliders do not have a profile-level record filter to ignore.";
+                return false;
+            }
+            const auto objectEffectLighting = std::ranges::all_of(
+                entries,
+                [](const auto* a_entry)
+                {
+                    return a_entry->path == "objectEffectLighting.emissiveMultiplier" ||
+                           a_entry->path == "objectEffectLighting.baseColorScale";
+                });
+            if (objectEffectLighting &&
+                (!a_definition.filtered || a_definition.filterDomain != FilterDomain::baseObject))
+            {
+                a_error = "Object Effect Lighting sliders require a Base Object filter.";
                 return false;
             }
             if (a_definition.filtered)
             {
-                if (a_definition.filterDomain == FilterDomain::baseLight)
+                if (a_definition.filterDomain == FilterDomain::baseObject)
+                {
+                    if (!objectEffectLighting)
+                    {
+                        a_error = "Base Object filters support only Object Effect Lighting settings.";
+                        return false;
+                    }
+                    if (a_definition.useTimes || a_definition.hueScales)
+                    {
+                        a_error = "Time filters and saturation scales do not apply to Base Object filters.";
+                        return false;
+                    }
+                }
+                else if (a_definition.filterDomain == FilterDomain::baseLight)
                 {
                     std::optional<SliderSettingCatalog::FilterOperation> operation;
                     for (const auto* entry : entries)
@@ -851,7 +889,7 @@ namespace MPL::SliderCreator
         {
             static constexpr std::array keys{
                 "type", "id", "label", "customLinks", "hueScales", "setting", "settings",
-                "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "min", "max", "step", "width", "format",
+                "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "baseObjectFilter", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
         }
