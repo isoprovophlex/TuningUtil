@@ -3,6 +3,7 @@
 #include <Config/Tuning.h>
 #include <HueFilter.h>
 #include <ProfileSetup.h>
+#include <SliderStorage.h>
 #include <cstdint>
 #include <map>
 
@@ -85,6 +86,7 @@ namespace MPL::TuningUtil
     enum class FilteredBaseLightOperation
     {
         brightness,
+        radius,
         saturation,
         hueScale,
         hueShift,
@@ -152,6 +154,7 @@ namespace MPL::TuningUtil
         std::optional<WeatherPatcher::WeatherCompressionAnchors> runtimeCompressionAnchors;
         std::vector<std::string> disabledProfiles;
         std::vector<std::string> defaultSettingRoots;
+        std::vector<SliderStorage::Binding> sliderBindings;
         std::vector<FilteredWeatherRule> filteredWeatherRules;
         std::vector<FilteredLightingTemplateRule> filteredLightingTemplateRules;
         std::vector<FilteredBaseLightRule> filteredBaseLightRules;
@@ -164,6 +167,8 @@ namespace MPL::TuningUtil
 
     void ApplyDataLoaded();
     void ApplySettings(bool a_commitLightPlacer = true);
+    void BeginSliderValueEdit();
+    void EndSliderValueEdit(bool a_changed);
     std::uint64_t GetSettingsRevision();
     void InvalidateDiscoveryCaches();
     const std::vector<Profile>& GetProfiles();
@@ -189,7 +194,7 @@ namespace MPL::TuningUtil
     std::map<std::string, LightingPatcher::LightingLinks, std::less<>> ResolveLightingSliderLinkOverrides(
         std::span<const std::string>,
         std::string_view);
-    bool ReloadFilteredRules();
+    bool ReloadFilteredRules(bool a_force = false);
     bool SetSliderCreatorPreview(
         std::string&,
         std::string_view,

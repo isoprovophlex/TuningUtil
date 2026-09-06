@@ -125,6 +125,10 @@ namespace MPL::SliderCreator
     };
 
     std::vector<Page> Load(const std::filesystem::path&, std::string&);
+    bool ValidateLayoutSliderIDs(
+        const std::filesystem::path&,
+        std::optional<std::size_t>,
+        std::string&);
     std::filesystem::path ActiveLayoutPath(const std::filesystem::path&);
     void SetPreviewLayout(const std::filesystem::path&, const std::filesystem::path&);
     bool CreateProfile(
@@ -206,13 +210,21 @@ namespace MPL::SliderCreator
         const std::filesystem::path&,
         std::size_t,
         std::string&);
+    bool DeletePageEdits(
+        const std::filesystem::path&,
+        const std::filesystem::path&,
+        std::size_t,
+        std::optional<std::size_t>,
+        std::string&,
+        const std::filesystem::path& = {});
     bool SavePageEdits(
         const std::filesystem::path&,
         const std::filesystem::path&,
         std::size_t,
         std::optional<std::size_t>,
         std::size_t&,
-        std::string&);
+        std::string&,
+        const std::filesystem::path& = {});
     bool RestorePageEdits(
         const std::filesystem::path&,
         const std::filesystem::path&,

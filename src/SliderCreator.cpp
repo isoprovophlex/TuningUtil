@@ -1,5 +1,8 @@
 #include <SliderCreator.h>
 #include <SliderSettingCatalog.h>
+#include <SliderIdentity.h>
+#include <SliderStorage.h>
+#include <SliderStorageFiles.h>
 #include <PresetCatalog.h>
 
 #include <algorithm>
@@ -13,6 +16,7 @@
 #include <memory>
 #include <ranges>
 #include <system_error>
+#include <unordered_set>
 #include <Windows.h>
 #include <yyjson.h>
 
@@ -568,7 +572,7 @@ namespace MPL::SliderCreator
         {
             return !a_id.empty() && std::ranges::all_of(a_id, [](const unsigned char a_character)
             {
-                return std::isalnum(a_character) != 0 || a_character == '_' || a_character == '-';
+                return a_character > ' ';
             });
         }
 
@@ -723,9 +727,10 @@ namespace MPL::SliderCreator
                 (!a_definition.filtered ||
                     !((objectEffectLighting && a_definition.filterDomain == FilterDomain::baseObject) ||
                         (a_definition.filterDomain == FilterDomain::baseLight && std::ranges::all_of(entries,
-                            [](const auto* entry) { return entry->path == "pointLights.fadeMultiplier"; })))))
+                            [](const auto* entry) { return entry->path == "pointLights.fadeMultiplier" ||
+                                entry->path == "pointLights.radiusMultiplier"; })))))
             {
-                a_error = "XEMI filters apply only to Object Effect Lighting and Point Light Brightness sliders with record filters.";
+                a_error = "XEMI filters apply only to Object Effect Lighting and Point Light Brightness or Radius sliders with record filters.";
                 return false;
             }
             if (objectEffectLighting &&
@@ -981,6 +986,12 @@ namespace MPL::SliderCreator
             }
             std::string output(data, length);
             std::free(data);
+            if (a_path.filename() == "skseMenu.edit.json")
+            {
+                const auto draft = SliderStorage::DraftLayout(output, a_error);
+                if (!draft) return false;
+                output = *draft;
+            }
 
             auto temporaryPath = a_path;
             temporaryPath += ".tmp";
@@ -1988,16 +1999,126 @@ namespace MPL::SliderCreator
         return WriteDocument(a_path, document.get(), a_error);
     }
 
+    bool DeletePageEdits(
+        const std::filesystem::path& a_workingPath,
+        const std::filesystem::path& a_savedPath,
+        const std::size_t a_workingPageIndex,
+        const std::optional<std::size_t> a_savedPageIndex,
+        std::string& a_error,
+        const std::filesystem::path& a_userPath)
+    {
+        a_error.clear();
+        if (!a_savedPageIndex) return RemovePage(a_workingPath, a_workingPageIndex, a_error);
+
+        const auto removedPage = [&](const std::filesystem::path& a_path, const std::size_t a_index,
+                                     std::size_t& a_remainingPages) -> std::optional<std::string>
+        {
+            const auto text = ReadText(a_path);
+            // Preserve generated control identities when later pages shift down.
+            const auto draft = text ? SliderStorage::DraftLayout(*text, a_error) : std::nullopt;
+            Document source(draft ? yyjson_read(const_cast<char*>(draft->data()), draft->size(), YYJSON_READ_NOFLAG) : nullptr);
+            MutableDocument document(source ? yyjson_doc_mut_copy(source.get(), nullptr) : nullptr);
+            auto* root = document ? yyjson_mut_doc_get_root(document.get()) : nullptr;
+            auto* pages = root ? yyjson_mut_obj_get(root, "pages") : nullptr;
+            if (!yyjson_mut_is_arr(pages) || !yyjson_mut_arr_remove(pages, a_index) ||
+                !SetProfilePageLast(document.get(), root))
+            {
+                if (a_error.empty()) a_error = "The page could not be removed from the menu layout.";
+                return std::nullopt;
+            }
+            a_remainingPages = yyjson_mut_arr_size(pages);
+            auto* output = yyjson_mut_write(document.get(), YYJSON_WRITE_PRETTY_TWO_SPACES, nullptr);
+            if (!output)
+            {
+                a_error = "The page deletion could not be prepared for saving.";
+                return std::nullopt;
+            }
+            std::string result(output);
+            std::free(output);
+            return result;
+        };
+        std::size_t workingPages = 0;
+        std::size_t savedPages = 0;
+        const auto working = removedPage(a_workingPath, a_workingPageIndex, workingPages);
+        if (!working) return false;
+        const auto saved = removedPage(a_savedPath, *a_savedPageIndex, savedPages);
+        if (!saved) return false;
+        // No remaining page is being edited or committed from the draft.
+        return SliderStorage::CommitLayout(a_savedPath, *saved, a_userPath, a_error, savedPages,
+            SliderStorage::DraftUpdate{ a_workingPath, *working });
+    }
+
+    bool ValidateLayoutSliderIDs(
+        const std::filesystem::path& a_path,
+        const std::optional<std::size_t> a_pageIndex,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document document(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
+        auto* pages = yyjson_is_obj(root) ? yyjson_obj_get(root, "pages") : nullptr;
+        if (!yyjson_is_arr(pages) || (a_pageIndex && *a_pageIndex >= yyjson_arr_size(pages)))
+        {
+            a_error = "The menu pages could not be read for slider ID validation.";
+            return false;
+        }
+        std::unordered_set<std::string> ids;
+        std::size_t pageIndex = 0;
+        std::size_t pageCount = 0;
+        yyjson_val* page = nullptr;
+        yyjson_arr_foreach(pages, pageIndex, pageCount, page)
+        {
+            if (a_pageIndex && pageIndex != *a_pageIndex) continue;
+            const auto title = StringMember(page, "title").value_or("");
+            auto* modules = yyjson_obj_get(page, "modules");
+            if (!yyjson_is_arr(modules)) continue;
+            std::vector<std::string> dropBoxes;
+            std::size_t moduleIndex = 0;
+            std::size_t moduleCount = 0;
+            yyjson_val* module = nullptr;
+            yyjson_arr_foreach(modules, moduleIndex, moduleCount, module)
+            {
+                const auto type = StringMember(module, "type").value_or("");
+                if (IEquals(type, "dropBoxStart"))
+                {
+                    dropBoxes.push_back(StringMember(module, "label").value_or(
+                        StringMember(module, "header").value_or("")));
+                }
+                else if (IEquals(type, "dropBoxEnd"))
+                {
+                    if (!dropBoxes.empty()) dropBoxes.pop_back();
+                }
+                else if (IEquals(type, "slider"))
+                {
+                    const auto name = StringMember(module, "label").value_or(
+                        StringMember(module, "id").value_or(""));
+                    const auto id = SliderIdentity::Make(title, dropBoxes, name);
+                    if (!ids.insert(SliderIdentity::ComparisonKey(id)).second)
+                    {
+                        a_error = std::format(
+                            "Cannot save page '{}': duplicate slider ID '{}'. Rename a slider or its drop box.",
+                            title, id);
+                        return false;
+                    }
+                }
+            }
+        }
+        return SliderStorage::CanonicalLayout(*text, a_error, a_pageIndex).has_value();
+    }
+
     bool SavePageEdits(
         const std::filesystem::path& a_workingPath,
         const std::filesystem::path& a_savedPath,
         const std::size_t a_workingPageIndex,
         const std::optional<std::size_t> a_savedPageIndex,
         std::size_t& a_resultPageIndex,
-        std::string& a_error)
+        std::string& a_error,
+        const std::filesystem::path& a_userPath)
     {
         a_error.clear();
         const auto workingText = ReadText(a_workingPath);
+        if (!ValidateLayoutSliderIDs(a_workingPath, a_workingPageIndex, a_error)) return false;
         const auto savedText = ReadText(a_savedPath);
         Document workingDocument(workingText ?
                                      yyjson_read(
@@ -2061,7 +2182,11 @@ namespace MPL::SliderCreator
             a_error = "The Profile page could not be kept last.";
             return false;
         }
-        return WriteDocument(a_savedPath, document.get(), a_error);
+        auto* text = yyjson_mut_write(document.get(), YYJSON_WRITE_PRETTY_TWO_SPACES, nullptr);
+        if (!text) return false;
+        const std::string output(text);
+        std::free(text);
+        return SliderStorage::CommitLayout(a_savedPath, output, a_userPath, a_error, a_resultPageIndex);
     }
 
     bool RestorePageEdits(

@@ -1855,15 +1855,15 @@ namespace MPL::WeatherPatcher
         const bool a_applyProfileFilters = true)
     {
         ProfilePluginTargets result;
-        const auto includeAll = !a_applyProfileFilters || PluginFilterEmpty(a_settings.pluginInclusions);
+        const auto includeAll = !a_applyProfileFilters || PluginFilterEmpty(a_settings.weatherPluginInclusions);
         for (const auto& [pluginName, weathers] : a_weatherSets)
         {
             (void)weathers;
-            if (a_applyProfileFilters && PluginNameMatches(pluginName, a_settings.pluginExclusions))
+            if (a_applyProfileFilters && PluginNameMatches(pluginName, a_settings.weatherPluginExclusions))
             {
                 result.excluded.push_back(pluginName);
             }
-            else if (includeAll || PluginNameMatches(pluginName, a_settings.pluginInclusions))
+            else if (includeAll || PluginNameMatches(pluginName, a_settings.weatherPluginInclusions))
             {
                 result.included.push_back(pluginName);
             }
@@ -1936,8 +1936,8 @@ namespace MPL::WeatherPatcher
             std::string_view{ "compressionAnchor" },
             std::string_view{ "weatherInclusions" },
             std::string_view{ "weatherExclusions" },
-            std::string_view{ "pluginInclusions" },
-            std::string_view{ "pluginExclusions" },
+            std::string_view{ "weatherPluginInclusions" },
+            std::string_view{ "weatherPluginExclusions" },
         };
         return TuningUtil::GetProfilesWithSettings(roots);
     }
@@ -3443,6 +3443,15 @@ namespace MPL::WeatherPatcher
             logger::warn("[Preset] catalog invalid | profile={} | {}", profileName, a_error);
             return nullptr;
         }
+        for (const auto& profile : TuningUtil::GetProfiles())
+            if (Config::IEquals(profile.name, profileName))
+                for (auto& category : catalog->categories)
+                    for (auto& preset : category.presets)
+                    {
+                        const auto stored = SliderStorage::Store(preset.settings, profile.sliderBindings, false, a_error);
+                        if (!stored) return nullptr;
+                        preset.settings = *stored;
+                    }
         DetailedLogging::Info(
             "[Preset] catalog | profile={} | categories={} | path={}",
             profileName,
@@ -3612,6 +3621,27 @@ namespace MPL::WeatherPatcher
     {
         const auto* active = ResolveActivePresetCache(a_profileName, a_error);
         return active ? std::optional<std::string>{ active->settings } : std::nullopt;
+    }
+
+    void RemapPresetSliderValues(const std::string& a_profile, const std::span<const SliderStorage::Binding> a_old,
+        const std::span<const SliderStorage::Binding> a_new)
+    {
+        const auto key = LowercaseKey(a_profile);
+        const auto remap = [&](std::string& text)
+        {
+            std::string error;
+            if (auto converted = SliderStorage::Remap(text, a_old, a_new, error)) text = std::move(*converted);
+        };
+        if (auto catalog = GetPresetCatalogs().find(key); catalog != GetPresetCatalogs().end())
+            for (auto& category : catalog->second.categories)
+                for (auto& preset : category.presets) remap(preset.settings);
+        if (auto active = GetActivePresetCaches().find(key); active != GetActivePresetCaches().end()) remap(active->second.settings);
+        if (auto preview = GetPresetPreviewCaches().find(key); preview != GetPresetPreviewCaches().end())
+        {
+            remap(preview->second.settings);
+            remap(preview->second.changedSettings);
+            for (auto& [category, schema] : preview->second.resetSettingSchemas) remap(schema);
+        }
     }
 
     void DiscardPresetPreview(std::string& a_profileName)

@@ -18,8 +18,8 @@ namespace MPL::ProfileSetup
         "weatherInclusions",
         "weatherExclusions",
         "weatherPluginOwnership",
-        "pluginInclusions",
-        "pluginExclusions",
+        "weatherPluginInclusions",
+        "weatherPluginExclusions",
     };
 
     inline const std::vector<std::string> kLightingSettingPaths{

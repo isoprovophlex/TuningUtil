@@ -1,4 +1,5 @@
 #pragma once
+#include <SliderStorage.h>
 #include <Config/Weathers.h>
 #include <SettingLinks.h>
 #include <TuningUtil.h>
@@ -25,6 +26,7 @@ namespace MPL::WeatherPatcher
     std::optional<WeatherCompressionAnchors> ReadWeatherCompressionAnchors(std::string_view);
     void ReleaseRuntimeState();
     void InvalidatePresetCache();
+    void RemapPresetSliderValues(const std::string&, std::span<const SliderStorage::Binding>, std::span<const SliderStorage::Binding>);
     SourceWeatherSet GetSelectableWeathers(std::string&);
     SourceWeatherSet GetFilterableWeathers(std::string&);
     bool ProfilesShareWeatherTarget(const std::string&, const std::string&);

@@ -17,6 +17,7 @@ namespace MPL::SliderSettingCatalog
     {
         none,
         brightness,
+        radius,
         saturation,
         hueShift,
         fogPower,

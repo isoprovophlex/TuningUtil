@@ -2,6 +2,7 @@
 #include <PointLightPatcher.h>
 #include <ObjectLightingPatcher.h>
 #include <PointLightFade.h>
+#include <PointLightRadius.h>
 #include <RecordFilterLogic.h>
 #include <Config.h>
 #include <Config/Forms.h>
@@ -47,6 +48,7 @@ namespace MPL::PointLightPatcher
         {
             float fade;
             RE::Color color;
+            std::uint32_t radius;
         };
 
         struct ColorTuning
@@ -72,6 +74,7 @@ namespace MPL::PointLightPatcher
             std::size_t refreshed = 0;
             std::size_t brightness = 0;
             std::size_t filtered = 0;
+            std::size_t equipped = 0;
         };
 
         struct DirectLightRefreshResult
@@ -299,6 +302,47 @@ namespace MPL::PointLightPatcher
                 { return RecordFilter::Matches(ExternalEmittanceSource(a_reference), filter); });
         }
 
+        double OriginalBaseRadius(const RE::TESObjectLIGH* a_light)
+        {
+            if (!a_light) return 0.0;
+            const auto baseline = baselines.find(const_cast<RE::TESObjectLIGH*>(a_light));
+            return baseline != baselines.end() ? baseline->second.radius : a_light->data.radius;
+        }
+
+        void UpdateRuntimeRadius(RE::NiLight* a_light, const float a_radius)
+        {
+            auto* pointLight = netimmerse_cast<RE::NiPointLight*>(a_light);
+            if (!pointLight) return;
+            auto& runtime = pointLight->GetLightRuntimeData();
+            if (runtime.radius.x == a_radius && runtime.radius.y == a_radius && runtime.radius.z == a_radius) return;
+            runtime.radius = RE::NiPoint3{ a_radius, a_radius, a_radius };
+            // The engine takes an integer radius, not the float declared by CommonLib.
+            using SetAttenuation = void (*)(RE::NiPointLight*, std::uint32_t);
+            static REL::Relocation<SetAttenuation> setAttenuation{ RELOCATION_ID(17224, 17626) };
+            setAttenuation(pointLight, static_cast<std::uint32_t>(a_radius));
+            RE::NiUpdateData update{};
+            update.flags.set(RE::NiUpdateData::Flag::kDirty);
+            pointLight->Update(update);
+        }
+
+        void RefreshReferenceRadius(RE::TESObjectREFR* a_reference, const AppliedState& a_state)
+        {
+            const auto* light = GetBaseLight(a_reference);
+            if (!light || !a_reference->Is3DLoaded()) return;
+            const auto multiplier = PointLightFade::ResolveRadius(
+                SettingsForBaseLight(light, a_state).radiusMultiplier,
+                light->GetFormID(), a_state.referenceRules, [&](const auto& filter)
+                { return RecordFilter::Matches(ExternalEmittanceSource(a_reference), filter); });
+            const auto* extraRadius = a_reference->extraList.GetByType<RE::ExtraRadius>();
+            const auto radius = static_cast<float>(PointLightRadius::Scale(
+                OriginalBaseRadius(light), extraRadius ? extraRadius->radius : 0.0, multiplier));
+            if (auto* loaded = a_reference->loadedData)
+                loaded->cachedRadius = radius;
+            const auto* extraLight = a_reference->extraList.GetByType<RE::ExtraLight>();
+            if (extraLight && extraLight->lightData)
+                UpdateRuntimeRadius(extraLight->lightData->light.get(), radius);
+        }
+
         bool ReconcileExternalEmittanceBase(
             RE::TESObjectREFR* a_reference,
             const AppliedState* a_state)
@@ -436,6 +480,7 @@ namespace MPL::PointLightPatcher
             yyjson_mut_doc* a_document,
             yyjson_val* a_value,
             const double a_fadeMultiplier,
+            const double a_radiusMultiplier,
             const ColorTuning& a_tuning);
 
         yyjson_mut_val* CopyFadeControllerValue(
@@ -551,6 +596,7 @@ namespace MPL::PointLightPatcher
             yyjson_mut_doc* a_document,
             yyjson_val* a_value,
             const double a_fadeMultiplier,
+            const double a_radiusMultiplier,
             const ColorTuning& a_tuning)
         {
             auto* result = yyjson_mut_obj(a_document);
@@ -568,13 +614,17 @@ namespace MPL::PointLightPatcher
                 {
                     copiedValue = CopyFadeControllerValue(a_document, value, a_fadeMultiplier);
                 }
+                else if (KeyEquals(key, "radiusController"))
+                {
+                    copiedValue = CopyFadeControllerValue(a_document, value, a_radiusMultiplier);
+                }
                 else if (!kUseDirectLightPlacerNiLights && KeyEquals(key, "color"))
                 {
                     copiedValue = CopyColor(a_document, value, a_tuning);
                 }
                 else
                 {
-                    copiedValue = CopyValue(a_document, value, a_fadeMultiplier, a_tuning);
+                    copiedValue = CopyValue(a_document, value, a_fadeMultiplier, a_radiusMultiplier, a_tuning);
                 }
                 if (!copiedKey || !copiedValue || !yyjson_mut_obj_add(result, copiedKey, copiedValue))
                 {
@@ -588,11 +638,12 @@ namespace MPL::PointLightPatcher
             yyjson_mut_doc* a_document,
             yyjson_val* a_value,
             const double a_fadeMultiplier,
+            const double a_radiusMultiplier,
             const ColorTuning& a_tuning)
         {
             if (yyjson_is_obj(a_value))
             {
-                return CopyObject(a_document, a_value, a_fadeMultiplier, a_tuning);
+                return CopyObject(a_document, a_value, a_fadeMultiplier, a_radiusMultiplier, a_tuning);
             }
             if (yyjson_is_arr(a_value))
             {
@@ -602,7 +653,7 @@ namespace MPL::PointLightPatcher
                 yyjson_val* entry = nullptr;
                 yyjson_arr_foreach(a_value, index, count, entry)
                 {
-                    auto* copy = CopyValue(a_document, entry, a_fadeMultiplier, a_tuning);
+                    auto* copy = CopyValue(a_document, entry, a_fadeMultiplier, a_radiusMultiplier, a_tuning);
                     if (!copy || !yyjson_mut_arr_append(result, copy))
                     {
                         return nullptr;
@@ -639,6 +690,13 @@ namespace MPL::PointLightPatcher
                                                    yyjson_get_len(configuredEmittance)) :
                                                std::string{};
             const auto emittanceID = a_state.referenceRules.empty() ? 0 : ResolveEmittance(emittance);
+            const auto radius = PointLightFade::ResolveRadius(
+                settings.radiusMultiplier, baseLight ? baseLight->GetFormID() : 0,
+                a_state.referenceRules, [&](const auto& filter)
+                {
+                    return !emittance.empty() && RecordFilterLogic::MatchesRecord(
+                        emittanceID, filter, [&] { return emittance; });
+                });
             const double fade = PointLightFade::Resolve(
                 BrightnessFadeMultiplier(settings), baseLight ? baseLight->GetFormID() : 0,
                 a_state.referenceRules, [&](const auto& filter)
@@ -660,7 +718,16 @@ namespace MPL::PointLightPatcher
                                                settings.hueShift,
                                                a_state.hueRanges,
                                            };
-            auto* result = CopyObject(a_document, a_data, fade, tuning);
+            auto* result = CopyObject(a_document, a_data, fade, radius, tuning);
+            if (result && (radius != 1.0 || settings.radiusMultiplier != 1.0))
+            {
+                auto* configuredRadius = yyjson_obj_get(a_data, "radius");
+                const auto sourceRadius = yyjson_is_num(configuredRadius) ? yyjson_get_num(configuredRadius) : 0.0;
+                yyjson_mut_obj_remove_key(result, "radius");
+                if (!yyjson_mut_obj_add_real(a_document, result, "radius",
+                        PointLightRadius::LightPlacer(sourceRadius, OriginalBaseRadius(baseLight), radius)))
+                    return nullptr;
+            }
             if (!result || !mappedEmittance)
             {
                 return result;
@@ -791,9 +858,11 @@ namespace MPL::PointLightPatcher
             const Settings defaults{};
             if constexpr (kUseDirectLightPlacerNiLights)
             {
-                return a_settings.fadeMultiplier != defaults.fadeMultiplier;
+                return a_settings.fadeMultiplier != defaults.fadeMultiplier ||
+                       a_settings.radiusMultiplier != defaults.radiusMultiplier;
             }
             return a_settings.fadeMultiplier != defaults.fadeMultiplier ||
+                   a_settings.radiusMultiplier != defaults.radiusMultiplier ||
                    a_settings.saturationMultiplier !=
                        defaults.saturationMultiplier ||
                    a_settings.hueScales != defaults.hueScales ||
@@ -1087,6 +1156,7 @@ namespace MPL::PointLightPatcher
             const auto& settings = a_state.settings;
             const auto& previous = a_previous->settings;
             if (settings.fadeMultiplier != previous.fadeMultiplier ||
+                settings.radiusMultiplier != previous.radiusMultiplier ||
                 a_state.referenceRules != a_previous->referenceRules)
             {
                 return true;
@@ -1104,12 +1174,10 @@ namespace MPL::PointLightPatcher
             }
             if (std::ranges::any_of(candidates, [&](const RE::FormID a_formID)
                 {
-                    const auto fadeFor = [&](const AppliedState& a_candidate)
-                    {
-                        const auto& baseSettings = SettingsForBaseLight(a_formID, a_candidate);
-                        return baseSettings.fadeMultiplier;
-                    };
-                    return fadeFor(a_state) != fadeFor(*a_previous);
+                    const auto& currentSettings = SettingsForBaseLight(a_formID, a_state);
+                    const auto& previousSettings = SettingsForBaseLight(a_formID, *a_previous);
+                    return currentSettings.fadeMultiplier != previousSettings.fadeMultiplier ||
+                        currentSettings.radiusMultiplier != previousSettings.radiusMultiplier;
                 }))
                 return true;
             if constexpr (kUseDirectLightPlacerNiLights)
@@ -1509,11 +1577,12 @@ namespace MPL::PointLightPatcher
                 DirectLightRefreshResult directLights;
                 RefreshDirectLightPlacerLights(false, &directLights);
                 DetailedLogging::Info(
-                    "[Point Lights] cell={:08X} | references={} | Brightness={} | XEMI-filtered={} | LightPlacer={}/{} | loadedReferences={}",
+                    "[Point Lights] cell={:08X} | references={} | Brightness={} | XEMI-filtered={} | equipped={} | LightPlacer={}/{} | loadedReferences={}",
                     a_cell,
                     loadedReferences.refreshed,
                     loadedReferences.brightness,
                     loadedReferences.filtered,
+                    loadedReferences.equipped,
                     directLights.changed,
                     directLights.lights,
                     directLights.references);
@@ -1562,6 +1631,50 @@ namespace MPL::PointLightPatcher
         };
 
         CellFullyLoadedEventSink cellFullyLoadedEventSink;
+
+        class EquippedLightEventSink final :
+            public RE::BSTEventSink<RE::TESEquipEvent>,
+            public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
+            public RE::BSTEventSink<RE::TESCellAttachDetachEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(
+                const RE::TESEquipEvent* a_event,
+                RE::BSTEventSource<RE::TESEquipEvent>*) override
+            {
+                if (a_event && a_event->equipped && a_event->actor)
+                {
+                    if (auto* light = RE::TESForm::LookupByID<RE::TESObjectLIGH>(a_event->baseObject);
+                        light && light->CanBeCarried())
+                        QueueReferenceReconciliation(a_event->actor.get());
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            RE::BSEventNotifyControl ProcessEvent(
+                const RE::TESObjectLoadedEvent* a_event,
+                RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override
+            {
+                if (a_event && a_event->loaded)
+                {
+                    if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(a_event->formID))
+                        QueueReferenceReconciliation(actor);
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            RE::BSEventNotifyControl ProcessEvent(
+                const RE::TESCellAttachDetachEvent* a_event,
+                RE::BSTEventSource<RE::TESCellAttachDetachEvent>*) override
+            {
+                if (a_event && a_event->attached && a_event->reference &&
+                    a_event->reference->Is(RE::FormType::ActorCharacter))
+                    QueueReferenceReconciliation(a_event->reference.get());
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+
+        EquippedLightEventSink equippedLightEventSink;
 
         bool ApplyReferenceFadeOverride(
             RE::TESObjectREFR* a_reference,
@@ -1669,6 +1782,47 @@ namespace MPL::PointLightPatcher
                 filtered);
         }
 
+        bool RefreshEquippedLight(
+            RE::Actor* a_actor,
+            const AppliedState& a_state,
+            const std::string_view a_context)
+        {
+            if (!a_actor || !a_actor->Is3DLoaded()) return false;
+
+            RE::TESObjectLIGH* light = nullptr;
+            for (const bool leftHand : { true, false })
+            {
+                auto* equipped = a_actor->GetEquippedObject(leftHand);
+                auto* candidate = equipped ? equipped->As<RE::TESObjectLIGH>() : nullptr;
+                if (candidate && candidate->CanBeCarried())
+                {
+                    light = candidate;
+                    break;
+                }
+            }
+            if (!light) return false;
+
+            const auto* extraLight = a_actor->extraList.GetByType<RE::ExtraLight>();
+            if (!extraLight || !extraLight->lightData || !extraLight->lightData->light)
+            {
+                DetailedLogging::Info(
+                    "[Point Lights] equipped light | stage={} | actor={:08X} | base={:08X} | status=awaiting-light",
+                    a_context, a_actor->GetFormID(), light->GetFormID());
+                return false;
+            }
+
+            auto& runtime = extraLight->lightData->light->GetLightRuntimeData();
+            const auto before = runtime.fade;
+            // Base-record fade already includes the resolved brightness multiplier.
+            runtime.fade = light->fade;
+            UpdateRuntimeRadius(extraLight->lightData->light.get(), static_cast<float>(light->data.radius));
+            DetailedLogging::Info(
+                "[Point Lights] equipped light | stage={} | actor={:08X} | base={:08X} | multiplier={:.6f} | pre={:.6f} | final={:.6f}",
+                a_context, a_actor->GetFormID(), light->GetFormID(),
+                BrightnessFadeMultiplier(SettingsForBaseLight(light, a_state)), before, runtime.fade);
+            return true;
+        }
+
         bool RefreshLoadedLightReference(
             RE::TESObjectREFR* a_reference,
             const AppliedState& a_state,
@@ -1679,6 +1833,8 @@ namespace MPL::PointLightPatcher
             {
                 return false;
             }
+
+            RefreshReferenceRadius(a_reference, a_state);
 
             float runtimeFadeBeforeUpdate = 0.0f;
             bool hadRuntimeLightBeforeUpdate = false;
@@ -1854,6 +2010,10 @@ namespace MPL::PointLightPatcher
                         else ++result.brightness;
                     }
                 }
+                else if (auto* actor = a_reference ? a_reference->As<RE::Actor>() : nullptr)
+                {
+                    result.equipped += RefreshEquippedLight(actor, a_state, a_context) ? 1 : 0;
+                }
                 return RE::BSContainer::ForEachResult::kContinue; });
             std::erase_if(
                 referenceRuntimeFadeBaselines,
@@ -1864,10 +2024,11 @@ namespace MPL::PointLightPatcher
             if (a_logResult)
             {
                 DetailedLogging::Info(
-                    "[Point Lights] loaded references | refreshed={} | Brightness={} | XEMI-filtered={}",
+                    "[Point Lights] loaded references | refreshed={} | Brightness={} | XEMI-filtered={} | equipped={}",
                     result.refreshed,
                     result.brightness,
-                    result.filtered);
+                    result.filtered,
+                    result.equipped);
             }
             return result;
         }
@@ -1928,9 +2089,10 @@ namespace MPL::PointLightPatcher
                 }
                 const auto& settings = SettingsForBaseLight(light, state);
                 const auto hueScales = WeatherPatcher::ResolveHueScales(settings.hueScales);
-                const auto baseline = baselines.try_emplace(light, Baseline{ light->fade, light->data.color }).first;
+                const auto baseline = baselines.try_emplace(light, Baseline{ light->fade, light->data.color, light->data.radius }).first;
                 light->fade = baseline->second.fade;
                 light->data.color = baseline->second.color;
+                light->data.radius = PointLightRadius::Record(baseline->second.radius, settings.radiusMultiplier);
                 light->fade *= static_cast<float>(BrightnessFadeMultiplier(settings));
                 ++fadeCount;
                 if (externallyEmissiveLights.contains(light))
@@ -2014,8 +2176,12 @@ namespace MPL::PointLightPatcher
         }
         eventSource->AddEventSink(
             std::addressof(cellFullyLoadedEventSink));
+        eventSource->AddEventSink<RE::TESEquipEvent>(std::addressof(equippedLightEventSink));
+        eventSource->AddEventSink<RE::TESObjectLoadedEvent>(std::addressof(equippedLightEventSink));
+        eventSource->AddEventSink<RE::TESCellAttachDetachEvent>(std::addressof(equippedLightEventSink));
         runtimeEventsInstalled = true;
-        logger::info("[Point Lights] Light Placer | mode=NiLight color/JSON fade");
+        logger::info("[Point Lights] Light Placer | mode=NiLight color/JSON fade and radius");
+        logger::info("[Point Lights] equipped lights | equip/load/attach events=registered");
     }
 
     void RecordCellChangeThread()
@@ -2057,7 +2223,8 @@ namespace MPL::PointLightPatcher
 
     void QueueReferenceReconciliation(RE::TESObjectREFR* a_reference)
     {
-        if (!GetBaseLight(a_reference) || !a_reference->GetFormID())
+        if (!a_reference || !a_reference->GetFormID() ||
+            (!GetBaseLight(a_reference) && !a_reference->Is(RE::FormType::ActorCharacter)))
         {
             return;
         }
@@ -2116,6 +2283,11 @@ namespace MPL::PointLightPatcher
 
     void InitializeReference(RE::TESObjectREFR* a_reference)
     {
+        if (auto* actor = a_reference ? a_reference->As<RE::Actor>() : nullptr)
+        {
+            if (appliedState) RefreshEquippedLight(actor, *appliedState, "equipment-or-reference-event");
+            return;
+        }
         if (HasExternalEmittance(a_reference))
         {
             if (auto* light = GetBaseLight(a_reference);
@@ -2146,6 +2318,7 @@ namespace MPL::PointLightPatcher
                 a_reference,
                 *appliedState,
                 "reference-initialization");
+            RefreshReferenceRadius(a_reference, *appliedState);
         }
     }
 }  // namespace MPL::PointLightPatcher

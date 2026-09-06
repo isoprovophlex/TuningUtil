@@ -2,7 +2,6 @@
 #include <Config.h>
 #include <ObjectLightingPatcher.h>
 #include <ObjectLightingTracking.h>
-#include <ObjectShaderCatalog.h>
 #include <RecordFilter.h>
 #include <TuningUtil.h>
 
@@ -28,7 +27,6 @@ namespace MPL::ObjectLightingPatcher
             std::string key;
             RecordFilter::Resolved filter;
             std::optional<RecordFilter::Resolved> xemiFilter;
-            ObjectShaderCatalog::Capability shaders = ObjectShaderCatalog::Capability::none;
             double emissiveMultiplier = 1.0;
             double baseColorScale = 1.0;
 
@@ -115,7 +113,6 @@ namespace MPL::ObjectLightingPatcher
                 {
                     auto emissiveMultiplier = 1.0;
                     auto baseColorScale = 1.0;
-                    auto shaders = ObjectShaderCatalog::Capability::none;
                     const auto value = RuleValue(settings, rule);
                     for (const auto& setting : rule.settings)
                     {
@@ -123,32 +120,22 @@ namespace MPL::ObjectLightingPatcher
                         if (setting.operation == TuningUtil::FilteredObjectLightingOperation::baseColorScale)
                         {
                             baseColorScale *= multiplier;
-                            shaders = shaders | ObjectShaderCatalog::Capability::effect;
                         }
                         else
                         {
                             emissiveMultiplier *= multiplier;
-                            shaders = shaders | ObjectShaderCatalog::Capability::lighting;
                         }
                     }
                     result.push_back({
                         .key = profile.name + "\x1F" + rule.id,
                         .filter = RecordFilter::Resolve(rule.include, rule.exclude, noPlugins, noPlugins),
                         .xemiFilter = ResolveXemiFilter(rule.xemiInclude, rule.xemiExclude),
-                        .shaders = shaders,
                         .emissiveMultiplier = emissiveMultiplier,
                         .baseColorScale = baseColorScale,
                     });
                 }
             }
             return result;
-        }
-
-        ObjectShaderCatalog::Capability BaseShaders(RE::TESBoundObject* a_baseObject)
-        {
-            auto* model = a_baseObject ? skyrim_cast<RE::TESModel*>(a_baseObject) : nullptr;
-            const auto* path = model ? model->GetModel() : nullptr;
-            return path ? ObjectShaderCatalog::Get(path) : ObjectShaderCatalog::Capability::none;
         }
 
         const RuleKeys& MatchingRules(RE::TESBoundObject* a_baseObject)
@@ -161,8 +148,7 @@ namespace MPL::ObjectLightingPatcher
                 entry->second.dynamic = a_baseObject->IsDynamicForm();
                 for (const auto& rule : activeRules)
                 {
-                    if (RecordFilter::Matches(a_baseObject, rule.filter) &&
-                        (!rule.xemiFilter || ObjectShaderCatalog::Has(BaseShaders(a_baseObject), rule.shaders)))
+                    if (RecordFilter::Matches(a_baseObject, rule.filter))
                         entry->second.rules.insert(rule.key);
                 }
             }
@@ -195,7 +181,7 @@ namespace MPL::ObjectLightingPatcher
                 if (!MatchingRules(object).empty()) ++matched;
             }
             DetailedLogging::Info(
-                "[Object Effect Lighting] base object index | objects={} | matched={} | ms={:.3f}",
+                "[Object Effect Lighting] base object index | mode=records-only | objects={} | matched={} | ms={:.3f}",
                 objects.size(), matched,
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
         }
@@ -556,7 +542,7 @@ namespace MPL::ObjectLightingPatcher
         if (rules == activeRules) return;
         const auto filtersChanged = !std::ranges::equal(rules, activeRules, [](const auto& a_left, const auto& a_right)
             { return a_left.key == a_right.key && a_left.filter == a_right.filter &&
-                a_left.xemiFilter == a_right.xemiFilter && a_left.shaders == a_right.shaders; });
+                a_left.xemiFilter == a_right.xemiFilter; });
         activeRules = std::move(rules);
         hasActiveRules.store(!activeRules.empty(), std::memory_order_release);
         if (filtersChanged)

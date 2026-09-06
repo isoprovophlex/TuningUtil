@@ -33,8 +33,8 @@ namespace MPL::JsonOverlay
         };
         constexpr std::array kPluginFilterKeys{
             std::string_view{ "weatherPluginOwnership" },
-            std::string_view{ "pluginInclusions" },
-            std::string_view{ "pluginExclusions" },
+            std::string_view{ "weatherPluginInclusions" },
+            std::string_view{ "weatherPluginExclusions" },
             std::string_view{ "lightingTemplatePluginOwnership" },
             std::string_view{ "lightingTemplatePluginInclusions" },
             std::string_view{ "lightingTemplatePluginExclusions" },
@@ -489,13 +489,23 @@ namespace MPL::JsonOverlay
             return result;
         }
 
+        std::size_t PathSeparator(const std::string_view a_path, const std::size_t a_start)
+        {
+            if (a_start != 0 && (a_path.starts_with("sliderValues.") ||
+                a_path.starts_with("filteredWeatherAdjustments.") ||
+                a_path.starts_with("filteredLightingTemplateAdjustments.") ||
+                a_path.starts_with("filteredBaseLightAdjustments.") ||
+                a_path.starts_with("filteredObjectLightingAdjustments."))) return std::string_view::npos;
+            return a_path.find('.', a_start);
+        }
+
         yyjson_val* FindPath(yyjson_val* a_root, const std::string_view a_path)
         {
             auto* value = a_root;
             std::size_t start = 0;
             while (value && start < a_path.size())
             {
-                const auto separator = a_path.find('.', start);
+                const auto separator = PathSeparator(a_path, start);
                 const auto length = (separator == std::string_view::npos ? a_path.size() : separator) - start;
                 value = yyjson_is_obj(value) ? yyjson_obj_getn(value, a_path.data() + start, length) : nullptr;
                 if (separator == std::string_view::npos)
@@ -517,7 +527,7 @@ namespace MPL::JsonOverlay
             std::size_t start = 0;
             while (start < a_path.size())
             {
-                const auto separator = a_path.find('.', start);
+                const auto separator = PathSeparator(a_path, start);
                 const auto end = separator == std::string_view::npos ? a_path.size() : separator;
                 const auto length = end - start;
                 if (separator == std::string_view::npos)
@@ -553,7 +563,7 @@ namespace MPL::JsonOverlay
             std::size_t start = 0;
             while (yyjson_mut_is_obj(object) && start < a_path.size())
             {
-                const auto separator = a_path.find('.', start);
+                const auto separator = PathSeparator(a_path, start);
                 const auto end = separator == std::string_view::npos ? a_path.size() : separator;
                 const auto length = end - start;
                 if (separator == std::string_view::npos)

@@ -1536,6 +1536,8 @@ namespace MPL::LightingPatcher
             {
             case TuningUtil::FilteredBaseLightOperation::brightness:
                 return &a_settings.fadeMultiplier;
+            case TuningUtil::FilteredBaseLightOperation::radius:
+                return &a_settings.radiusMultiplier;
             case TuningUtil::FilteredBaseLightOperation::saturation:
                 return &a_settings.saturationMultiplier;
             case TuningUtil::FilteredBaseLightOperation::hueScale:
@@ -1544,41 +1546,6 @@ namespace MPL::LightingPatcher
                 return a_setting.hue ? BaseLightHueBand(a_settings.hueShift, *a_setting.hue) : nullptr;
             }
             return nullptr;
-        }
-
-        const double* FilteredBaseLightSettingValue(
-            const PointLightSettings& a_settings,
-            const TuningUtil::FilteredBaseLightSetting& a_setting)
-        {
-            switch (a_setting.operation)
-            {
-            case TuningUtil::FilteredBaseLightOperation::brightness:
-                return &a_settings.fadeMultiplier;
-            case TuningUtil::FilteredBaseLightOperation::saturation:
-                return &a_settings.saturationMultiplier;
-            case TuningUtil::FilteredBaseLightOperation::hueScale:
-                return a_setting.hue ? BaseLightHueBand(a_settings.hueScales, *a_setting.hue) : nullptr;
-            case TuningUtil::FilteredBaseLightOperation::hueShift:
-                return a_setting.hue ? BaseLightHueBand(a_settings.hueShift, *a_setting.hue) : nullptr;
-            }
-            return nullptr;
-        }
-
-        std::string FilteredBaseLightSettingTarget(
-            const TuningUtil::FilteredBaseLightSetting& a_setting)
-        {
-            switch (a_setting.operation)
-            {
-            case TuningUtil::FilteredBaseLightOperation::brightness:
-                return "brightness";
-            case TuningUtil::FilteredBaseLightOperation::saturation:
-                return "saturation";
-            case TuningUtil::FilteredBaseLightOperation::hueScale:
-                return "hueScale." + a_setting.hue.value_or("");
-            case TuningUtil::FilteredBaseLightOperation::hueShift:
-                return "hueShift." + a_setting.hue.value_or("");
-            }
-            return {};
         }
 
         bool ApplyFilteredBaseLightSetting(
@@ -1595,7 +1562,9 @@ namespace MPL::LightingPatcher
                 return true;
             }
 
-            *target *= std::max(0.0, 1.0 + ((a_value - 1.0) * a_setting.scale));
+            const auto multiplier = std::max(0.0, 1.0 + ((a_value - 1.0) * a_setting.scale));
+            if (a_setting.operation == TuningUtil::FilteredBaseLightOperation::hueScale) *target = multiplier;
+            else *target *= multiplier;
             return true;
         }
 
@@ -1613,11 +1582,9 @@ namespace MPL::LightingPatcher
             {
                 std::string profile;
                 Settings settings;
-                PointLightSettings ownedBaseSettings;
                 const TuningUtil::FilteredBaseLightRule* rule = nullptr;
                 RecordFilter::Resolved filter;
                 std::optional<RecordFilter::Resolved> xemiFilter;
-                std::vector<std::string> settingTargets;
             };
 
             std::vector<ActiveRule> rules;
@@ -1631,7 +1598,6 @@ namespace MPL::LightingPatcher
                     ActiveRule active{
                         .profile = discovered.name,
                         .settings = settings,
-                        .ownedBaseSettings = settings.pointLights,
                         .rule = std::addressof(rule),
                         .filter = ResolveFilteredBaseLightFilter(rule),
                     };
@@ -1642,11 +1608,6 @@ namespace MPL::LightingPatcher
                             rule.xemiInclude, rule.xemiExclude, noPlugins, noPlugins);
                         active.xemiFilter->requireIncludedRecordMatch =
                             !rule.xemiInclude.formIDs.empty() || !rule.xemiInclude.contains.empty();
-                    }
-                    active.settingTargets.reserve(rule.settings.size());
-                    for (const auto& setting : rule.settings)
-                    {
-                        active.settingTargets.push_back(FilteredBaseLightSettingTarget(setting));
                     }
                     rules.push_back(std::move(active));
                 }
@@ -1660,10 +1621,11 @@ namespace MPL::LightingPatcher
                 const auto value = FilteredBaseLightValue(active.settings, *active.rule);
                 for (const auto& setting : active.rule->settings)
                     ApplyFilteredBaseLightSetting(adjustment, value, setting);
-                if (adjustment.fadeMultiplier == 1.0) continue;
+                if (adjustment.fadeMultiplier == 1.0 && adjustment.radiusMultiplier == 1.0) continue;
                 PointLightPatcher::ReferenceRule referenceRule{
                     .xemiFilter = *active.xemiFilter,
                     .fadeMultiplier = adjustment.fadeMultiplier,
+                    .radiusMultiplier = adjustment.radiusMultiplier,
                 };
                 for (auto* light : a_dataHandler->GetFormArray<RE::TESObjectLIGH>())
                     if (MatchesFilteredBaseLightRule(light, active.filter, *active.rule, active.settings))
@@ -1676,29 +1638,15 @@ namespace MPL::LightingPatcher
             {
                 if (!light) continue;
                 std::vector<const ActiveRule*> matchingRules;
-                std::unordered_map<std::string, const ActiveRule*> settingOwners;
                 for (const auto& active : rules)
                 {
                     if (active.xemiFilter ||
                         !MatchesFilteredBaseLightRule(light, active.filter, *active.rule, active.settings)) continue;
                     matchingRules.push_back(std::addressof(active));
-                    for (const auto& target : active.settingTargets)
-                    {
-                        if (!target.empty()) settingOwners[target] = std::addressof(active);
-                    }
                 }
                 if (matchingRules.empty()) continue;
 
                 auto settings = a_baseSettings;
-                for (const auto& [target, owner] : settingOwners)
-                {
-                    const auto setting = std::ranges::find(owner->settingTargets, target);
-                    if (setting == owner->settingTargets.end()) continue;
-                    const auto index = static_cast<std::size_t>(std::distance(owner->settingTargets.begin(), setting));
-                    auto* destination = FilteredBaseLightSettingValue(settings, owner->rule->settings[index]);
-                    const auto* source = FilteredBaseLightSettingValue(owner->ownedBaseSettings, owner->rule->settings[index]);
-                    if (destination && source) *destination = *source;
-                }
 
                 for (const auto* active : matchingRules)
                 {
@@ -1709,20 +1657,12 @@ namespace MPL::LightingPatcher
                     if (std::abs(value - neutral) <= 0.0001) continue;
                     for (std::size_t index = 0; index < active->rule->settings.size(); ++index)
                     {
-                        const auto owner = settingOwners.find(active->settingTargets[index]);
-                        if (owner == settingOwners.end() ||
-                            !Config::IEquals(owner->second->profile, active->profile))
-                            continue;
                         ApplyFilteredBaseLightSetting(settings, value, active->rule->settings[index]);
                     }
                 }
                 if (settings == a_baseSettings) continue;
                 result.settings.emplace(light->GetFormID(), std::move(settings));
-                for (const auto& [target, owner] : settingOwners)
-                {
-                    (void)target;
-                    profileTargets[owner->profile].insert(light->GetFormID());
-                }
+                for (const auto* active : matchingRules) profileTargets[active->profile].insert(light->GetFormID());
             }
             for (const auto& discovered : TuningUtil::GetProfiles())
             {
