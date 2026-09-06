@@ -12,6 +12,7 @@ namespace MPL::Config
     {
     public:
         MPL::API::MMSF::Interface* mmsfAPI = nullptr;
+        MPL::API::MMSF::IEDIDCache* edidCache = nullptr;
         std::unordered_map<RE::TESWeather*, MPL::WeatherPatcher::WeatherBaseline> weatherBaselines;
         std::unordered_map<RE::BGSVolumetricLighting*, float> volumetricLightingIntensityBaselines;
         std::unordered_map<RE::BGSVolumetricLighting*, RE::NiColor> volumetricLightingColorBaselines;

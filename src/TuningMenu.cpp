@@ -3076,7 +3076,8 @@ namespace MPL::TuningMenu
             auto* cell = player ? player->GetParentCell() : nullptr;
             auto* stat = Config::StatData::GetSingleton();
             if (!stat->mmsfAPI) stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
-            const auto region = RegionRuntime::GetRegion(stat->mmsfAPI, cell);
+            if (!stat->edidCache) stat->edidCache = static_cast<MPL::API::MMSF::IEDIDCache*>(stat->mmsfAPI->QueryService("EDID"));
+            const auto region = RegionRuntime::GetRegion(stat->edidCache, cell);
             return region.empty() ? DisplayText("emptyList") : region;
         }
 

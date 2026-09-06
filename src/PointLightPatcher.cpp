@@ -473,7 +473,8 @@ namespace MPL::PointLightPatcher
             if (a_editorID.empty()) return 0;
             auto* stat = Config::StatData::GetSingleton();
             if (!stat->mmsfAPI) stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
-            return stat->mmsfAPI ? stat->mmsfAPI->LookupFormIDForEDID(std::string(a_editorID)) : 0;
+            if (!stat->edidCache) stat->edidCache = static_cast<MPL::API::MMSF::IEDIDCache*>(stat->mmsfAPI->QueryService("EDID"));
+            return stat->mmsfAPI ? stat->edidCache->LookupEdid(std::string(a_editorID)) : 0;
         }
 
         yyjson_mut_val* CopyValue(
