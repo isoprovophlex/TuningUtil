@@ -49,6 +49,7 @@ namespace MPL::TuningUtil
         bool EnableProfile = false;
         bool ShowAdvanced = false;
         Links links;
+        std::map<std::string, double> sliderValues;
 
         WeatherPatcher::BrightnessSettings brightnessMultiplier;
         double volumetricLightingIntensityMultiplier = 1.0;
@@ -62,15 +63,14 @@ namespace MPL::TuningUtil
         WeatherFilter weatherInclusions;
         WeatherFilter weatherExclusions;
         PluginFilter weatherPluginOwnership;
-        PluginFilter pluginInclusions;
-        PluginFilter pluginExclusions;
+        PluginFilter weatherPluginInclusions;
+        PluginFilter weatherPluginExclusions;
         std::map<std::string, double> filteredWeatherAdjustments;
         WeatherPatcher::ImageSpaceSettings exteriorImageSpace;
 
         LightingPatcher::LightingColorSettings lightBrightnessMultiplier;
         LightingPatcher::LightingColorSettings lightSaturationMultiplier;
         LightingPatcher::LightingHueShiftSettings lightHueShift;
-        WeatherPatcher::AmbientHueScales lightAmbientHueScales;
         WeatherPatcher::HueRanges lightHueRanges;
         double lightFogPowerMultiplier = 1.0;
         double lightFogMaxMultiplier = 1.0;

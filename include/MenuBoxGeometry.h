@@ -153,18 +153,23 @@ namespace MPL::MenuBoxGeometry
         float cornerDrop = 0.0f;
     };
 
+    inline bool FollowsClosedBox(
+        const std::optional<ClosedBoxFooter>& a_child,
+        const float a_lastItemBottom,
+        const float a_cursorY)
+    {
+        constexpr float positionTolerance = 0.01f;
+        return a_child && std::abs(a_child->bottom - a_lastItemBottom) <= positionTolerance &&
+               std::abs(a_child->cursorY - a_cursorY) <= positionTolerance;
+    }
+
     inline std::optional<float> NestedBottomInset(
         const std::optional<ClosedBoxFooter>& a_child,
         const float a_lastItemBottom,
         const float a_cursorY,
         const float a_leftAccentWidth)
     {
-        constexpr float positionTolerance = 0.01f;
-        if (!a_child || std::abs(a_child->bottom - a_lastItemBottom) > positionTolerance ||
-            std::abs(a_child->cursorY - a_cursorY) > positionTolerance)
-        {
-            return std::nullopt;
-        }
+        if (!FollowsClosedBox(a_child, a_lastItemBottom, a_cursorY)) return std::nullopt;
         return std::max(0.0f, a_child->leftInset - a_leftAccentWidth);
     }
 

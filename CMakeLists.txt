@@ -107,6 +107,10 @@ if(TUNINGUTIL_BUILD_TESTS)
   target_compile_features(MenuBoxGeometryTests PRIVATE cxx_std_23)
   target_include_directories(MenuBoxGeometryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+  add_executable(MenuStatusMessageTests tests/MenuStatusMessageTests.cpp)
+  target_compile_features(MenuStatusMessageTests PRIVATE cxx_std_23)
+  target_include_directories(MenuStatusMessageTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
   add_executable(SliderLinkMathTests tests/SliderLinkMathTests.cpp)
   target_compile_features(SliderLinkMathTests PRIVATE cxx_std_23)
   target_include_directories(SliderLinkMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -118,6 +122,10 @@ if(TUNINGUTIL_BUILD_TESTS)
   add_executable(PointLightFadeTests tests/PointLightFadeTests.cpp)
   target_compile_features(PointLightFadeTests PRIVATE cxx_std_23)
   target_include_directories(PointLightFadeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+  add_executable(SettingsUpdateTests tests/SettingsUpdateTests.cpp src/SliderSettingCatalog.cpp)
+  target_compile_features(SettingsUpdateTests PRIVATE cxx_std_23)
+  target_include_directories(SettingsUpdateTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
   add_executable(HueFilterTests tests/HueFilterTests.cpp)
   target_compile_features(HueFilterTests PRIVATE cxx_std_23)
@@ -144,6 +152,30 @@ if(TUNINGUTIL_BUILD_TESTS)
   target_compile_features(SliderCreatorTests PRIVATE cxx_std_23)
   target_include_directories(SliderCreatorTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(SliderCreatorTests PRIVATE reflectcpp::reflectcpp)
+
+  add_executable(
+    PointLightRadiusTests
+    tests/PointLightRadiusTests.cpp
+    src/PresetCatalog.cpp
+    src/SliderCreator.cpp
+    src/SliderSettingCatalog.cpp
+  )
+  target_compile_features(PointLightRadiusTests PRIVATE cxx_std_23)
+  target_include_directories(PointLightRadiusTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(PointLightRadiusTests PRIVATE reflectcpp::reflectcpp)
+
+  add_executable(SliderIdentityTests tests/SliderIdentityTests.cpp src/SliderCreator.cpp src/SliderSettingCatalog.cpp src/PresetCatalog.cpp)
+  target_compile_features(SliderIdentityTests PRIVATE cxx_std_23)
+  target_include_directories(SliderIdentityTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(SliderIdentityTests PRIVATE reflectcpp::reflectcpp)
+  foreach(test_target IN ITEMS SliderCreatorTests PointLightRadiusTests SliderIdentityTests)
+    target_sources(${test_target} PRIVATE src/SliderStorage.cpp src/SliderStorageFiles.cpp src/JsonOverlay.cpp)
+  endforeach()
+
+  add_executable(SliderStorageTests tests/SliderStorageTests.cpp src/SliderStorage.cpp src/SliderStorageFiles.cpp src/SliderSettingCatalog.cpp src/JsonOverlay.cpp)
+  target_compile_features(SliderStorageTests PRIVATE cxx_std_23)
+  target_include_directories(SliderStorageTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(SliderStorageTests PRIVATE reflectcpp::reflectcpp)
 
   set(
     TUNINGUTIL_ADDRESS_LIBRARY_1_7_99
@@ -185,7 +217,7 @@ if(TUNINGUTIL_BUILD_TESTS)
   endif()
 
   if(MSVC)
-    foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests MenuBoxGeometryTests SliderLinkMathTests ObjectLightingTrackingTests HueFilterTests PointLightFadeTests)
+    foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests MenuBoxGeometryTests SliderLinkMathTests ObjectLightingTrackingTests HueFilterTests PointLightFadeTests PointLightRadiusTests SliderIdentityTests)
       target_compile_options(
         ${test_target}
         PRIVATE
@@ -207,11 +239,16 @@ if(TUNINGUTIL_BUILD_TESTS)
 
   add_test(NAME JsonOverlayTests COMMAND JsonOverlayTests)
   add_test(NAME MenuBoxGeometryTests COMMAND MenuBoxGeometryTests)
+  add_test(NAME MenuStatusMessageTests COMMAND MenuStatusMessageTests)
   add_test(NAME SliderLinkMathTests COMMAND SliderLinkMathTests)
   add_test(NAME ObjectLightingTrackingTests COMMAND ObjectLightingTrackingTests)
   add_test(NAME PointLightFadeTests COMMAND PointLightFadeTests)
+  add_test(NAME SettingsUpdateTests COMMAND SettingsUpdateTests)
+  add_test(NAME PointLightRadiusTests COMMAND PointLightRadiusTests)
   add_test(NAME HueFilterTests COMMAND HueFilterTests)
   add_test(NAME SliderCreatorTests COMMAND SliderCreatorTests)
+  add_test(NAME SliderIdentityTests COMMAND SliderIdentityTests)
+  add_test(NAME SliderStorageTests COMMAND SliderStorageTests)
   if(TARGET TuningUtilAddressLibraryTests)
     add_test(
       NAME TuningUtilAddressLibrary1799

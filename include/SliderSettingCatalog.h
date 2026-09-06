@@ -17,6 +17,7 @@ namespace MPL::SliderSettingCatalog
     {
         none,
         brightness,
+        radius,
         saturation,
         hueShift,
         fogPower,
@@ -38,6 +39,8 @@ namespace MPL::SliderSettingCatalog
     };
 
     const std::vector<Entry>& Entries();
+    std::string_view SelectionGroup(const Entry&);
+    std::string SelectionLabel(const Entry&);
     std::vector<std::string_view> Groups(Domain);
     std::vector<const Entry*> Entries(Domain, std::string_view);
     const Entry* Find(std::string_view);

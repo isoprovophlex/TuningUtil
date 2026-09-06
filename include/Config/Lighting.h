@@ -38,8 +38,8 @@ namespace MPL::LightingPatcher
     struct PointLightSettings
     {
         double fadeMultiplier = 1.0;
+        double radiusMultiplier = 1.0;
         double saturationMultiplier = 1.0;
-        WeatherPatcher::AmbientHueScales hueScales;
         WeatherPatcher::HueShiftBands hueShift;
 
         bool operator==(const PointLightSettings&) const = default;

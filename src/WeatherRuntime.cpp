@@ -84,14 +84,9 @@ namespace MPL::WeatherRuntime
         if (!loadedData)
         {
             result.status = SetWeatherStatus::kAppliedWithoutLoadedData;
-            DetailedLogging::Info(
-                "[Emittance Refresh] weather={:08X} | cellData=unloaded",
-                a_weather->GetFormID());
             return result;
         }
 
-        std::uint32_t regionSources = 0;
-        std::uint32_t regionFallbacks = 0;
         for (const auto& entry : loadedData->emittanceSourceRefMap)
         {
             auto* source = entry.first;
@@ -102,14 +97,7 @@ namespace MPL::WeatherRuntime
 
             auto* region = static_cast<RE::TESRegion*>(source);
             region->SetCurrentWeather(a_weather);
-            ++regionSources;
-            if (region->currentWeather != a_weather)
-            {
-                ++regionFallbacks;
-            }
         }
-        const auto sourceEntries =
-            loadedData->emittanceSourceRefMap.size();
         const auto lightEntries =
             loadedData->emittanceLightRefMap.size();
         updateCellEmittance(cell);
@@ -118,15 +106,6 @@ namespace MPL::WeatherRuntime
             std::min<std::size_t>(
                 lightEntries,
                 std::numeric_limits<std::uint32_t>::max()));
-        DetailedLogging::Info(
-            "[Emittance Refresh] cell={:08X} | target={:08X} | override={} | sources={} | regions={} | fallbacks={} | lights={}",
-            cell->GetFormID(),
-            a_weather->GetFormID(),
-            a_override,
-            sourceEntries,
-            regionSources,
-            regionFallbacks,
-            lightEntries);
         return result;
     }
 }  // namespace MPL::WeatherRuntime

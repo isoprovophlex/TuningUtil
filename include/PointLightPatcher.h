@@ -13,6 +13,7 @@ namespace MPL::PointLightPatcher
         std::unordered_set<RE::FormID> baseLights;
         RecordFilter::Resolved xemiFilter;
         double fadeMultiplier = 1.0;
+        double radiusMultiplier = 1.0;
 
         bool operator==(const ReferenceRule&) const = default;
     };

@@ -312,6 +312,16 @@ int main()
     passed &= Expect(Geometry::CornerClearance(0.0f) == 0.0f, "collapsed boxes do not reserve corner space");
 
     const Geometry::ClosedBoxFooter child{ 400.0f, 404.0f, 26.0f };
+    passed &= Expect(Geometry::FollowsClosedBox(child, 400.0f, 404.0f),
+        "adjacent sibling boxes can share a border across separate render helpers");
+    passed &= Expect(Geometry::FollowsClosedBox(child, 400.005f, 404.005f),
+        "fractional layout rounding does not separate adjacent boxes");
+    passed &= Expect(!Geometry::FollowsClosedBox(child, 430.0f, 434.0f),
+        "intervening controls prevent sibling boxes from merging");
+    passed &= Expect(!Geometry::FollowsClosedBox(child, 400.0f, 414.0f),
+        "intentional spacing between boxes is retained");
+    passed &= Expect(!Geometry::FollowsClosedBox(std::nullopt, 400.0f, 404.0f),
+        "the first box never joins a box from another parent");
     const auto bottomInset = Geometry::NestedBottomInset(child, 400.0f, 404.0f, Geometry::AccentWidth);
     passed &= Expect(bottomInset == 16.0f, "bottom spacing subtracts the ten-pixel colored side rail");
     passed &= Expect(bottomInset && Near(*bottomInset - Geometry::BorderWidth,

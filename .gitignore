@@ -1,12 +1,10 @@
-
+z
 !/tests/PointLightFadeTests.cpp
 build*
 .vscode*
 .cache
 compile_commands.json
 /res
-/tests/*
-!/tests/MenuBoxGeometryTests.cpp
-!/tests/SliderLinkMathTests.cpp
-!/tests/ObjectLightingTrackingTests.cpp
+/tests
 /test-results
+/output

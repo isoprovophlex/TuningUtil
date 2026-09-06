@@ -1,4 +1,5 @@
 #include <SKSEMenuSettings.h>
+#include <SliderStorage.h>
 
 #include <algorithm>
 #include <cctype>
@@ -142,7 +143,8 @@ namespace MPL::SKSEMenuSettings
                 { "saveAllSuccess", "Saved all {profile} page settings." },
                 { "saveAllFailure", "Settings could not be saved. Check the TuningUtil log for details." },
                 { "pageHasNoSettings", "This page has no settings that can be reset." },
-                { "resetPageSuccess", "Default settings loaded for this page. Select Save Page to keep these changes." },
+                { "resetPageSaved", "Default settings loaded and saved for this page." },
+                { "resetPageSaveFailure", "Default settings loaded for this page, but they could not be saved. Select Save Page to retry." },
                 { "resetPageFailure", "Page settings could not be reset. Check the TuningUtil log for details." },
                 { "savePageSuccess", "Saved settings for this page." },
                 { "savePageFailure", "Page settings could not be saved. Check the TuningUtil log for details." },
@@ -150,7 +152,8 @@ namespace MPL::SKSEMenuSettings
                 { "restorePageFailure", "Page settings could not be restored. Check the TuningUtil log for details." },
                 { "restoreAllSuccess", "Saved page settings restored for this profile." },
                 { "restoreAllFailure", "Profile settings could not be restored. Check the TuningUtil log for details." },
-                { "resetAllSuccess", "Default page settings loaded for this profile. Select Save All Pages to keep these changes." },
+                { "resetAllSaved", "Default settings loaded and saved for all pages in this profile." },
+                { "resetAllSaveFailure", "Default settings loaded for all pages in this profile, but they could not be saved. Select Save All Pages to retry." },
                 { "resetAllFailure", "Profile settings could not be reset. Check the TuningUtil log for details." },
                 { "weatherSetupSaved", "Weather Setup saved to profileSettings.json." },
                 { "weatherSetupSaveFailure", "Weather Setup could not be saved: {reason}" },
@@ -184,6 +187,7 @@ namespace MPL::SKSEMenuSettings
                 { "layoutPageSaved", "Page edits saved." },
                 { "layoutPageRestored", "Saved page edits restored." },
                 { "layoutPageSaveFailure", "Page edits could not be saved. Check the TuningUtil log for details." },
+                { "layoutDuplicateSliderIDsFailure", std::string(SliderStorage::DuplicateSliderIDError) },
                 { "layoutPageRestoreFailure", "Saved page edits could not be restored. Check the TuningUtil log for details." },
                 { "layoutProfileSaved", "Profile edits saved." },
                 { "layoutProfileRestored", "Saved profile edits restored." },
@@ -199,7 +203,8 @@ namespace MPL::SKSEMenuSettings
                 { "layoutPageAdvancedChanged", "Advanced page visibility updated." },
                 { "layoutElementAdded", "Element added." },
                 { "layoutPageMoved", "Page moved." },
-                { "layoutPageRemoved", "Page removed." },
+                { "layoutPageDeletedSaved", "Page deleted and saved. Other unsaved page edits were kept." },
+                { "layoutPageDeleteFailure", "The page deletion could not be saved." },
                 { "layoutModuleAdded", "Module added." },
                 { "layoutModuleMoved", "Module moved." },
                 { "layoutModuleRemoved", "Module removed." },
@@ -252,21 +257,21 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorNoValidSettings", "Add at least one valid setting to the slider." },
                 { "sliderCreatorUnsupportedSettingPath", "The slider contains a setting path that TuningUtil does not support." },
                 { "sliderCreatorFilteredUnsupportedSetting", "Filtered sliders support only weather brightness, saturation, and hue-shift settings." },
-                { "sliderCreatorFilteredLightingUnsupportedSetting", "Lighting Template filters support only Lighting brightness, Fog Power, and Fog Strength settings." },
+                { "sliderCreatorFilteredLightingUnsupportedSetting", "Lighting Template filters support only Lighting brightness, saturation, Fog Power, and Fog Strength settings." },
                 { "sliderCreatorFilteredBaseLightUnsupportedSetting", "Base Light filters support only Point Lights settings." },
                 { "sliderCreatorHueRequiresBaseLight", "Hue filters apply only to Point Light sliders with a Base Light filter." },
                 { "sliderCreatorInvalidHueFilter", "Select valid hue bands for the Hue Filter." },
-                { "sliderCreatorBaseLightWeatherFeatures", "Time filters and saturation scales do not apply to Base Light filters." },
+                { "sliderCreatorBaseLightWeatherFeatures", "Time filters do not apply to Base Light filters." },
                 { "sliderCreatorFilteredBaseObjectUnsupportedSetting", "Base Object filters support only Object Effect Lighting settings." },
                 { "sliderCreatorObjectLightingRequiresFilter", "Object Effect Lighting sliders require a Base Object filter." },
                 { "sliderCreatorXemiRequiresObjectOrPointLight", "XEMI filters apply only to Object Effect Lighting and Point Light Brightness sliders with record filters." },
-                { "sliderCreatorBaseObjectWeatherFeatures", "Time filters and saturation scales do not apply to Base Object filters." },
-                { "sliderCreatorLightingWeatherFeatures", "Time filters and saturation scales apply only to filtered weather sliders." },
+                { "sliderCreatorBaseObjectWeatherFeatures", "Time filters and custom hue scales do not apply to Base Object filters." },
+                { "sliderCreatorLightingWeatherFeatures", "Time filters apply only to filtered weather sliders." },
                 { "sliderCreatorMixedFilteredOperations", "Every setting in a filtered slider must use the same operation." },
                 { "sliderCreatorMixedFilterDomains", "Every setting in a filtered slider must use the same filter domain." },
-                { "sliderCreatorHueScalesRequireSaturation", "Slider-specific saturation scales are supported only by filtered saturation sliders." },
-                { "sliderCreatorHueScalesRequireFilter", "Slider-specific saturation scales require a filtered weather slider." },
-                { "sliderCreatorInvalidHueScale", "Every slider-specific saturation scale must be a finite number." },
+                { "sliderCreatorHueScalesRequireSaturation", "Custom hue scales are supported only by saturation sliders." },
+                { "sliderCreatorHueScalesRequireFilter", "Custom hue scales require a saturation slider with record filters." },
+                { "sliderCreatorInvalidHueScale", "Every custom hue scale must be a finite number." },
                 { "sliderCreatorNoTimeSelected", "Select at least one time of day or disable the time filter." },
                 { "sliderCreatorInvalidRange", "The slider minimum must be lower than its maximum." },
                 { "sliderCreatorNegativeStep", "The slider step cannot be negative." },
@@ -307,6 +312,10 @@ namespace MPL::SKSEMenuSettings
                 { "layoutPageMoveFailure", "The page order could not be changed." },
                 { "layoutPageRemoveFailure", "The page could not be removed. A profile must keep at least one page." },
                 { "deleteUserSettingsConfirmation", "Are you sure you want to delete all user settings?" },
+                { "deletePageConfirmation", "Delete {page} from {profile}, including all of its contents? The deletion will be saved immediately. Edits on other pages will remain unsaved." },
+                { "resetPageConfirmation", "Reset {page} in {profile} to its default settings and save immediately? This replaces saved and unsaved settings for this page. Other pages and the page layout will not be changed." },
+                { "resetAllConfirmation", "Reset all pages in {profile} to their default settings and save immediately? This replaces saved and unsaved page settings. Page layouts and Dev Mode setup settings will not be changed." },
+                { "disableDevModeConfirmation", "Turning off Dev Mode will discard unsaved page and slider layout edits across all profiles. Setup changes and preset edits will be kept. Continue?" },
             };
             return messages;
         }
@@ -399,7 +408,7 @@ namespace MPL::SKSEMenuSettings
                 { "xemiRegion", "XEMI Region" },
                 { "baseObject", "Base Object" },
                 { "sliderCreatorIgnoreProfileFilters", "Ignore Profile Filters" },
-                { "saturationScales", "Saturation Scales" },
+                { "weatherSaturationScales", "Saturation Scales" },
                 { "weatherLinks", "Links" },
                 { "hueRanges", "Hue Ranges" },
                 { "compressionAnchor", "Compression Anchor" },
@@ -423,8 +432,6 @@ namespace MPL::SKSEMenuSettings
                 { "cell", "Cell" },
                 { "addExcludedCell", "Add Excluded Cell" },
                 { "excludedCells", "Excluded Cells" },
-                { "lightingSaturationScales", "Saturation Scales" },
-                { "lightingBulbSaturationScales", "Bulb Saturation Scales" },
                 { "lightingHueRanges", "Ambient & Bulb Hue Ranges" },
                 { "weatherFilterWeather", "Weather" },
                 { "lightingTemplate", "Lighting Template" },
@@ -436,7 +443,8 @@ namespace MPL::SKSEMenuSettings
                 { "excludedList", "Excluded List" },
                 { "includedPlugins", "Included Plugins" },
                 { "excludedPlugins", "Excluded Plugins" },
-                { "pluginOwnership", "Plugin Ownership" },
+                { "weatherOwnership", "Weather Ownership" },
+                { "templateOwnership", "Template Ownership" },
                 { "pluginName", "Plugin" },
                 { "addOrUpdatePlugin", "Add / Update Plugin" },
                 { "clearPlugins", "Clear Plugins" },
@@ -459,6 +467,15 @@ namespace MPL::SKSEMenuSettings
                 { "deleteUserSettings", "Delete User Settings" },
                 { "confirmDeleteUserSettings", "Delete" },
                 { "cancelDeleteUserSettings", "Cancel" },
+                { "cancelAction", "Cancel" },
+                { "deletePagePrompt", "Delete Page?" },
+                { "confirmDeletePageAndSave", "Delete and Save" },
+                { "resetPagePrompt", "Reset Page to Defaults?" },
+                { "resetAllPrompt", "Reset All Pages?" },
+                { "confirmResetAndSave", "Reset and Save" },
+                { "disableDevModePrompt", "Turn Off Dev Mode?" },
+                { "discardEditsAndDisableDevMode", "Discard Edits and Turn Off" },
+                { "cancelDisableDevMode", "Cancel" },
                 { "forceCSTonemapping", "Force CS Tonemapping" },
                 { "displayIniSection", "[Display]" },
                 { "unavailableValue", "Unavailable" },
@@ -483,7 +500,7 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorWidth", "Width" },
                 { "sliderCreatorFinalize", "Finalize" },
                 { "sliderCreatorLoadExisting", "Slider" },
-                { "sliderCreatorUniqueHueScales", "Unique Saturation Scales" },
+                { "sliderCreatorCustomHueScales", "Custom Hue Scales" },
                 { "devMode", "Dev Mode" },
                 { "editPage", "Edit Page" },
                 { "newPage", "New Page" },
@@ -729,10 +746,6 @@ namespace MPL::SKSEMenuSettings
 
             settings = std::move(loaded);
             loadedWriteTime = writeTime;
-            logger::info(
-                "[Tuning Menu] presentation | source={} | file={}",
-                kSettingsPath.string(),
-                exists);
         }
 
         std::string ResolveMessage(
