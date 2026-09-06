@@ -2,6 +2,7 @@
 #include <Config/Forms.h>
 #include <CompressionMath.h>
 #include <DetailedLogging.h>
+#include <HueMath.h>
 #include <JsonOverlay.h>
 #include <PresetCatalog.h>
 #include <TuningSettings.h>
@@ -217,29 +218,7 @@ namespace MPL::WeatherPatcher
 
     std::optional<double> HueRangeValue(const double a_red, const double a_green, const double a_blue)
     {
-        const double maximum = std::max({ a_red, a_green, a_blue });
-        const double minimum = std::min({ a_red, a_green, a_blue });
-        const double delta = maximum - minimum;
-        if (delta <= 0.0001)
-        {
-            return std::nullopt;
-        }
-
-        double hue = 0.0;
-        if (maximum == a_red)
-        {
-            hue = 60.0 * std::fmod((a_green - a_blue) / delta, 6.0);
-        }
-        else if (maximum == a_green)
-        {
-            hue = 60.0 * (((a_blue - a_red) / delta) + 2.0);
-        }
-        else
-        {
-            hue = 60.0 * (((a_red - a_green) / delta) + 4.0);
-        }
-        const auto degrees = hue < 0.0 ? hue + 360.0 : hue;
-        return degrees * (255.0 / 360.0);
+        return HueMath::Value(a_red, a_green, a_blue);
     }
 
     std::optional<double> HueRangeValue(const RE::Color& a_color)
@@ -254,8 +233,7 @@ namespace MPL::WeatherPatcher
 
     double NormalizeHueRangeValue(const double a_hue)
     {
-        const double normalized = std::fmod(a_hue, 255.0);
-        return normalized < 0.0 ? normalized + 255.0 : normalized;
+        return HueMath::Normalize(a_hue);
     }
 
     double HueRangeWeight(const double a_hue, const HueRange& a_range)

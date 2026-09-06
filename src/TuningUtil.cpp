@@ -414,8 +414,6 @@ namespace MPL::TuningUtil
             FilteredBaseLightSetting result;
             if (entry->path == "pointLights.fadeMultiplier")
                 result.operation = FilteredBaseLightOperation::brightness;
-            else if (entry->path == "pointLights.effectFadeMultiplier")
-                result.operation = FilteredBaseLightOperation::effect;
             else if (entry->path == "pointLights.saturationMultiplier")
                 result.operation = FilteredBaseLightOperation::saturation;
             else if (entry->path.starts_with("pointLights.hueScales.") && !entry->hue.empty())
@@ -817,6 +815,22 @@ namespace MPL::TuningUtil
             rule.defaultValue = rule.settings.front().operation == FilteredBaseLightOperation::hueShift ? 0.0 : 1.0;
             rule.include = JsonWeatherFilter(yyjson_obj_get(a_control, "baseLightFilter"), "include");
             rule.exclude = JsonWeatherFilter(yyjson_obj_get(a_control, "baseLightFilter"), "exclude");
+            auto* hueFilter = yyjson_obj_get(a_control, "hueFilter");
+            rule.hueFilter.include = JsonStrings(hueFilter, "include");
+            rule.useXemiFilter = yyjson_is_obj(yyjson_obj_get(a_control, "xemiFilter"));
+            if (rule.useXemiFilter && *operation != SliderSettingCatalog::FilterOperation::brightness)
+            {
+                logger::warn("[TuningUtil] filtered Base Light slider={} | XEMI requires Brightness", rule.id);
+                return std::nullopt;
+            }
+            rule.xemiInclude = JsonWeatherFilter(yyjson_obj_get(a_control, "xemiFilter"), "include");
+            rule.xemiExclude = JsonWeatherFilter(yyjson_obj_get(a_control, "xemiFilter"), "exclude");
+            if (!HueFilter::Valid(rule.hueFilter))
+            {
+                logger::warn("[TuningUtil] filtered Base Light slider={} | source={} | invalid hue band",
+                    rule.id, a_source.string());
+                return std::nullopt;
+            }
             return rule;
         }
 
@@ -857,12 +871,14 @@ namespace MPL::TuningUtil
             if (rule.settings.empty()) return std::nullopt;
             rule.include = JsonWeatherFilter(yyjson_obj_get(a_control, "baseObjectFilter"), "include");
             rule.exclude = JsonWeatherFilter(yyjson_obj_get(a_control, "baseObjectFilter"), "exclude");
+            rule.xemiInclude = JsonWeatherFilter(yyjson_obj_get(a_control, "xemiFilter"), "include");
+            rule.xemiExclude = JsonWeatherFilter(yyjson_obj_get(a_control, "xemiFilter"), "exclude");
             return rule;
         }
 
         std::vector<FilteredWeatherRule> ReadFilteredWeatherRules(const std::filesystem::path& a_profileDirectory)
         {
-            const auto path = a_profileDirectory / kMenuDefinitionFile;
+            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
             const auto text = ReadText(path);
             const auto document = text ? Parse(*text) : nullptr;
             auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
@@ -916,7 +932,7 @@ namespace MPL::TuningUtil
         std::vector<FilteredLightingTemplateRule> ReadFilteredLightingTemplateRules(
             const std::filesystem::path& a_profileDirectory)
         {
-            const auto path = a_profileDirectory / kMenuDefinitionFile;
+            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
             const auto text = ReadText(path);
             const auto document = text ? Parse(*text) : nullptr;
             auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
@@ -963,7 +979,7 @@ namespace MPL::TuningUtil
         std::vector<FilteredBaseLightRule> ReadFilteredBaseLightRules(
             const std::filesystem::path& a_profileDirectory)
         {
-            const auto path = a_profileDirectory / kMenuDefinitionFile;
+            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
             const auto text = ReadText(path);
             const auto document = text ? Parse(*text) : nullptr;
             auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
@@ -1006,7 +1022,7 @@ namespace MPL::TuningUtil
         std::vector<FilteredObjectLightingRule> ReadFilteredObjectLightingRules(
             const std::filesystem::path& a_profileDirectory)
         {
-            const auto path = a_profileDirectory / kMenuDefinitionFile;
+            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
             const auto text = ReadText(path);
             const auto document = text ? Parse(*text) : nullptr;
             auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
@@ -1059,7 +1075,7 @@ namespace MPL::TuningUtil
         LightingSliderLinkRules ReadLightingSliderLinkRules(
             const std::filesystem::path& a_profileDirectory)
         {
-            const auto path = a_profileDirectory / kMenuDefinitionFile;
+            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
             const auto text = ReadText(path);
             const auto document = text ? Parse(*text) : nullptr;
             auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
@@ -1360,7 +1376,7 @@ namespace MPL::TuningUtil
         std::optional<Settings> ParseSettings(const std::string& a_json, const std::filesystem::path& a_source)
         {
             static constexpr std::string_view filterSchema =
-                R"({"weatherInclusions":{"formIDs":[],"contains":[]},"weatherExclusions":{"formIDs":[],"contains":[]},"weatherPluginOwnership":{"exact":[],"contains":[]},"pluginInclusions":{"exact":[],"contains":[]},"pluginExclusions":{"exact":[],"contains":[]},"effectPointLightInclusions":{"formIDs":[],"contains":[]},"effectPointLightExclusions":{"formIDs":[],"contains":[]},"lightingTemplateInclusions":[],"lightingTemplateExclusions":[],"lightingTemplatePluginOwnership":{"exact":[],"contains":[]},"lightingTemplatePluginInclusions":{"exact":[],"contains":[]},"lightingTemplatePluginExclusions":{"exact":[],"contains":[]},"lightingTemplateFilter":{"include":{"locationTypes":[],"multiLocationExceptions":[]},"exclude":{"locationTypes":[],"multiLocationExceptions":[]}}})";
+                R"({"weatherInclusions":{"formIDs":[],"contains":[]},"weatherExclusions":{"formIDs":[],"contains":[]},"weatherPluginOwnership":{"exact":[],"contains":[]},"pluginInclusions":{"exact":[],"contains":[]},"pluginExclusions":{"exact":[],"contains":[]},"lightingTemplateInclusions":[],"lightingTemplateExclusions":[],"lightingTemplatePluginOwnership":{"exact":[],"contains":[]},"lightingTemplatePluginInclusions":{"exact":[],"contains":[]},"lightingTemplatePluginExclusions":{"exact":[],"contains":[]},"lightingTemplateFilter":{"include":{"locationTypes":[],"multiLocationExceptions":[]},"exclude":{"locationTypes":[],"multiLocationExceptions":[]}}})";
             std::string normalizationError;
             const auto normalized = JsonOverlay::Overlay(filterSchema, a_json, normalizationError);
             if (!normalized)
@@ -1916,8 +1932,6 @@ namespace MPL::TuningUtil
                 std::string_view{ "weatherPluginOwnership" },
                 std::string_view{ "pluginInclusions" },
                 std::string_view{ "pluginExclusions" },
-                std::string_view{ "effectPointLightInclusions" },
-                std::string_view{ "effectPointLightExclusions" },
                 std::string_view{ "lightingTemplateInclusions" },
                 std::string_view{ "lightingTemplateExclusions" },
                 std::string_view{ "lightingTemplatePluginOwnership" },
@@ -2883,7 +2897,18 @@ namespace MPL::TuningUtil
             FilteredBaseLightRule rule{
                 .id = runtimeID,
                 .controlID = runtimeID,
+                .hueFilter = a_definition.hueFilter,
+                .useXemiFilter = a_definition.useXemiFilter ||
+                    !a_definition.xemiInclude.formIDs.empty() || !a_definition.xemiInclude.contains.empty() ||
+                    !a_definition.xemiExclude.formIDs.empty() || !a_definition.xemiExclude.contains.empty(),
+                .xemiInclude = filter(a_definition.xemiInclude),
+                .xemiExclude = filter(a_definition.xemiExclude),
             };
+            if (!HueFilter::Valid(rule.hueFilter))
+            {
+                a_error = "Select valid hue bands for the Hue Filter.";
+                return false;
+            }
             std::optional<FilteredBaseLightOperation> operation;
             for (const auto& target : a_definition.settings)
             {
@@ -2899,6 +2924,11 @@ namespace MPL::TuningUtil
             }
             rule.include = filter(a_definition.include);
             rule.exclude = filter(a_definition.exclude);
+            if (rule.useXemiFilter && *operation != FilteredBaseLightOperation::brightness)
+            {
+                a_error = "XEMI filters apply only to Object Effect Lighting and Point Light Brightness sliders with record filters.";
+                return false;
+            }
             rule.defaultValue = *operation == FilteredBaseLightOperation::hueShift ? 0.0 : 1.0;
 
             const auto existing = std::ranges::find_if(profile->filteredBaseLightRules, [&](const auto& a_rule)
@@ -2939,6 +2969,8 @@ namespace MPL::TuningUtil
             rule.include = filter(a_definition.include);
             rule.exclude = filter(a_definition.exclude);
 
+            rule.xemiInclude = filter(a_definition.xemiInclude);
+            rule.xemiExclude = filter(a_definition.xemiExclude);
             const auto existing = std::ranges::find_if(profile->filteredObjectLightingRules, [&](const auto& a_rule)
                 { return Config::IEquals(a_rule.id, runtimeID); });
             const auto value = findValue(settings.filteredObjectLightingAdjustments);

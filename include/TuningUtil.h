@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Config/Tuning.h>
+#include <HueFilter.h>
 #include <ProfileSetup.h>
 #include <cstdint>
 #include <map>
@@ -84,7 +85,6 @@ namespace MPL::TuningUtil
     enum class FilteredBaseLightOperation
     {
         brightness,
-        effect,
         saturation,
         hueScale,
         hueShift,
@@ -106,6 +106,10 @@ namespace MPL::TuningUtil
         std::vector<FilteredBaseLightSetting> settings;
         WeatherFilter include;
         WeatherFilter exclude;
+        HueFilter::Selection hueFilter;
+        bool useXemiFilter = false;
+        WeatherFilter xemiInclude;
+        WeatherFilter xemiExclude;
         double defaultValue = 1.0;
 
         bool operator==(const FilteredBaseLightRule&) const = default;
@@ -132,6 +136,8 @@ namespace MPL::TuningUtil
         std::vector<FilteredObjectLightingSetting> settings;
         WeatherFilter include;
         WeatherFilter exclude;
+        WeatherFilter xemiInclude;
+        WeatherFilter xemiExclude;
         double defaultValue = 1.0;
 
         bool operator==(const FilteredObjectLightingRule&) const = default;

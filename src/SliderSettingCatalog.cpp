@@ -243,8 +243,6 @@ namespace MPL::SliderSettingCatalog
             AddImageSpace(entries, Domain::lighting, "Image Space", "lightImageSpace");
             Add(entries, Domain::lighting, "Point Lights", "Brightness", "pointLights.fadeMultiplier",
                 "brightness", {}, FilterOperation::brightness, false, false, 1.0);
-            Add(entries, Domain::lighting, "Point Lights", "Effect Brightness", "pointLights.effectFadeMultiplier",
-                "effectBrightness", {}, FilterOperation::brightness, false, false, 1.0);
             Add(entries, Domain::lighting, "Point Lights", "Saturation", "pointLights.saturationMultiplier",
                 "saturation", {}, FilterOperation::saturation, false, false, 1.0);
             for (const auto& hue : hues)

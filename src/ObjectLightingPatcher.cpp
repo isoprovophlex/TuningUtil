@@ -1,14 +1,18 @@
 #include <DetailedLogging.h>
 #include <Config.h>
 #include <ObjectLightingPatcher.h>
+#include <ObjectLightingTracking.h>
+#include <ObjectShaderCatalog.h>
 #include <RecordFilter.h>
 #include <TuningUtil.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <ranges>
 #include <unordered_map>
 #include <unordered_set>
@@ -23,6 +27,8 @@ namespace MPL::ObjectLightingPatcher
         {
             std::string key;
             RecordFilter::Resolved filter;
+            std::optional<RecordFilter::Resolved> xemiFilter;
+            ObjectShaderCatalog::Capability shaders = ObjectShaderCatalog::Capability::none;
             double emissiveMultiplier = 1.0;
             double baseColorScale = 1.0;
 
@@ -33,7 +39,6 @@ namespace MPL::ObjectLightingPatcher
         {
             float source = 0.0f;
             float applied = 0.0f;
-            std::unordered_set<std::string> rules;
         };
 
         struct EffectPropertyBaseline : PropertyBaseline
@@ -41,15 +46,27 @@ namespace MPL::ObjectLightingPatcher
             RE::BSEffectShaderMaterial* material = nullptr;
         };
 
+        using ObjectLightingTracking::RuleKeys;
+
+        struct BaseObjectMatch
+        {
+            RuleKeys rules;
+            bool dynamic = false;
+        };
+
         std::vector<ActiveRule> activeRules;
+        std::unordered_map<RE::FormID, BaseObjectMatch> baseObjectMatches;
+        std::unordered_set<RE::FormID> referencesAwaiting3D;
+        ObjectLightingTracking::ReferenceTracker<RE::NiPointer<RE::BSShaderProperty>> trackedReferences;
         std::unordered_map<RE::BSLightingShaderProperty*, PropertyBaseline> lightingBaselines;
         std::unordered_map<RE::BSEffectShaderProperty*, EffectPropertyBaseline> effectBaselines;
         std::mutex stateLock;
         std::mutex reconciliationLock;
-        std::unordered_set<RE::FormID> pendingReferences;
+        std::unordered_map<RE::FormID, bool> pendingReferences;
+        std::unordered_set<RE::FormID> pendingCells;
         bool reconciliationQueued = false;
-        bool fullReconciliationRequested = false;
         bool runtimeEventsInstalled = false;
+        std::atomic<bool> hasActiveRules{ false };
         std::atomic<std::uint64_t> reconciliationGeneration{ 0 };
 
         bool NearlyEqual(const float a_left, const float a_right)
@@ -73,6 +90,17 @@ namespace MPL::ObjectLightingPatcher
                        a_rule.defaultValue;
         }
 
+        std::optional<RecordFilter::Resolved> ResolveXemiFilter(
+            const TuningUtil::WeatherFilter& a_include, const TuningUtil::WeatherFilter& a_exclude)
+        {
+            if (a_include.formIDs.empty() && a_include.contains.empty() &&
+                a_exclude.formIDs.empty() && a_exclude.contains.empty()) return std::nullopt;
+            const TuningUtil::PluginFilter noPlugins;
+            auto filter = RecordFilter::Resolve(a_include, a_exclude, noPlugins, noPlugins);
+            filter.requireIncludedRecordMatch = !a_include.formIDs.empty() || !a_include.contains.empty();
+            return filter;
+        }
+
         std::vector<ActiveRule> ResolveActiveRules()
         {
             std::vector<ActiveRule> result;
@@ -87,18 +115,27 @@ namespace MPL::ObjectLightingPatcher
                 {
                     auto emissiveMultiplier = 1.0;
                     auto baseColorScale = 1.0;
+                    auto shaders = ObjectShaderCatalog::Capability::none;
                     const auto value = RuleValue(settings, rule);
                     for (const auto& setting : rule.settings)
                     {
                         const auto multiplier = std::max(0.0, 1.0 + ((value - 1.0) * setting.scale));
                         if (setting.operation == TuningUtil::FilteredObjectLightingOperation::baseColorScale)
+                        {
                             baseColorScale *= multiplier;
+                            shaders = shaders | ObjectShaderCatalog::Capability::effect;
+                        }
                         else
+                        {
                             emissiveMultiplier *= multiplier;
+                            shaders = shaders | ObjectShaderCatalog::Capability::lighting;
+                        }
                     }
                     result.push_back({
                         .key = profile.name + "\x1F" + rule.id,
                         .filter = RecordFilter::Resolve(rule.include, rule.exclude, noPlugins, noPlugins),
+                        .xemiFilter = ResolveXemiFilter(rule.xemiInclude, rule.xemiExclude),
+                        .shaders = shaders,
                         .emissiveMultiplier = emissiveMultiplier,
                         .baseColorScale = baseColorScale,
                     });
@@ -107,15 +144,60 @@ namespace MPL::ObjectLightingPatcher
             return result;
         }
 
-        std::vector<std::size_t> MatchingRules(const RE::TESBoundObject* a_baseObject)
+        ObjectShaderCatalog::Capability BaseShaders(RE::TESBoundObject* a_baseObject)
         {
-            std::vector<std::size_t> result;
-            if (!a_baseObject) return result;
-            for (std::size_t index = 0; index < activeRules.size(); ++index)
+            auto* model = a_baseObject ? skyrim_cast<RE::TESModel*>(a_baseObject) : nullptr;
+            const auto* path = model ? model->GetModel() : nullptr;
+            return path ? ObjectShaderCatalog::Get(path) : ObjectShaderCatalog::Capability::none;
+        }
+
+        const RuleKeys& MatchingRules(RE::TESBoundObject* a_baseObject)
+        {
+            static const RuleKeys empty;
+            if (!a_baseObject || activeRules.empty()) return empty;
+            const auto [entry, inserted] = baseObjectMatches.try_emplace(a_baseObject->GetFormID());
+            if (inserted)
             {
-                if (RecordFilter::Matches(a_baseObject, activeRules[index].filter)) result.push_back(index);
+                entry->second.dynamic = a_baseObject->IsDynamicForm();
+                for (const auto& rule : activeRules)
+                {
+                    if (RecordFilter::Matches(a_baseObject, rule.filter) &&
+                        (!rule.xemiFilter || ObjectShaderCatalog::Has(BaseShaders(a_baseObject), rule.shaders)))
+                        entry->second.rules.insert(rule.key);
+                }
             }
-            return result;
+            return entry->second.rules;
+        }
+
+        void RebuildBaseObjectMatches()
+        {
+            const auto started = std::chrono::steady_clock::now();
+            baseObjectMatches.clear();
+            if (activeRules.empty()) return;
+
+            std::vector<RE::TESBoundObject*> objects;
+            {
+                const auto& [forms, lock] = RE::TESForm::GetAllForms();
+                const RE::BSReadLockGuard guard{ lock };
+                if (forms)
+                {
+                    for (const auto& [formID, form] : *forms)
+                    {
+                        if (auto* object = form ? form->As<RE::TESBoundObject>() : nullptr)
+                            objects.push_back(object);
+                    }
+                }
+            }
+            baseObjectMatches.reserve(objects.size());
+            std::size_t matched = 0;
+            for (auto* object : objects)
+            {
+                if (!MatchingRules(object).empty()) ++matched;
+            }
+            DetailedLogging::Info(
+                "[Object Effect Lighting] base object index | objects={} | matched={} | ms={:.3f}",
+                objects.size(), matched,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
         }
 
         double MultiplierForRules(
@@ -182,7 +264,6 @@ namespace MPL::ObjectLightingPatcher
                 MarkDirty(a_property);
             }
             captured.applied = adjusted;
-            captured.rules = std::move(a_ruleKeys);
         }
 
         void ApplyEffectProperty(
@@ -245,176 +326,153 @@ namespace MPL::ObjectLightingPatcher
                 MarkDirty(a_property);
             }
             captured.applied = adjusted;
-            captured.rules = std::move(a_ruleKeys);
         }
 
-        void ApplyReference(RE::TESObjectREFR* a_reference)
+        void ApplyTrackedProperty(RE::BSShaderProperty& a_property, RuleKeys a_rules)
         {
-            auto* root = a_reference ? a_reference->GetCurrent3D() : nullptr;
-            const auto matchingRules = MatchingRules(a_reference ? a_reference->GetBaseObject() : nullptr);
-            if (!root || matchingRules.empty()) return;
+            if (!a_property.flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kExternalEmittance))
+                a_rules.clear();
+            if (auto* lighting = netimmerse_cast<RE::BSLightingShaderProperty*>(std::addressof(a_property)))
+                ApplyLightingProperty(*lighting, std::move(a_rules));
+            else if (auto* effect = netimmerse_cast<RE::BSEffectShaderProperty*>(std::addressof(a_property)))
+                ApplyEffectProperty(*effect, std::move(a_rules));
+        }
 
-            RE::BSVisit::TraverseScenegraphGeometries(
-                root,
-                [&](RE::BSGeometry* a_geometry)
-                {
-                    auto* shaderProperty = a_geometry ?
-                                               a_geometry->GetGeometryRuntimeData().shaderProperty.get() :
-                                               nullptr;
-                    auto* lightingProperty = shaderProperty ?
-                                                 netimmerse_cast<RE::BSLightingShaderProperty*>(shaderProperty) :
-                                                 nullptr;
-                    auto* effectProperty = shaderProperty ?
-                                               netimmerse_cast<RE::BSEffectShaderProperty*>(shaderProperty) :
-                                               nullptr;
-                    if (!shaderProperty ||
-                        !shaderProperty->flags.any(
-                            RE::BSShaderProperty::EShaderPropertyFlag::kExternalEmittance))
-                        return RE::BSVisit::BSVisitControl::kContinue;
+        void TrackReference(RE::TESObjectREFR* a_reference)
+        {
+            if (!a_reference) return;
+            const auto formID = a_reference->GetFormID();
+            const auto& baseRules = MatchingRules(a_reference->GetBaseObject());
+            const auto* emittance = baseRules.empty() ? nullptr :
+                a_reference->extraList.GetByType<RE::ExtraEmittanceSource>();
+            const auto* source = emittance ? emittance->source : nullptr;
+            const auto rules = ObjectLightingTracking::FilterReferenceRules(baseRules, [&](const auto& key)
+            {
+                const auto rule = std::ranges::find(activeRules, key, &ActiveRule::key);
+                return rule != activeRules.end() &&
+                    (!rule->xemiFilter || RecordFilter::Matches(source, *rule->xemiFilter));
+            });
+            auto* root = rules.empty() ? nullptr : a_reference->GetCurrent3D();
+            if (!root)
+            {
+                if (rules.empty())
+                    referencesAwaiting3D.erase(formID);
+                else
+                    referencesAwaiting3D.insert(formID);
+                trackedReferences.Remove(formID);
+                return;
+            }
+            referencesAwaiting3D.erase(formID);
 
-                    std::unordered_set<std::string> ruleKeys;
-                    if (lightingProperty)
-                    {
-                        if (const auto existing = lightingBaselines.find(lightingProperty);
-                            existing != lightingBaselines.end())
-                            ruleKeys = existing->second.rules;
-                    }
-                    else if (effectProperty)
-                    {
-                        if (const auto existing = effectBaselines.find(effectProperty);
-                            existing != effectBaselines.end())
-                            ruleKeys = existing->second.rules;
-                    }
-                    else
-                    {
-                        return RE::BSVisit::BSVisitControl::kContinue;
-                    }
-                    for (const auto index : matchingRules) ruleKeys.insert(activeRules[index].key);
-                    if (lightingProperty)
-                        ApplyLightingProperty(*lightingProperty, std::move(ruleKeys));
-                    else
-                        ApplyEffectProperty(*effectProperty, std::move(ruleKeys));
-                    return RE::BSVisit::BSVisitControl::kContinue;
-                });
+            std::vector<RE::NiPointer<RE::BSShaderProperty>> properties;
+            RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry)
+            {
+                auto* property = a_geometry ? a_geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
+                if (property &&
+                    property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kExternalEmittance) &&
+                    (netimmerse_cast<RE::BSLightingShaderProperty*>(property) ||
+                        netimmerse_cast<RE::BSEffectShaderProperty*>(property)))
+                    properties.emplace_back(property);
+                return RE::BSVisit::BSVisitControl::kContinue;
+            });
+            trackedReferences.Update(formID, properties, rules);
         }
 
         void ReconcileLoadedReferences()
         {
-            auto* tes = RE::TES::GetSingleton();
-            if (!tes) return;
-
-            std::unordered_map<RE::BSLightingShaderProperty*, std::unordered_set<std::string>> lightingPropertyRules;
-            std::unordered_map<RE::BSEffectShaderProperty*, std::unordered_set<std::string>> effectPropertyRules;
-            std::unordered_set<RE::BSLightingShaderProperty*> loadedLightingProperties;
-            std::unordered_set<RE::BSEffectShaderProperty*> loadedEffectProperties;
-            std::size_t matchedReferences = 0;
-            tes->ForEachReference(
-                [&](RE::TESObjectREFR* a_reference)
+            referencesAwaiting3D.clear();
+            trackedReferences.RemoveAll();
+            if (auto* tes = RE::TES::GetSingleton(); tes && !activeRules.empty())
+            {
+                tes->ForEachReference([](RE::TESObjectREFR* a_reference)
                 {
-                    auto* root = a_reference ? a_reference->GetCurrent3D() : nullptr;
-                    if (!root) return RE::BSContainer::ForEachResult::kContinue;
-                    const auto matchingRules = MatchingRules(a_reference->GetBaseObject());
-                    if (!matchingRules.empty()) ++matchedReferences;
-                    RE::BSVisit::TraverseScenegraphGeometries(
-                        root,
-                        [&](RE::BSGeometry* a_geometry)
-                        {
-                            auto* shaderProperty = a_geometry ?
-                                                       a_geometry->GetGeometryRuntimeData().shaderProperty.get() :
-                                                       nullptr;
-                            auto* lightingProperty = shaderProperty ?
-                                                         netimmerse_cast<RE::BSLightingShaderProperty*>(shaderProperty) :
-                                                         nullptr;
-                            auto* effectProperty = shaderProperty ?
-                                                       netimmerse_cast<RE::BSEffectShaderProperty*>(shaderProperty) :
-                                                       nullptr;
-                            if (lightingProperty)
-                                loadedLightingProperties.insert(lightingProperty);
-                            else if (effectProperty)
-                                loadedEffectProperties.insert(effectProperty);
-                            else
-                                return RE::BSVisit::BSVisitControl::kContinue;
-                            if (!shaderProperty->flags.any(
-                                    RE::BSShaderProperty::EShaderPropertyFlag::kExternalEmittance))
-                                return RE::BSVisit::BSVisitControl::kContinue;
-                            auto& keys = lightingProperty ?
-                                             lightingPropertyRules[lightingProperty] :
-                                             effectPropertyRules[effectProperty];
-                            for (const auto index : matchingRules) keys.insert(activeRules[index].key);
-                            return RE::BSVisit::BSVisitControl::kContinue;
-                        });
+                    TrackReference(a_reference);
                     return RE::BSContainer::ForEachResult::kContinue;
                 });
-
-            for (auto* property : loadedLightingProperties)
-            {
-                auto rules = lightingPropertyRules.find(property);
-                ApplyLightingProperty(
-                    *property,
-                    rules != lightingPropertyRules.end() ?
-                        std::move(rules->second) :
-                        std::unordered_set<std::string>{});
             }
-            for (auto* property : loadedEffectProperties)
-            {
-                auto rules = effectPropertyRules.find(property);
-                ApplyEffectProperty(
-                    *property,
-                    rules != effectPropertyRules.end() ?
-                        std::move(rules->second) :
-                        std::unordered_set<std::string>{});
-            }
-            std::erase_if(lightingBaselines, [&](const auto& a_entry)
-                { return !loadedLightingProperties.contains(a_entry.first); });
-            std::erase_if(effectBaselines, [&](const auto& a_entry)
-                { return !loadedEffectProperties.contains(a_entry.first); });
+            trackedReferences.Flush(ApplyTrackedProperty);
             DetailedLogging::Info(
-                "[Object Effect Lighting] apply | rules={} | references={} | lightingProperties={} | effectProperties={}",
-                activeRules.size(),
-                matchedReferences,
-                lightingPropertyRules.size(),
-                effectPropertyRules.size());
+                "[Object Effect Lighting] rebuild tracking | rules={} | references={} | properties={}",
+                activeRules.size(), trackedReferences.ReferenceCount(), trackedReferences.PropertyCount());
         }
 
-        void QueueReconciliation(RE::TESObjectREFR* a_reference, const bool a_fullRefresh)
+        void RefreshPendingReferences()
         {
-            if (!a_fullRefresh &&
-                (!a_reference || !a_reference->GetBaseObject() || !a_reference->GetFormID()))
-                return;
+            const auto pending = std::exchange(referencesAwaiting3D, {});
+            for (const auto formID : pending)
+            {
+                if (auto* reference = RE::TESForm::LookupByID<RE::TESObjectREFR>(formID))
+                    TrackReference(reference);
+                else
+                    trackedReferences.Remove(formID);
+            }
+        }
 
-            const auto generation = reconciliationGeneration.load(std::memory_order_acquire);
+        void QueueReconciliation(
+            const RE::FormID a_referenceID,
+            const bool a_loaded,
+            const RE::FormID a_cellID = 0)
+        {
+            if ((!a_referenceID && !a_cellID) || !hasActiveRules.load(std::memory_order_acquire)) return;
+
+            std::uint64_t generation;
             {
                 std::scoped_lock lock(reconciliationLock);
-                if (a_reference && a_reference->GetFormID())
-                    pendingReferences.insert(a_reference->GetFormID());
-                fullReconciliationRequested |= a_fullRefresh;
+                generation = reconciliationGeneration.load(std::memory_order_relaxed);
+                if (a_referenceID) pendingReferences.insert_or_assign(a_referenceID, a_loaded);
+                if (a_cellID) pendingCells.insert(a_cellID);
                 if (reconciliationQueued) return;
                 reconciliationQueued = true;
             }
 
             auto task = [generation]()
             {
-                if (generation != reconciliationGeneration.load(std::memory_order_acquire)) return;
-                std::vector<RE::FormID> references;
-                bool fullRefresh = false;
+                std::scoped_lock lock(stateLock);
+                std::unordered_map<RE::FormID, bool> references;
+                std::unordered_set<RE::FormID> cells;
                 {
                     std::scoped_lock lock(reconciliationLock);
                     if (generation != reconciliationGeneration.load(std::memory_order_relaxed)) return;
-                    references.assign(pendingReferences.begin(), pendingReferences.end());
-                    pendingReferences.clear();
-                    fullRefresh = std::exchange(fullReconciliationRequested, false);
+                    references.swap(pendingReferences);
+                    cells.swap(pendingCells);
                     reconciliationQueued = false;
                 }
-                std::scoped_lock lock(stateLock);
-                if (fullRefresh)
+                if (generation != reconciliationGeneration.load(std::memory_order_acquire) || activeRules.empty()) return;
+                const auto started = std::chrono::steady_clock::now();
+                for (const auto& [formID, loaded] : references)
                 {
-                    ReconcileLoadedReferences();
-                    return;
+                    auto* reference = loaded ? RE::TESForm::LookupByID<RE::TESObjectREFR>(formID) : nullptr;
+                    if (reference)
+                        TrackReference(reference);
+                    else
+                    {
+                        referencesAwaiting3D.erase(formID);
+                        trackedReferences.Remove(formID);
+                    }
                 }
-                for (const auto formID : references)
+                for (const auto cellID : cells)
                 {
-                    ApplyReference(RE::TESForm::LookupByID<RE::TESObjectREFR>(formID));
+                    auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(cellID);
+                    if (!cell) continue;
+                    std::vector<RE::NiPointer<RE::TESObjectREFR>> cellReferences;
+                    {
+                        auto& runtime = cell->GetRuntimeData();
+                        const RE::BSSpinLockGuard guard{ runtime.spinLock };
+                        cellReferences.assign(runtime.references.begin(), runtime.references.end());
+                    }
+                    for (const auto& reference : cellReferences)
+                    {
+                        if (!reference) continue;
+                        const auto event = references.find(reference->GetFormID());
+                        if (event == references.end() || event->second) TrackReference(reference.get());
+                    }
                 }
+                trackedReferences.Flush(ApplyTrackedProperty);
+                DetailedLogging::Info(
+                    "[Object Effect Lighting] object events | events={} | cells={} | references={} | properties={} | awaiting3D={} | ms={:.3f}",
+                    references.size(), cells.size(), trackedReferences.ReferenceCount(), trackedReferences.PropertyCount(),
+                    referencesAwaiting3D.size(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
             };
             if (auto* taskInterface = SKSE::GetTaskInterface())
             {
@@ -423,8 +481,9 @@ namespace MPL::ObjectLightingPatcher
             else
             {
                 std::scoped_lock lock(reconciliationLock);
+                if (generation != reconciliationGeneration.load(std::memory_order_relaxed)) return;
                 pendingReferences.clear();
-                fullReconciliationRequested = false;
+                pendingCells.clear();
                 reconciliationQueued = false;
             }
         }
@@ -437,22 +496,41 @@ namespace MPL::ObjectLightingPatcher
                 const RE::TESObjectLoadedEvent* a_event,
                 RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override
             {
-                if (!a_event) return RE::BSEventNotifyControl::kContinue;
-                if (a_event->loaded)
-                {
-                    QueueReconciliation(
-                        RE::TESForm::LookupByID<RE::TESObjectREFR>(a_event->formID),
-                        false);
-                }
-                else
-                {
-                    QueueReconciliation(nullptr, true);
-                }
+                if (a_event) QueueReconciliation(a_event->formID, a_event->loaded);
                 return RE::BSEventNotifyControl::kContinue;
             }
         };
 
         ObjectLoadedEventSink objectLoadedEventSink;
+
+        // Object-loaded notifications can precede 3D attachment.
+        class ReferenceAttachedEventSink final : public RE::BSTEventSink<RE::TESCellAttachDetachEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(
+                const RE::TESCellAttachDetachEvent* a_event,
+                RE::BSTEventSource<RE::TESCellAttachDetachEvent>*) override
+            {
+                if (a_event && a_event->reference)
+                    QueueReconciliation(a_event->reference->GetFormID(), a_event->attached);
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+
+        class CellFullyLoadedEventSink final : public RE::BSTEventSink<RE::TESCellFullyLoadedEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(
+                const RE::TESCellFullyLoadedEvent* a_event,
+                RE::BSTEventSource<RE::TESCellFullyLoadedEvent>*) override
+            {
+                if (a_event && a_event->cell) QueueReconciliation(0, true, a_event->cell->GetFormID());
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+
+        ReferenceAttachedEventSink referenceAttachedEventSink;
+        CellFullyLoadedEventSink cellFullyLoadedEventSink;
     }  // namespace
 
     void InstallRuntimeEvents()
@@ -465,8 +543,10 @@ namespace MPL::ObjectLightingPatcher
             return;
         }
         eventSource->AddEventSink(std::addressof(objectLoadedEventSink));
+        eventSource->AddEventSink(std::addressof(referenceAttachedEventSink));
+        eventSource->AddEventSink(std::addressof(cellFullyLoadedEventSink));
         runtimeEventsInstalled = true;
-        logger::info("[Object Effect Lighting] object load events=registered");
+        logger::info("[Object Effect Lighting] load/attach/cell-ready events=registered");
     }
 
     void ApplyAllSettings()
@@ -474,21 +554,60 @@ namespace MPL::ObjectLightingPatcher
         auto rules = ResolveActiveRules();
         std::scoped_lock lock(stateLock);
         if (rules == activeRules) return;
+        const auto filtersChanged = !std::ranges::equal(rules, activeRules, [](const auto& a_left, const auto& a_right)
+            { return a_left.key == a_right.key && a_left.filter == a_right.filter &&
+                a_left.xemiFilter == a_right.xemiFilter && a_left.shaders == a_right.shaders; });
         activeRules = std::move(rules);
-        ReconcileLoadedReferences();
+        hasActiveRules.store(!activeRules.empty(), std::memory_order_release);
+        if (filtersChanged)
+        {
+            RebuildBaseObjectMatches();
+            ReconcileLoadedReferences();
+        }
+        else
+        {
+            RefreshPendingReferences();
+            trackedReferences.ApplyAll(ApplyTrackedProperty);
+            for (const auto& rule : activeRules)
+                DetailedLogging::Info(
+                    "[Object Effect Lighting] setting | rule={} | emissiveMultiplier={} | baseColorScale={} | references={} | properties={} | awaiting3D={}",
+                    rule.key, rule.emissiveMultiplier, rule.baseColorScale,
+                    trackedReferences.ReferenceCount(), trackedReferences.PropertyCount(), referencesAwaiting3D.size());
+        }
     }
 
     void ResetReferenceTracking()
     {
+        std::scoped_lock lock(stateLock, reconciliationLock);
         ++reconciliationGeneration;
-        {
-            std::scoped_lock lock(reconciliationLock);
-            pendingReferences.clear();
-            fullReconciliationRequested = false;
-            reconciliationQueued = false;
-        }
-        std::scoped_lock lock(stateLock);
+        pendingReferences.clear();
+        pendingCells.clear();
+        referencesAwaiting3D.clear();
+        reconciliationQueued = false;
+        trackedReferences.RemoveAll();
+        trackedReferences.Flush(ApplyTrackedProperty);
         lightingBaselines.clear();
         effectBaselines.clear();
+        std::erase_if(baseObjectMatches, [](const auto& a_entry) { return a_entry.second.dynamic; });
+    }
+
+    void QueueLoadedReferenceRefresh()
+    {
+        if (!hasActiveRules.load(std::memory_order_acquire)) return;
+        if (auto* taskInterface = SKSE::GetTaskInterface())
+        {
+            const auto generation = reconciliationGeneration.load(std::memory_order_acquire);
+            taskInterface->AddTask([generation]()
+            {
+                std::scoped_lock lock(stateLock);
+                if (generation != reconciliationGeneration.load(std::memory_order_acquire) || activeRules.empty()) return;
+                ReconcileLoadedReferences();
+            });
+        }
+    }
+
+    void QueueReferenceRefresh(RE::TESObjectREFR* a_reference)
+    {
+        if (a_reference) QueueReconciliation(a_reference->GetFormID(), true);
     }
 }  // namespace MPL::ObjectLightingPatcher

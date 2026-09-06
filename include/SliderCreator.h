@@ -1,5 +1,6 @@
 #pragma once
 
+#include <HueFilter.h>
 #include <array>
 #include <filesystem>
 #include <map>
@@ -93,6 +94,10 @@ namespace MPL::SliderCreator
         std::array<bool, 4> times{ true, true, true, true };
         Filter include;
         Filter exclude;
+        bool useXemiFilter = false;
+        Filter xemiInclude;
+        Filter xemiExclude;
+        HueFilter::Selection hueFilter;
         std::optional<double> minimum;
         std::optional<double> maximum;
         std::optional<double> step;
@@ -120,6 +125,8 @@ namespace MPL::SliderCreator
     };
 
     std::vector<Page> Load(const std::filesystem::path&, std::string&);
+    std::filesystem::path ActiveLayoutPath(const std::filesystem::path&);
+    void SetPreviewLayout(const std::filesystem::path&, const std::filesystem::path&);
     bool CreateProfile(
         const std::filesystem::path&,
         const std::string&,

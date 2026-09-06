@@ -1,5 +1,6 @@
 #include <Config.h>
 #include <RecordFilter.h>
+#include <RecordFilterLogic.h>
 #include <algorithm>
 #include <cctype>
 #include <ranges>
@@ -64,18 +65,6 @@ namespace MPL::RecordFilter
             }
             const auto* winningFile = a_form->GetFile();
             return winningFile && PluginNameMatches(winningFile->GetFilename(), a_filter);
-        }
-
-        bool EditorIDContains(
-            const RE::TESForm* a_form,
-            const std::span<const std::string> a_fragments)
-        {
-            const auto editorID = Lowercase(EditorID(a_form));
-            return !editorID.empty() && std::ranges::any_of(a_fragments, [&](const auto& a_fragment)
-            {
-                const auto fragment = Lowercase(a_fragment);
-                return !fragment.empty() && editorID.contains(fragment);
-            });
         }
 
         std::unordered_set<RE::FormID> ResolveFormIDs(
@@ -151,25 +140,15 @@ namespace MPL::RecordFilter
     bool Matches(const RE::TESForm* a_form, const Resolved& a_filter)
     {
         if (!a_form ||
-            a_filter.excludedFormIDs.contains(a_form->GetFormID()) ||
-            EditorIDContains(a_form, a_filter.excludedEditorIDFragments) ||
+            !RecordFilterLogic::MatchesRecord(a_form->GetFormID(), a_filter,
+                [&] { return EditorID(a_form); }) ||
             MatchesPluginFilter(a_form, a_filter.excludedPlugins))
         {
             return false;
         }
 
-        const auto hasRecordInclusions =
-            a_filter.requireIncludedRecordMatch ||
-            !a_filter.includedFormIDs.empty() ||
-            !a_filter.includedEditorIDFragments.empty();
-        const auto recordIncluded =
-            !hasRecordInclusions ||
-            a_filter.includedFormIDs.contains(a_form->GetFormID()) ||
-            EditorIDContains(a_form, a_filter.includedEditorIDFragments);
-        const auto pluginIncluded =
-            FilterEmpty(a_filter.includedPlugins) ||
+        return FilterEmpty(a_filter.includedPlugins) ||
             MatchesPluginFilter(a_form, a_filter.includedPlugins);
-        return recordIncluded && pluginIncluded;
     }
 
     std::string EditorID(const RE::TESForm* a_form)

@@ -1,4 +1,5 @@
 #include <LumaClient.h>
+#include <ObjectLightingPatcher.h>
 #include <PointLightPatcher.h>
 
 #include <atomic>
@@ -23,6 +24,7 @@ namespace MPL::LumaClient
                 return;
             }
             PointLightPatcher::QueueReferenceReconciliation(a_reference);
+            ObjectLightingPatcher::QueueReferenceRefresh(a_reference);
         }
 
         void OnCellChanging(RE::TESObjectCELL* a_cell)

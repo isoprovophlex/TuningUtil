@@ -111,6 +111,18 @@ if(TUNINGUTIL_BUILD_TESTS)
   target_compile_features(SliderLinkMathTests PRIVATE cxx_std_23)
   target_include_directories(SliderLinkMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+  add_executable(ObjectLightingTrackingTests tests/ObjectLightingTrackingTests.cpp)
+  target_compile_features(ObjectLightingTrackingTests PRIVATE cxx_std_23)
+  target_include_directories(ObjectLightingTrackingTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+  add_executable(PointLightFadeTests tests/PointLightFadeTests.cpp)
+  target_compile_features(PointLightFadeTests PRIVATE cxx_std_23)
+  target_include_directories(PointLightFadeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+  add_executable(HueFilterTests tests/HueFilterTests.cpp)
+  target_compile_features(HueFilterTests PRIVATE cxx_std_23)
+  target_include_directories(HueFilterTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
   add_executable(
     JsonOverlayTests
     tests/JsonOverlayTests.cpp
@@ -173,7 +185,7 @@ if(TUNINGUTIL_BUILD_TESTS)
   endif()
 
   if(MSVC)
-    foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests MenuBoxGeometryTests SliderLinkMathTests)
+    foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests MenuBoxGeometryTests SliderLinkMathTests ObjectLightingTrackingTests HueFilterTests PointLightFadeTests)
       target_compile_options(
         ${test_target}
         PRIVATE
@@ -196,6 +208,9 @@ if(TUNINGUTIL_BUILD_TESTS)
   add_test(NAME JsonOverlayTests COMMAND JsonOverlayTests)
   add_test(NAME MenuBoxGeometryTests COMMAND MenuBoxGeometryTests)
   add_test(NAME SliderLinkMathTests COMMAND SliderLinkMathTests)
+  add_test(NAME ObjectLightingTrackingTests COMMAND ObjectLightingTrackingTests)
+  add_test(NAME PointLightFadeTests COMMAND PointLightFadeTests)
+  add_test(NAME HueFilterTests COMMAND HueFilterTests)
   add_test(NAME SliderCreatorTests COMMAND SliderCreatorTests)
   if(TARGET TuningUtilAddressLibraryTests)
     add_test(

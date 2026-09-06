@@ -4,6 +4,7 @@
 #include <LightingPatcher.h>
 #include <MenuBoxGeometry.h>
 #include <MenuControlCorners.h>
+#include <ObjectShaderCatalog.h>
 #include <RecordFilter.h>
 #include <RE/M/Main.h>
 #include <RE/U/UIBlurManager.h>
@@ -398,29 +399,13 @@ namespace MPL::TuningMenu
             std::string label;
         };
 
-        enum class ObjectShaderCapability : std::uint8_t
-        {
-            none = 0,
-            lighting = 1U << 0,
-            effect = 1U << 1,
-        };
-
-        constexpr ObjectShaderCapability operator|(
-            const ObjectShaderCapability a_left,
-            const ObjectShaderCapability a_right)
-        {
-            return static_cast<ObjectShaderCapability>(
-                static_cast<std::uint8_t>(a_left) |
-                static_cast<std::uint8_t>(a_right));
-        }
+        using ObjectShaderCapability = ObjectShaderCatalog::Capability;
 
         constexpr bool HasObjectShaderCapabilities(
             const ObjectShaderCapability a_available,
             const ObjectShaderCapability a_required)
         {
-            const auto available = static_cast<std::uint8_t>(a_available);
-            const auto required = static_cast<std::uint8_t>(a_required);
-            return required != 0 && (available & required) == required;
+            return ObjectShaderCatalog::Has(a_available, a_required);
         }
 
         struct BaseObjectMenuEntry : RecordMenuEntry
@@ -518,6 +503,10 @@ namespace MPL::TuningMenu
             std::vector<SliderCreator::Target> settings;
             SliderCreator::Filter include;
             SliderCreator::Filter exclude;
+            bool useXemiFilter = false;
+            SliderCreator::Filter xemiInclude;
+            SliderCreator::Filter xemiExclude;
+            HueFilter::Selection hueFilter;
             RE::TESWeather* selectedWeather = nullptr;
             RE::BGSLightingTemplate* selectedLightingTemplate = nullptr;
             RE::TESObjectLIGH* selectedBaseLight = nullptr;
@@ -826,6 +815,7 @@ namespace MPL::TuningMenu
                 return std::addressof(session);
             }
 
+            SliderCreator::SetPreviewLayout(a_source, {});
             std::error_code cleanupError;
             std::filesystem::remove(session.workingPath, cleanupError);
             std::filesystem::remove(LayoutCommitPath(a_source), cleanupError);
@@ -854,15 +844,8 @@ namespace MPL::TuningMenu
             session.pageOrigins.reserve(pages.size());
             for (std::size_t index = 0; index < pages.size(); ++index) session.pageOrigins.emplace_back(index);
             session.dirty = false;
+            SliderCreator::SetPreviewLayout(a_source, session.workingPath);
             return std::addressof(session);
-        }
-
-        std::filesystem::path ActiveLayoutPath(
-            const std::string_view a_profile,
-            const std::filesystem::path& a_source)
-        {
-            const auto session = layoutEditSessions.find(std::string(a_profile));
-            return session != layoutEditSessions.end() ? session->second.workingPath : a_source;
         }
 
         bool SaveLayoutEditSession(LayoutEditSession& a_session, std::string& a_error)
@@ -952,6 +935,7 @@ namespace MPL::TuningMenu
         {
             const auto session = layoutEditSessions.find(std::string(a_profile));
             if (session == layoutEditSessions.end()) return;
+            SliderCreator::SetPreviewLayout(session->second.sourcePath, {});
             std::error_code error;
             std::filesystem::remove(session->second.workingPath, error);
             std::filesystem::remove(LayoutCommitPath(session->second.sourcePath), error);
@@ -1389,9 +1373,12 @@ namespace MPL::TuningMenu
                 std::pair{ "Filtered sliders support only weather brightness, saturation, and hue-shift settings.", "sliderCreatorFilteredUnsupportedSetting" },
                 std::pair{ "Lighting Template filters support only Lighting brightness, Fog Power, and Fog Strength settings.", "sliderCreatorFilteredLightingUnsupportedSetting" },
                 std::pair{ "Base Light filters support only Point Lights settings.", "sliderCreatorFilteredBaseLightUnsupportedSetting" },
+                std::pair{ "Hue filters apply only to Point Light sliders with a Base Light filter.", "sliderCreatorHueRequiresBaseLight" },
+                std::pair{ "Select valid hue bands for the Hue Filter.", "sliderCreatorInvalidHueFilter" },
                 std::pair{ "Time filters and saturation scales do not apply to Base Light filters.", "sliderCreatorBaseLightWeatherFeatures" },
                 std::pair{ "Base Object filters support only Object Effect Lighting settings.", "sliderCreatorFilteredBaseObjectUnsupportedSetting" },
                 std::pair{ "Object Effect Lighting sliders require a Base Object filter.", "sliderCreatorObjectLightingRequiresFilter" },
+                std::pair{ "XEMI filters apply only to Object Effect Lighting and Point Light Brightness sliders with record filters.", "sliderCreatorXemiRequiresObjectOrPointLight" },
                 std::pair{ "Time filters and saturation scales do not apply to Base Object filters.", "sliderCreatorBaseObjectWeatherFeatures" },
                 std::pair{ "Every setting in a filtered slider must use the same filter domain.", "sliderCreatorMixedFilterDomains" },
                 std::pair{ "Time filters and saturation scales apply only to filtered weather sliders.", "sliderCreatorLightingWeatherFeatures" },
@@ -2345,7 +2332,7 @@ namespace MPL::TuningMenu
                     continue;
                 }
                 if (auto definition = ReadMenuDefinition(
-                        ActiveLayoutPath(profile->name, file.path),
+                        SliderCreator::ActiveLayoutPath(file.path),
                         profile->name))
                 {
                     loaded.push_back({ file.path, std::move(*definition) });
@@ -2560,8 +2547,6 @@ namespace MPL::TuningMenu
                 {
                 case TuningUtil::FilteredBaseLightOperation::brightness:
                     return "pointLights.fadeMultiplier";
-                case TuningUtil::FilteredBaseLightOperation::effect:
-                    return "pointLights.effectFadeMultiplier";
                 case TuningUtil::FilteredBaseLightOperation::saturation:
                     return "pointLights.saturationMultiplier";
                 case TuningUtil::FilteredBaseLightOperation::hueScale:
@@ -2752,46 +2737,7 @@ namespace MPL::TuningMenu
 
         ObjectShaderCapability GetModelShaderCapabilities(const std::string_view a_modelPath)
         {
-            if (a_modelPath.empty()) return ObjectShaderCapability::none;
-
-            auto resourcePath = std::string(a_modelPath);
-            std::ranges::replace(resourcePath, '/', '\\');
-            const auto lowercasePath = Lowercase(resourcePath);
-            if (!lowercasePath.starts_with("meshes\\"))
-            {
-                resourcePath.insert(0, "meshes\\");
-            }
-
-            RE::NiPointer<RE::NiNode> root;
-            const RE::BSModelDB::DBTraits::ArgsType arguments;
-            if (RE::BSModelDB::Demand(resourcePath.c_str(), root, arguments) !=
-                    RE::BSResource::ErrorCode::kNone ||
-                !root)
-                return ObjectShaderCapability::none;
-
-            auto capabilities = ObjectShaderCapability::none;
-            RE::BSVisit::TraverseScenegraphGeometries(
-                root.get(),
-                [&](RE::BSGeometry* a_geometry)
-                {
-                    auto* property = a_geometry ?
-                                         a_geometry->GetGeometryRuntimeData().shaderProperty.get() :
-                                         nullptr;
-                    if (!property ||
-                        !property->flags.any(
-                            RE::BSShaderProperty::EShaderPropertyFlag::kExternalEmittance))
-                        return RE::BSVisit::BSVisitControl::kContinue;
-
-                    if (netimmerse_cast<RE::BSLightingShaderProperty*>(property))
-                        capabilities = capabilities | ObjectShaderCapability::lighting;
-                    else if (netimmerse_cast<RE::BSEffectShaderProperty*>(property))
-                        capabilities = capabilities | ObjectShaderCapability::effect;
-                    return capabilities ==
-                                   (ObjectShaderCapability::lighting | ObjectShaderCapability::effect) ?
-                               RE::BSVisit::BSVisitControl::kStop :
-                               RE::BSVisit::BSVisitControl::kContinue;
-                });
-            return capabilities;
+            return ObjectShaderCatalog::Get(a_modelPath);
         }
 
         const std::vector<BaseObjectMenuEntry>& GetBaseObjectMenuEntries()
@@ -5485,27 +5431,6 @@ namespace MPL::TuningMenu
                 true);
         }
 
-        bool DrawEffectPointLightFilters(
-            TuningUtil::Settings& a_settings,
-            const std::string_view a_id)
-        {
-            TuningUtil::PluginFilter noPluginInclusions;
-            TuningUtil::PluginFilter noPluginExclusions;
-            return DrawRecordFilterEditor(
-                a_settings.effectPointLightInclusions.formIDs,
-                a_settings.effectPointLightExclusions.formIDs,
-                std::addressof(a_settings.effectPointLightInclusions.contains),
-                std::addressof(a_settings.effectPointLightExclusions.contains),
-                noPluginInclusions,
-                noPluginExclusions,
-                nullptr,
-                GetRegionMenuEntries(),
-                RecordFilterKind::region,
-                SKSEMenuSettings::Label("externalEmittanceSource", "External Emittance Source"),
-                a_id,
-                false);
-        }
-
         bool DrawTemplateInheritanceEditor(
             TuningUtil::Settings& a_settings,
             const std::string_view a_id)
@@ -5752,16 +5677,6 @@ namespace MPL::TuningMenu
                             settings,
                             moduleID + "TemplateInheritance");
                     });
-                const auto effectPointLightFilterChanged = drawBox(
-                    "EffectPointLightFilter",
-                    SKSEMenuSettings::Label("effectPointLightFilter", "Effect Point Light Filter"),
-                    [&]
-                    {
-                        return DrawEffectPointLightFilters(
-                            settings,
-                            moduleID + "EffectPointLightFilter");
-                    });
-                changed |= effectPointLightFilterChanged;
                 changed |= drawBox(
                     "LightingSaturationScales",
                     SKSEMenuSettings::Label("lightingSaturationScales", "Saturation Scales"),
@@ -5834,8 +5749,7 @@ namespace MPL::TuningMenu
                 {
                     ApplySliderChange(
                         pointLightHueScalesChanged ||
-                        hueRangesChanged ||
-                        effectPointLightFilterChanged);
+                        hueRangesChanged);
                 }
                 return;
             }
@@ -6000,8 +5914,6 @@ namespace MPL::TuningMenu
                 return SliderSetting{ .resolved = a_settings.lightFogPowerMultiplier, .scalar = &a_settings.lightFogPowerMultiplier };
             if (a_setting == "pointLights.fadeMultiplier")
                 return SliderSetting{ .resolved = a_settings.pointLights.fadeMultiplier, .scalar = &a_settings.pointLights.fadeMultiplier };
-            if (a_setting == "pointLights.effectFadeMultiplier")
-                return SliderSetting{ .resolved = a_settings.pointLights.effectFadeMultiplier, .scalar = &a_settings.pointLights.effectFadeMultiplier };
             if (a_setting == "pointLights.saturationMultiplier")
                 return SliderSetting{ .resolved = a_settings.pointLights.saturationMultiplier, .scalar = &a_settings.pointLights.saturationMultiplier };
             return std::nullopt;
@@ -6666,9 +6578,6 @@ namespace MPL::TuningMenu
                         {
                         case TuningUtil::FilteredBaseLightOperation::brightness:
                             styleSetting = "pointLights.fadeMultiplier";
-                            break;
-                        case TuningUtil::FilteredBaseLightOperation::effect:
-                            styleSetting = "pointLights.effectFadeMultiplier";
                             break;
                         case TuningUtil::FilteredBaseLightOperation::saturation:
                             styleSetting = "pointLights.saturationMultiplier";
@@ -7561,6 +7470,10 @@ namespace MPL::TuningMenu
             a_state.customLinks = definition.customLinks;
             a_state.include = definition.include;
             a_state.exclude = definition.exclude;
+            a_state.useXemiFilter = definition.useXemiFilter;
+            a_state.xemiInclude = definition.xemiInclude;
+            a_state.xemiExclude = definition.xemiExclude;
+            a_state.hueFilter = definition.hueFilter;
             a_state.useHueScales = definition.hueScales.has_value();
             if (definition.hueScales)
             {
@@ -7943,6 +7856,12 @@ namespace MPL::TuningMenu
                    !a_filter.locationTypes.empty() || !a_filter.multiLocationExceptions.empty();
         }
 
+        bool CreatorUsesPointLightXemi(const SliderCreatorState& a_state)
+        {
+            return !a_state.settings.empty() && std::ranges::all_of(a_state.settings,
+                [](const auto& target) { return target.setting == "pointLights.fadeMultiplier"; });
+        }
+
         bool CreatorUsesFilteredRule(const SliderCreatorState& a_state)
         {
             if (!CreatorFilteredOperation(a_state)) return false;
@@ -7952,6 +7871,9 @@ namespace MPL::TuningMenu
             return a_state.filtered || a_state.ignoreProfileFilters || a_state.useTimes ||
                    a_state.useHueScales || CreatorFilterHasValues(a_state.include) ||
                    CreatorFilterHasValues(a_state.exclude) ||
+                   ((!a_state.hueFilter.Empty() ||
+                        (CreatorUsesPointLightXemi(a_state) && a_state.useXemiFilter)) && std::ranges::all_of(a_state.settings,
+                       [](const auto& a_target) { return a_target.setting.starts_with("pointLights."); })) ||
                    std::ranges::any_of(a_state.settings, [](const auto& a_target)
                    {
                        return std::abs(a_target.scale - 1.0) > 0.000001;
@@ -8177,18 +8099,6 @@ namespace MPL::TuningMenu
                     a_state.ignoreProfileFilters = false;
                 }
             }
-            if (!selected->hue.empty() && !selected->target.empty())
-            {
-                SameActionLine();
-                const auto label = SKSEMenuSettings::Label("addAllHues", "Add All Hues") + "##" + a_id;
-                if (ActionButton(label.c_str(), SKSEMenuSettings::ButtonKind::save))
-                {
-                    for (const auto& candidate : SliderSettingCatalog::Entries())
-                        if (candidate.domain == domain && candidate.group == selected->group &&
-                            Config::IEquals(candidate.target, selected->target) && !candidate.hue.empty())
-                            AddCreatorSetting(a_state, candidate.path);
-                }
-            }
 
             if (ImGuiMCP::BeginListBox(("Slider Settings##" + a_id).c_str(), ImGuiMCP::ImVec2(0.0f, 220.0f)))
             {
@@ -8259,6 +8169,13 @@ namespace MPL::TuningMenu
             result.times = a_state.times;
             result.include = filtered ? a_state.include : SliderCreator::Filter{};
             result.exclude = filtered ? a_state.exclude : SliderCreator::Filter{};
+            if (baseLightFilter) result.hueFilter = a_state.hueFilter;
+            if (baseObjectFilter || (baseLightFilter && CreatorUsesPointLightXemi(a_state) && a_state.useXemiFilter))
+            {
+                result.useXemiFilter = baseLightFilter;
+                result.xemiInclude = a_state.xemiInclude;
+                result.xemiExclude = a_state.xemiExclude;
+            }
             if (a_state.useRange)
             {
                 result.minimum = a_state.minimum;
@@ -8713,7 +8630,7 @@ namespace MPL::TuningMenu
                 TuningUtil::ProfileDirectory(a_menu.profile) /
                 kMenuDefinitionFileName;
             const auto menuPath =
-                ActiveLayoutPath(a_menu.profile, sourceMenuPath);
+                SliderCreator::ActiveLayoutPath(sourceMenuPath);
             const auto stateKey = a_menu.profile + ":page:" + std::to_string(a_pageIndex);
             auto& state = sliderCreatorStates[stateKey];
             if (!state.initialized ||
@@ -8982,35 +8899,35 @@ namespace MPL::TuningMenu
                             { return Config::IEquals(a_value, objectKey); });
                     }
                     ImGuiMCP::EndDisabled();
-                }
-
-                if (sections.Start(
-                        SKSEMenuSettings::Label("includedRecords", "Included Records"),
-                        "SliderCreatorIncludedBaseObjectsHeader##" + stateKey))
-                {
-                    DrawCreatorRecordList(
-                        state.include.formIDs,
-                        "Included Base Objects##" + stateKey,
-                        RecordFilterKind::baseObject);
-                    DrawCreatorContainsList(
-                        state.include.contains,
-                        state.includeContainsInput,
-                        state.includeContainsSelection,
-                        "BaseObjectInclude" + stateKey);
-                }
-                if (sections.Start(
-                        SKSEMenuSettings::Label("excludedRecords", "Excluded Records"),
-                        "SliderCreatorExcludedBaseObjectsHeader##" + stateKey))
-                {
-                    DrawCreatorRecordList(
-                        state.exclude.formIDs,
-                        "Excluded Base Objects##" + stateKey,
-                        RecordFilterKind::baseObject);
-                    DrawCreatorContainsList(
-                        state.exclude.contains,
-                        state.excludeContainsInput,
-                        state.excludeContainsSelection,
-                        "BaseObjectExclude" + stateKey);
+                    StackedSectionBoxes filterSections;
+                    if (filterSections.Start(
+                            SKSEMenuSettings::Label("includedRecords", "Included Records"),
+                            "SliderCreatorIncludedBaseObjectsHeader##" + stateKey))
+                    {
+                        DrawCreatorRecordList(
+                            state.include.formIDs,
+                            "Included Base Objects##" + stateKey,
+                            RecordFilterKind::baseObject);
+                        DrawCreatorContainsList(
+                            state.include.contains,
+                            state.includeContainsInput,
+                            state.includeContainsSelection,
+                            "BaseObjectInclude" + stateKey);
+                    }
+                    if (filterSections.Start(
+                            SKSEMenuSettings::Label("excludedRecords", "Excluded Records"),
+                            "SliderCreatorExcludedBaseObjectsHeader##" + stateKey))
+                    {
+                        DrawCreatorRecordList(
+                            state.exclude.formIDs,
+                            "Excluded Base Objects##" + stateKey,
+                            RecordFilterKind::baseObject);
+                        DrawCreatorContainsList(
+                            state.exclude.contains,
+                            state.excludeContainsInput,
+                            state.excludeContainsSelection,
+                            "BaseObjectExclude" + stateKey);
+                    }
                 }
             }
             else if (filteredFeatures && CreatorUsesBaseLightFilter(state))
@@ -9065,35 +8982,61 @@ namespace MPL::TuningMenu
                             { return Config::IEquals(a_value, lightKey); });
                     }
                     ImGuiMCP::EndDisabled();
+                    StackedSectionBoxes filterSections;
+                    if (filterSections.Start(
+                            SKSEMenuSettings::Label("includedRecords", "Included Records"),
+                            "SliderCreatorIncludedBaseLightsHeader##" + stateKey))
+                    {
+                        DrawCreatorRecordList(
+                            state.include.formIDs,
+                            "Included Base Lights##" + stateKey,
+                            RecordFilterKind::baseLight);
+                        DrawCreatorContainsList(
+                            state.include.contains,
+                            state.includeContainsInput,
+                            state.includeContainsSelection,
+                            "BaseLightInclude" + stateKey);
+                    }
+                    if (filterSections.Start(
+                            SKSEMenuSettings::Label("excludedRecords", "Excluded Records"),
+                            "SliderCreatorExcludedBaseLightsHeader##" + stateKey))
+                    {
+                        DrawCreatorRecordList(
+                            state.exclude.formIDs,
+                            "Excluded Base Lights##" + stateKey,
+                            RecordFilterKind::baseLight);
+                        DrawCreatorContainsList(
+                            state.exclude.contains,
+                            state.excludeContainsInput,
+                            state.excludeContainsSelection,
+                            "BaseLightExclude" + stateKey);
+                    }
                 }
-
-                if (sections.Start(
-                        SKSEMenuSettings::Label("includedRecords", "Included Records"),
-                        "SliderCreatorIncludedBaseLightsHeader##" + stateKey))
+                if (sections.StartDropdownBox(
+                        SKSEMenuSettings::Label("hueFilter", "Hue Filter"),
+                        "SliderCreatorHueFilter##" + stateKey))
                 {
-                    DrawCreatorRecordList(
-                        state.include.formIDs,
-                        "Included Base Lights##" + stateKey,
-                        RecordFilterKind::baseLight);
-                    DrawCreatorContainsList(
-                        state.include.contains,
-                        state.includeContainsInput,
-                        state.includeContainsSelection,
-                        "BaseLightInclude" + stateKey);
-                }
-                if (sections.Start(
-                        SKSEMenuSettings::Label("excludedRecords", "Excluded Records"),
-                        "SliderCreatorExcludedBaseLightsHeader##" + stateKey))
-                {
-                    DrawCreatorRecordList(
-                        state.exclude.formIDs,
-                        "Excluded Base Lights##" + stateKey,
-                        RecordFilterKind::baseLight);
-                    DrawCreatorContainsList(
-                        state.exclude.contains,
-                        state.excludeContainsInput,
-                        state.excludeContainsSelection,
-                        "BaseLightExclude" + stateKey);
+                    StackedSectionBoxes hueSections;
+                    const auto drawBands = [&](std::vector<std::string>& a_bands,
+                                               const std::string& a_label,
+                                               const std::string& a_id)
+                    {
+                        if (!hueSections.Start(a_label, a_id + stateKey)) return;
+                        for (const auto band : HueFilter::kBands)
+                        {
+                            auto fallback = std::string(band);
+                            fallback.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(fallback.front())));
+                            const auto label = SKSEMenuSettings::SettingHueLabel(band, fallback);
+                            auto selected = std::ranges::find(a_bands, band) != a_bands.end();
+                            if (ImGuiMCP::Checkbox((label + "##" + a_id + std::string(band) + stateKey).c_str(), &selected))
+                            {
+                                if (selected) AddUniqueString(a_bands, std::string(band));
+                                else std::erase(a_bands, band);
+                            }
+                        }
+                    };
+                    drawBands(state.hueFilter.include,
+                        SKSEMenuSettings::Label("includedHues", "Included Hues"), "SliderCreatorIncludedHues");
                 }
             }
             else if (filteredFeatures)
@@ -9155,35 +9098,66 @@ namespace MPL::TuningMenu
                             { return Config::IEquals(a_value, templateKey); });
                     }
                     ImGuiMCP::EndDisabled();
+                    StackedSectionBoxes filterSections;
+                    if (filterSections.Start(
+                            SKSEMenuSettings::Label("includedRecords", "Included Records"),
+                            "SliderCreatorIncludedTemplatesHeader##" + stateKey))
+                    {
+                        DrawCreatorRecordList(
+                            state.include.formIDs,
+                            "Included Lighting Templates##" + stateKey,
+                            RecordFilterKind::lightingTemplate);
+                        DrawCreatorContainsList(
+                            state.include.contains,
+                            state.includeContainsInput,
+                            state.includeContainsSelection,
+                            "LightingTemplateInclude" + stateKey);
+                    }
+                    if (filterSections.Start(
+                            SKSEMenuSettings::Label("excludedRecords", "Excluded Records"),
+                            "SliderCreatorExcludedTemplatesHeader##" + stateKey))
+                    {
+                        DrawCreatorRecordList(
+                            state.exclude.formIDs,
+                            "Excluded Lighting Templates##" + stateKey,
+                            RecordFilterKind::lightingTemplate);
+                        DrawCreatorContainsList(
+                            state.exclude.contains,
+                            state.excludeContainsInput,
+                            state.excludeContainsSelection,
+                            "LightingTemplateExclude" + stateKey);
+                    }
                 }
+            }
 
-                if (sections.Start(
-                        SKSEMenuSettings::Label("includedRecords", "Included Records"),
-                        "SliderCreatorIncludedTemplatesHeader##" + stateKey))
+            if (filteredFeatures && (CreatorUsesBaseObjectFilter(state) || CreatorUsesPointLightXemi(state)))
+            {
+                if (sections.StartDropdownBox(
+                        SKSEMenuSettings::Label("xemiFilter", "XEMI Filter"),
+                        "SliderCreatorXemiFilter##" + stateKey))
                 {
-                    DrawCreatorRecordList(
-                        state.include.formIDs,
-                        "Included Lighting Templates##" + stateKey,
-                        RecordFilterKind::lightingTemplate);
-                    DrawCreatorContainsList(
-                        state.include.contains,
-                        state.includeContainsInput,
-                        state.includeContainsSelection,
-                        "LightingTemplateInclude" + stateKey);
-                }
-                if (sections.Start(
-                        SKSEMenuSettings::Label("excludedRecords", "Excluded Records"),
-                        "SliderCreatorExcludedTemplatesHeader##" + stateKey))
-                {
-                    DrawCreatorRecordList(
-                        state.exclude.formIDs,
-                        "Excluded Lighting Templates##" + stateKey,
-                        RecordFilterKind::lightingTemplate);
-                    DrawCreatorContainsList(
-                        state.exclude.contains,
-                        state.excludeContainsInput,
-                        state.excludeContainsSelection,
-                        "LightingTemplateExclude" + stateKey);
+                    const bool pointLightXemi = CreatorUsesPointLightXemi(state);
+                    if (pointLightXemi)
+                        ImGuiMCP::Checkbox(
+                            (SKSEMenuSettings::Label("enableXemiFilter", "Enable XEMI Filter") + "##" + stateKey).c_str(),
+                            &state.useXemiFilter);
+                    ImGuiMCP::BeginDisabled(pointLightXemi && !state.useXemiFilter);
+                    TuningUtil::PluginFilter noPluginInclusions;
+                    TuningUtil::PluginFilter noPluginExclusions;
+                    DrawRecordFilterEditor(
+                        state.xemiInclude.formIDs,
+                        state.xemiExclude.formIDs,
+                        std::addressof(state.xemiInclude.contains),
+                        std::addressof(state.xemiExclude.contains),
+                        noPluginInclusions,
+                        noPluginExclusions,
+                        nullptr,
+                        GetRegionMenuEntries(),
+                        RecordFilterKind::region,
+                        SKSEMenuSettings::Label("xemiRegion", "XEMI Region"),
+                        "SliderCreatorXemi" + stateKey,
+                        false);
+                    ImGuiMCP::EndDisabled();
                 }
             }
 

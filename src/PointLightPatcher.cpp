@@ -1,5 +1,8 @@
 #include <DetailedLogging.h>
 #include <PointLightPatcher.h>
+#include <ObjectLightingPatcher.h>
+#include <PointLightFade.h>
+#include <RecordFilterLogic.h>
 #include <Config.h>
 #include <Config/Forms.h>
 #include <TuningSettings.h>
@@ -58,7 +61,7 @@ namespace MPL::PointLightPatcher
         {
             Settings settings;
             BaseLightSettingsMap baseLightSettings;
-            RecordFilter::Resolved effectPointLightFilter;
+            std::vector<ReferenceRule> referenceRules;
             WeatherPatcher::HueRanges hueRanges;
 
             bool operator==(const AppliedState&) const = default;
@@ -68,7 +71,7 @@ namespace MPL::PointLightPatcher
         {
             std::size_t refreshed = 0;
             std::size_t brightness = 0;
-            std::size_t effect = 0;
+            std::size_t filtered = 0;
         };
 
         struct DirectLightRefreshResult
@@ -269,13 +272,16 @@ namespace MPL::PointLightPatcher
             return ExternalEmittanceSource(a_reference) != nullptr;
         }
 
-        bool IsEffectPointLight(
+        bool HasReferenceAdjustment(
             const RE::TESObjectREFR* a_reference,
             const AppliedState& a_state)
         {
-            return RecordFilter::Matches(
-                ExternalEmittanceSource(a_reference),
-                a_state.effectPointLightFilter);
+            const auto* light = GetBaseLight(a_reference);
+            return light && std::ranges::any_of(a_state.referenceRules, [&](const auto& rule)
+                {
+                    return rule.baseLights.contains(light->GetFormID()) &&
+                        RecordFilter::Matches(ExternalEmittanceSource(a_reference), rule.xemiFilter);
+                });
         }
 
         double BrightnessFadeMultiplier(const Settings& a_settings)
@@ -283,18 +289,14 @@ namespace MPL::PointLightPatcher
             return std::max(0.0, a_settings.fadeMultiplier);
         }
 
-        double EffectFadeMultiplier(const Settings& a_settings)
-        {
-            return std::max(0.0, a_settings.effectFadeMultiplier);
-        }
-
         double ReferenceFadeMultiplier(const RE::TESObjectREFR* a_reference, const AppliedState& a_state)
         {
             const auto* light = GetBaseLight(a_reference);
-            const auto& settings = SettingsForBaseLight(light, a_state);
-            return IsEffectPointLight(a_reference, a_state) ?
-                       EffectFadeMultiplier(settings) :
-                       BrightnessFadeMultiplier(settings);
+            return PointLightFade::Resolve(
+                BrightnessFadeMultiplier(SettingsForBaseLight(light, a_state)),
+                light ? light->GetFormID() : 0, a_state.referenceRules,
+                [&](const auto& filter)
+                { return RecordFilter::Matches(ExternalEmittanceSource(a_reference), filter); });
         }
 
         bool ReconcileExternalEmittanceBase(
@@ -422,46 +424,12 @@ namespace MPL::PointLightPatcher
             return std::nullopt;
         }
 
-        bool EditorIDContains(
-            const std::string_view a_editorID,
-            const std::span<const std::string> a_fragments)
+        RE::FormID ResolveEmittance(const std::string_view a_editorID)
         {
-            const auto editorID = Lowercase(std::string(a_editorID));
-            return std::ranges::any_of(a_fragments, [&](const auto& a_fragment)
-            {
-                const auto fragment = Lowercase(a_fragment);
-                return !fragment.empty() && editorID.contains(fragment);
-            });
-        }
-
-        bool IsEffectEmittance(
-            const std::string_view a_editorID,
-            const AppliedState& a_state)
-        {
-            if (a_editorID.empty()) return false;
-
+            if (a_editorID.empty()) return 0;
             auto* stat = Config::StatData::GetSingleton();
-            if (!stat->mmsfAPI)
-            {
-                stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
-            }
-            if (stat->mmsfAPI)
-            {
-                const auto formID = stat->mmsfAPI->LookupFormIDForEDID(std::string(a_editorID));
-                if (const auto* source = RE::TESForm::LookupByID<RE::TESForm>(formID))
-                {
-                    return RecordFilter::Matches(source, a_state.effectPointLightFilter);
-                }
-            }
-
-            const auto& filter = a_state.effectPointLightFilter;
-            if (EditorIDContains(a_editorID, filter.excludedEditorIDFragments)) return false;
-            const auto requiresInclusion =
-                filter.requireIncludedRecordMatch ||
-                !filter.includedFormIDs.empty() ||
-                !filter.includedEditorIDFragments.empty();
-            return !requiresInclusion ||
-                   EditorIDContains(a_editorID, filter.includedEditorIDFragments);
+            if (!stat->mmsfAPI) stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
+            return stat->mmsfAPI ? stat->mmsfAPI->LookupFormIDForEDID(std::string(a_editorID)) : 0;
         }
 
         yyjson_mut_val* CopyValue(
@@ -670,11 +638,14 @@ namespace MPL::PointLightPatcher
                                                    yyjson_get_str(configuredEmittance),
                                                    yyjson_get_len(configuredEmittance)) :
                                                std::string{};
-            const double fade = std::max(
-                0.0,
-                IsEffectEmittance(emittance, a_state) ?
-                    EffectFadeMultiplier(settings) :
-                    BrightnessFadeMultiplier(settings));
+            const auto emittanceID = a_state.referenceRules.empty() ? 0 : ResolveEmittance(emittance);
+            const double fade = PointLightFade::Resolve(
+                BrightnessFadeMultiplier(settings), baseLight ? baseLight->GetFormID() : 0,
+                a_state.referenceRules, [&](const auto& filter)
+                {
+                    return !emittance.empty() && RecordFilterLogic::MatchesRecord(
+                        emittanceID, filter, [&] { return emittance; });
+                });
             const auto hueScales = WeatherPatcher::ResolveHueScales(settings.hueScales);
             const ColorTuning tuning = !emittance.empty() ?
                                            ColorTuning{
@@ -820,11 +791,9 @@ namespace MPL::PointLightPatcher
             const Settings defaults{};
             if constexpr (kUseDirectLightPlacerNiLights)
             {
-                return a_settings.fadeMultiplier != defaults.fadeMultiplier ||
-                       a_settings.effectFadeMultiplier != defaults.effectFadeMultiplier;
+                return a_settings.fadeMultiplier != defaults.fadeMultiplier;
             }
             return a_settings.fadeMultiplier != defaults.fadeMultiplier ||
-                   a_settings.effectFadeMultiplier != defaults.effectFadeMultiplier ||
                    a_settings.saturationMultiplier !=
                        defaults.saturationMultiplier ||
                    a_settings.hueScales != defaults.hueScales ||
@@ -833,7 +802,7 @@ namespace MPL::PointLightPatcher
 
         bool HasLightPlacerTuning(const AppliedState& a_state)
         {
-            return HasLightPlacerTuning(a_state.settings) ||
+            return !a_state.referenceRules.empty() || HasLightPlacerTuning(a_state.settings) ||
                    std::ranges::any_of(
                        a_state.baseLightSettings,
                        [](const auto& a_entry) { return HasLightPlacerTuning(a_entry.second); });
@@ -961,7 +930,11 @@ namespace MPL::PointLightPatcher
             static const HeliosphanAPI::ReferenceCallbacks
                 heliosphanReferenceCallbacks{
                     .id = "TuningUtil",
-                    .OnReferenceEmittanceChanged = InitializeReference,
+                    .OnReferenceEmittanceChanged = [](RE::TESObjectREFR* a_reference)
+                    {
+                        InitializeReference(a_reference);
+                        ObjectLightingPatcher::QueueReferenceRefresh(a_reference);
+                    },
                 };
             const bool heliosphanReferenceNotifications =
                 heliosphanAPI->RegisterReferenceClient(
@@ -1114,8 +1087,7 @@ namespace MPL::PointLightPatcher
             const auto& settings = a_state.settings;
             const auto& previous = a_previous->settings;
             if (settings.fadeMultiplier != previous.fadeMultiplier ||
-                settings.effectFadeMultiplier != previous.effectFadeMultiplier ||
-                a_state.effectPointLightFilter != a_previous->effectPointLightFilter)
+                a_state.referenceRules != a_previous->referenceRules)
             {
                 return true;
             }
@@ -1135,10 +1107,7 @@ namespace MPL::PointLightPatcher
                     const auto fadeFor = [&](const AppliedState& a_candidate)
                     {
                         const auto& baseSettings = SettingsForBaseLight(a_formID, a_candidate);
-                        return std::pair{
-                            baseSettings.fadeMultiplier,
-                            baseSettings.effectFadeMultiplier,
-                        };
+                        return baseSettings.fadeMultiplier;
                     };
                     return fadeFor(a_state) != fadeFor(*a_previous);
                 }))
@@ -1540,11 +1509,11 @@ namespace MPL::PointLightPatcher
                 DirectLightRefreshResult directLights;
                 RefreshDirectLightPlacerLights(false, &directLights);
                 DetailedLogging::Info(
-                    "[Point Lights] cell={:08X} | references={} | Brightness={} | Effect={} | LightPlacer={}/{} | loadedReferences={}",
+                    "[Point Lights] cell={:08X} | references={} | Brightness={} | XEMI-filtered={} | LightPlacer={}/{} | loadedReferences={}",
                     a_cell,
                     loadedReferences.refreshed,
                     loadedReferences.brightness,
-                    loadedReferences.effect,
+                    loadedReferences.filtered,
                     directLights.changed,
                     directLights.lights,
                     directLights.references);
@@ -1624,8 +1593,8 @@ namespace MPL::PointLightPatcher
                         a_reference->GetFormID(),
                         light->GetFormID(),
                         source ? source->GetFormID() : 0,
-                        IsEffectPointLight(a_reference, a_state) ?
-                            "Effect" :
+                        HasReferenceAdjustment(a_reference, a_state) ?
+                            "XEMI filtered" :
                             "Brightness",
                         0.0f,
                         multiplier,
@@ -1658,8 +1627,8 @@ namespace MPL::PointLightPatcher
                     a_reference->GetFormID(),
                     light->GetFormID(),
                     source ? source->GetFormID() : 0,
-                    IsEffectPointLight(a_reference, a_state) ?
-                        "Effect" :
+                    HasReferenceAdjustment(a_reference, a_state) ?
+                        "XEMI filtered" :
                         "Brightness",
                     baseline->second,
                     multiplier,
@@ -1674,7 +1643,7 @@ namespace MPL::PointLightPatcher
         {
             std::size_t adjusted = 0;
             std::size_t brightness = 0;
-            std::size_t effect = 0;
+            std::size_t filtered = 0;
             for (auto* reference : a_dataHandler->GetFormArray<RE::TESObjectREFR>())
             {
                 if (auto* light = GetBaseLight(reference);
@@ -1690,14 +1659,14 @@ namespace MPL::PointLightPatcher
                     continue;
                 }
                 ++adjusted;
-                if (IsEffectPointLight(reference, a_state)) ++effect;
+                if (HasReferenceAdjustment(reference, a_state)) ++filtered;
                 else ++brightness;
             }
             DetailedLogging::Info(
-                "[Point Lights] reference fade | adjusted={} | Brightness={} | Effect={}",
+                "[Point Lights] reference fade | adjusted={} | Brightness={} | XEMI-filtered={}",
                 adjusted,
                 brightness,
-                effect);
+                filtered);
         }
 
         bool RefreshLoadedLightReference(
@@ -1825,8 +1794,8 @@ namespace MPL::PointLightPatcher
                         a_reference->GetFormID(),
                         light->GetFormID(),
                         emittanceSource ? emittanceSource->GetFormID() : 0,
-                        IsEffectPointLight(a_reference, a_state) ?
-                            "Effect" :
+                        HasReferenceAdjustment(a_reference, a_state) ?
+                            "XEMI filtered" :
                             "Brightness",
                         sharedXEMIBase,
                         correctBaseFadeContribution,
@@ -1881,7 +1850,7 @@ namespace MPL::PointLightPatcher
                                             0;
                     if (a_reference->Is3DLoaded())
                     {
-                        if (IsEffectPointLight(a_reference, a_state)) ++result.effect;
+                        if (HasReferenceAdjustment(a_reference, a_state)) ++result.filtered;
                         else ++result.brightness;
                     }
                 }
@@ -1895,27 +1864,33 @@ namespace MPL::PointLightPatcher
             if (a_logResult)
             {
                 DetailedLogging::Info(
-                    "[Point Lights] loaded references | refreshed={} | Brightness={} | Effect={}",
+                    "[Point Lights] loaded references | refreshed={} | Brightness={} | XEMI-filtered={}",
                     result.refreshed,
                     result.brightness,
-                    result.effect);
+                    result.filtered);
             }
             return result;
         }
 
     }  // namespace
 
+    RE::Color OriginalBaseColor(RE::TESObjectLIGH& a_light)
+    {
+        const auto baseline = baselines.find(std::addressof(a_light));
+        return baseline != baselines.end() ? baseline->second.color : a_light.data.color;
+    }
+
     void Apply(
         const Settings& a_settings,
         const BaseLightSettingsMap& a_baseLightSettings,
-        const RecordFilter::Resolved& a_effectPointLightFilter,
+        const std::vector<ReferenceRule>& a_referenceRules,
         const WeatherPatcher::HueRanges& a_hueRanges,
         const bool a_commitLightPlacer)
     {
         const AppliedState state{
             .settings = a_settings,
             .baseLightSettings = a_baseLightSettings,
-            .effectPointLightFilter = a_effectPointLightFilter,
+            .referenceRules = a_referenceRules,
             .hueRanges = a_hueRanges,
         };
         const bool recordsChanged = !appliedState || *appliedState != state;

@@ -34,6 +34,10 @@ namespace
         case SKSE::MessagingInterface::kNewGame:
             MPL::PointLightPatcher::ResetCellTracking();
             MPL::ObjectLightingPatcher::ResetReferenceTracking();
+            MPL::ObjectLightingPatcher::QueueLoadedReferenceRefresh();
+            break;
+        case SKSE::MessagingInterface::kPostLoadGame:
+            MPL::ObjectLightingPatcher::QueueLoadedReferenceRefresh();
             break;
         default:
             break;

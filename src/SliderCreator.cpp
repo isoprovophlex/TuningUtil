@@ -33,6 +33,8 @@ namespace MPL::SliderCreator
         using Document = std::unique_ptr<yyjson_doc, DocumentDeleter>;
         using MutableDocument = std::unique_ptr<yyjson_mut_doc, MutableDocumentDeleter>;
 
+        std::map<std::filesystem::path, std::filesystem::path> previewLayouts;
+
         std::string Trim(std::string a_value)
         {
             const auto first = a_value.find_first_not_of(" \t\r\n");
@@ -231,6 +233,8 @@ namespace MPL::SliderCreator
                 result.filterDomain = FilterDomain::baseLight;
                 result.include = ReadFilter(yyjson_obj_get(baseLightFilter, "include"));
                 result.exclude = ReadFilter(yyjson_obj_get(baseLightFilter, "exclude"));
+                auto* hueFilter = yyjson_obj_get(a_control, "hueFilter");
+                result.hueFilter.include = StringArray(hueFilter, "include");
             }
             if (auto* baseObjectFilter = yyjson_obj_get(a_control, "baseObjectFilter");
                 yyjson_is_obj(baseObjectFilter))
@@ -238,6 +242,15 @@ namespace MPL::SliderCreator
                 result.filterDomain = FilterDomain::baseObject;
                 result.include = ReadFilter(yyjson_obj_get(baseObjectFilter, "include"));
                 result.exclude = ReadFilter(yyjson_obj_get(baseObjectFilter, "exclude"));
+            }
+            if (result.filterDomain == FilterDomain::baseObject || result.filterDomain == FilterDomain::baseLight)
+            {
+                if (auto* xemiFilter = yyjson_obj_get(a_control, "xemiFilter"); yyjson_is_obj(xemiFilter))
+                {
+                    result.useXemiFilter = result.filterDomain == FilterDomain::baseLight;
+                    result.xemiInclude = ReadFilter(yyjson_obj_get(xemiFilter, "include"));
+                    result.xemiExclude = ReadFilter(yyjson_obj_get(xemiFilter, "exclude"));
+                }
             }
             result.filtered = structured || result.ignoreProfileFilters || result.useTimes ||
                               result.hueScales ||
@@ -494,6 +507,24 @@ namespace MPL::SliderCreator
                     return nullptr;
             }
 
+            if (a_definition.useXemiFilter || !a_definition.xemiInclude.formIDs.empty() || !a_definition.xemiInclude.contains.empty() ||
+                !a_definition.xemiExclude.formIDs.empty() || !a_definition.xemiExclude.contains.empty())
+            {
+                auto* filter = yyjson_mut_obj(a_document);
+                if (!filter || !AddFilter(a_document, filter, "include", a_definition.xemiInclude) ||
+                    !AddFilter(a_document, filter, "exclude", a_definition.xemiExclude) ||
+                    !yyjson_mut_obj_add_val(a_document, control, "xemiFilter", filter))
+                    return nullptr;
+            }
+
+            if (!a_definition.hueFilter.Empty())
+            {
+                auto* filter = yyjson_mut_obj(a_document);
+                if (!filter || !ReplaceStringArray(a_document, filter, "include", a_definition.hueFilter.include) ||
+                    !yyjson_mut_obj_add_val(a_document, control, "hueFilter", filter))
+                    return nullptr;
+            }
+
             if (a_definition.hueScales)
             {
                 const auto& scales = *a_definition.hueScales;
@@ -657,6 +688,17 @@ namespace MPL::SliderCreator
                 entries.push_back(entry);
             }
             if (!ValidateCustomLinks(a_definition, entries, a_error)) return false;
+            if (!a_definition.hueFilter.Empty() &&
+                (!a_definition.filtered || a_definition.filterDomain != FilterDomain::baseLight))
+            {
+                a_error = "Hue filters apply only to Point Light sliders with a Base Light filter.";
+                return false;
+            }
+            if (!HueFilter::Valid(a_definition.hueFilter))
+            {
+                a_error = "Select valid hue bands for the Hue Filter.";
+                return false;
+            }
             if (a_definition.ignoreProfileFilters && !a_definition.filtered)
             {
                 a_error = "Ignore Profile Filters applies only to sliders with record filters.";
@@ -676,6 +718,16 @@ namespace MPL::SliderCreator
                     return a_entry->path == "objectEffectLighting.emissiveMultiplier" ||
                            a_entry->path == "objectEffectLighting.baseColorScale";
                 });
+            if ((a_definition.useXemiFilter || !a_definition.xemiInclude.formIDs.empty() || !a_definition.xemiInclude.contains.empty() ||
+                    !a_definition.xemiExclude.formIDs.empty() || !a_definition.xemiExclude.contains.empty()) &&
+                (!a_definition.filtered ||
+                    !((objectEffectLighting && a_definition.filterDomain == FilterDomain::baseObject) ||
+                        (a_definition.filterDomain == FilterDomain::baseLight && std::ranges::all_of(entries,
+                            [](const auto* entry) { return entry->path == "pointLights.fadeMultiplier"; })))))
+            {
+                a_error = "XEMI filters apply only to Object Effect Lighting and Point Light Brightness sliders with record filters.";
+                return false;
+            }
             if (objectEffectLighting &&
                 (!a_definition.filtered || a_definition.filterDomain != FilterDomain::baseObject))
             {
@@ -888,8 +940,8 @@ namespace MPL::SliderCreator
         bool KnownSliderKey(const std::string_view a_key)
         {
             static constexpr std::array keys{
-                "type", "id", "label", "customLinks", "hueScales", "setting", "settings",
-                "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "baseObjectFilter", "min", "max", "step", "width", "format",
+                "type", "id", "label", "customLinks", "hueScales", "hueFilter", "setting", "settings",
+                "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "baseObjectFilter", "xemiFilter", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
         }
@@ -1026,6 +1078,21 @@ namespace MPL::SliderCreator
             return WriteDocument(a_path, document.get(), a_error);
         }
     }  // namespace
+
+    std::filesystem::path ActiveLayoutPath(const std::filesystem::path& a_source)
+    {
+        const auto preview = previewLayouts.find(a_source.lexically_normal());
+        return preview != previewLayouts.end() ? preview->second : a_source;
+    }
+
+    void SetPreviewLayout(
+        const std::filesystem::path& a_source,
+        const std::filesystem::path& a_preview)
+    {
+        const auto key = a_source.lexically_normal();
+        if (a_preview.empty()) previewLayouts.erase(key);
+        else previewLayouts.insert_or_assign(key, a_preview);
+    }
 
     std::optional<ProfilePluginGating> LoadProfilePluginGating(
         const std::filesystem::path& a_path,
