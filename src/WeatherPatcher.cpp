@@ -798,16 +798,20 @@ namespace MPL::WeatherPatcher
         {
             stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
         }
+        if (!stat->edidCache)
+        {
+            stat->edidCache = static_cast<MPL::API::MMSF::IEDIDCache*>(stat->mmsfAPI->QueryService("EDID"));
+        }
         if (stat->mmsfAPI)
         {
             const std::string editorID(a_weatherEditorID);
-            if (auto* cached = stat->mmsfAPI->LookupCachedForm(editorID))
+            if (auto* cached = stat->edidCache->LookupCachedForm(editorID))
             {
                 weather = cached->As<RE::TESWeather>();
             }
             if (!weather)
             {
-                const auto formID = stat->mmsfAPI->LookupFormIDForEDID(editorID);
+                const auto formID = stat->edidCache->LookupEdid(editorID);
                 weather = formID ? RE::TESForm::LookupByID<RE::TESWeather>(formID) : nullptr;
             }
         }
@@ -1671,7 +1675,11 @@ namespace MPL::WeatherPatcher
         {
             stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
         }
-        return stat->mmsfAPI ? stat->mmsfAPI->LookupEDIDForFormID(a_weather->GetFormID()) : std::string{};
+        if (!stat->edidCache)
+        {
+            stat->edidCache = static_cast<MPL::API::MMSF::IEDIDCache*>(stat->mmsfAPI->QueryService("EDID"));
+        }
+        return stat->edidCache ? stat->edidCache->LookupFormID(a_weather->GetFormID()) : std::string{};
     }
 
     std::string WeatherName(const RE::TESWeather* a_weather)
