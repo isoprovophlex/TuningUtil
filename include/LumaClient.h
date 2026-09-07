@@ -1,6 +1,6 @@
 #pragma once
 
-#include <LumaAPI.h>
+#include <LumaServiceAPI.h>
 
 namespace MPL::LumaClient
 {

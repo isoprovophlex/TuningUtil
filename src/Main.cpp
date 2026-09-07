@@ -1,4 +1,4 @@
-#include <LumaAPI.h>
+#include <LumaServiceAPI.h>
 #include <LumaClient.h>
 #include <ObjectLightingPatcher.h>
 #include <PointLightPatcher.h>
@@ -11,10 +11,48 @@
 
 namespace
 {
+    bool runtimeInitialized = false;
+
+    void InitializeRuntime()
+    {
+        if (runtimeInitialized || !MPL::LumaClient::Load()) return;
+
+        MPL::TuningSettings::Load();
+        if (MPL::TuningSettings::IsTuningMenuEnabledForSession())
+        {
+            MPL::WeatherLock::InstallHooks();
+        }
+        MPL::LumaClient::SetRuntimeReady(true);
+        runtimeInitialized = true;
+    }
+
+    void OnMMSFMessage(SKSE::MessagingInterface::Message* a_message)
+    {
+        if (a_message && a_message->type == MPL::API::MMSF::MMSFMessage::kMessage_MMSFServicesReg)
+        {
+            InitializeRuntime();
+        }
+    }
+
     void OnSKSEMessage(SKSE::MessagingInterface::Message* a_message)
     {
         if (!a_message)
         {
+            return;
+        }
+        if (a_message->type == SKSE::MessagingInterface::kPostPostLoad)
+        {
+            // Subscribe after Luma's PostLoad listener, then handle an already registered service.
+            SKSE::GetMessagingInterface()->RegisterListener("MMSF", OnMMSFMessage);
+            InitializeRuntime();
+            return;
+        }
+        if (!runtimeInitialized)
+        {
+            if (a_message->type == SKSE::MessagingInterface::kDataLoaded)
+            {
+                logger::critical("[TuningUtil] startup failed | MMSF API=2 and LUMA service={} required", MPL::API::Luma::kVersion);
+            }
             return;
         }
         switch (a_message->type)
@@ -48,20 +86,9 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
-    if (!MPL::LumaClient::Load())
-    {
-        logger::critical("[TuningUtil] startup failed | LumaAPI required={}", MPL::LumaAPI::kVersion);
-        return false;
-    }
-    MPL::TuningSettings::Load();
     logger::info("[TuningUtil] startup | game={}", a_skse->RuntimeVersion().string());
-    if (MPL::TuningSettings::IsTuningMenuEnabledForSession())
-    {
-        MPL::WeatherLock::InstallHooks();
-    }
-    SKSE::GetMessagingInterface()->RegisterListener(OnSKSEMessage);
-    MPL::LumaClient::SetRuntimeReady(true);
-    return true;
+    const auto* messaging = SKSE::GetMessagingInterface();
+    return messaging && messaging->RegisterListener(OnSKSEMessage);
 }
 
 SKSEPluginInfo(

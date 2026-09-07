@@ -1,3 +1,4 @@
+#include <Config.h>
 #include <LumaClient.h>
 #include <ObjectLightingPatcher.h>
 #include <PointLightPatcher.h>
@@ -8,8 +9,7 @@ namespace MPL::LumaClient
 {
     namespace
     {
-        HMODULE module = nullptr;
-        const LumaAPI::Interface* api = nullptr;
+        API::Luma::ILumaPluginService* api = nullptr;
         std::atomic_bool runtimeReady{ false };
 
         bool IsRuntimeReady()
@@ -40,7 +40,7 @@ namespace MPL::LumaClient
             PointLightPatcher::RecordCellChangeThread();
         }
 
-        const LumaAPI::ClientCallbacks callbacks{
+        const API::Luma::ClientCallbacks callbacks{
             .id = "TuningUtil",
             .OnReferenceInitialized = OnReferenceInitialized,
             .OnCellChanging = OnCellChanging,
@@ -50,24 +50,22 @@ namespace MPL::LumaClient
 
     bool Load()
     {
-        module = GetModuleHandleW(L"LumaUtil.dll");
-        const auto request = module ?
-                                 reinterpret_cast<LumaAPI::RequestInterface>(
-                                     GetProcAddress(module, "LumaUtil_RequestAPI")) :
-                                 nullptr;
-        api = request ? request(LumaAPI::kVersion) : nullptr;
-        return api && api->version == LumaAPI::kVersion &&
-               api->RegisterClient &&
-               api->GetProviderSettings &&
-               api->UpdateProviderSettings &&
-               api->RegisterClient(&callbacks);
+        if (api) return true;
+        auto* mmsf = Config::StatData::GetSingleton()->GetMMSFAPI();
+        auto* service = mmsf ? mmsf->QueryService("LUMA") : nullptr;
+        if (!service || service->GetVersion() != API::Luma::kVersion) return false;
+
+        auto* luma = static_cast<API::Luma::ILumaPluginService*>(service);
+        if (!luma->RegisterClient(&callbacks)) return false;
+        api = luma;
+        return true;
     }
 
     bool GetProviderDetailedLogging(
         const char* a_id,
         bool& a_detailedLogging)
     {
-        return api && api->GetProviderSettings &&
+        return api &&
                api->GetProviderSettings(
                    a_id,
                    std::addressof(a_detailedLogging),
@@ -78,7 +76,7 @@ namespace MPL::LumaClient
         const char* a_id,
         const bool a_detailedLogging)
     {
-        return api && api->UpdateProviderSettings &&
+        return api &&
                api->UpdateProviderSettings(
                    a_id,
                    a_detailedLogging ?
