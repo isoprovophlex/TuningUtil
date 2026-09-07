@@ -1542,15 +1542,11 @@ namespace MPL::TuningUtil
                 presetCatalog.emplace();
             }
 
-            const auto converted = SliderStorage::Store(a_text, a_profile.sliderBindings, false, a_error);
-            if (!converted) return std::nullopt;
-            auto sanitized = UserSettings::Sanitize(
-                *converted,
+            return UserSettings::Sanitize(
+                a_text,
                 *settingsSchema,
                 presetCatalog ? std::addressof(*presetCatalog) : nullptr,
                 a_error);
-            if (sanitized && *converted != a_text) sanitized->settingsChanged = true;
-            return sanitized;
         }
 
         void SanitizeStoredUserSettings(const Profile& a_profile)

@@ -2863,10 +2863,7 @@ namespace MPL::TuningMenu
         {
             const auto* player = RE::PlayerCharacter::GetSingleton();
             auto* cell = player ? player->GetParentCell() : nullptr;
-            auto* stat = Config::StatData::GetSingleton();
-            if (!stat->mmsfAPI) stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
-            if (!stat->edidCache) stat->edidCache = static_cast<MPL::API::MMSF::IEDIDCache*>(stat->mmsfAPI->QueryService("EDID"));
-            const auto region = RegionRuntime::GetRegion(stat->edidCache, cell);
+            const auto region = RegionRuntime::GetRegion(Config::StatData::GetSingleton()->GetEDIDCache(), cell);
             return region.empty() ? DisplayText("emptyList") : region;
         }
 
@@ -10848,28 +10845,6 @@ namespace MPL::TuningMenu
                     if (unsavedEdits) ImGuiMCP::OpenPopup(disableDevModePopup.c_str());
                     else disableDevMode();
                 }
-            }
-            PreparePromptModal();
-            if (ImGuiMCP::BeginPopupModal(
-                    disableDevModePopup.c_str(),
-                    nullptr,
-                    ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize))
-            {
-                DrawDisplayText("disableDevModeConfirmation");
-                const auto discardLabel =
-                    SKSEMenuSettings::Label("discardEditsAndDisableDevMode", "Discard Edits and Turn Off") +
-                    "##DisableDevMode";
-                if (ActionButton(discardLabel.c_str(), SKSEMenuSettings::ButtonKind::destructive))
-                {
-                    disableDevMode();
-                    ImGuiMCP::CloseCurrentPopup();
-                }
-                SameActionLine();
-                const auto cancelLabel =
-                    SKSEMenuSettings::Label("cancelDisableDevMode", "Cancel") + "##DisableDevMode";
-                if (ActionButton(cancelLabel.c_str(), SKSEMenuSettings::ButtonKind::ordinary))
-                    ImGuiMCP::CloseCurrentPopup();
-                ImGuiMCP::EndPopup();
             }
             PreparePromptModal();
             if (ImGuiMCP::BeginPopupModal(

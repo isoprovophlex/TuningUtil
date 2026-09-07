@@ -159,18 +159,9 @@ namespace MPL::RecordFilter
         }
         if (a_form->Is(RE::FormType::Weather) || a_form->Is(RE::FormType::Region))
         {
-            auto* stat = Config::StatData::GetSingleton();
-            if (!stat->mmsfAPI)
+            if (auto* cache = Config::StatData::GetSingleton()->GetEDIDCache())
             {
-                stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
-            }
-            if (!stat->edidCache)
-            {
-                stat->edidCache = static_cast<MPL::API::MMSF::IEDIDCache*>(stat->mmsfAPI->QueryService("EDID"));
-            }
-            if (stat->mmsfAPI)
-            {
-                if (auto editorID = stat->edidCache->LookupFormID(a_form->GetFormID());
+                if (auto editorID = cache->LookupFormID(a_form->GetFormID());
                     !editorID.empty() && !Config::IEquals(editorID, "ERR"))
                 {
                     return editorID;

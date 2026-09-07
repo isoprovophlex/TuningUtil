@@ -500,10 +500,8 @@ namespace MPL::PointLightPatcher
         RE::FormID ResolveEmittance(const std::string_view a_editorID)
         {
             if (a_editorID.empty()) return 0;
-            auto* stat = Config::StatData::GetSingleton();
-            if (!stat->mmsfAPI) stat->mmsfAPI = API::MMSF::RequestMMSFAPI();
-            if (!stat->edidCache) stat->edidCache = static_cast<MPL::API::MMSF::IEDIDCache*>(stat->mmsfAPI->QueryService("EDID"));
-            return stat->mmsfAPI ? stat->edidCache->LookupEdid(std::string(a_editorID)) : 0;
+            auto* cache = Config::StatData::GetSingleton()->GetEDIDCache();
+            return cache ? cache->LookupEdid(std::string(a_editorID)) : 0;
         }
 
         yyjson_mut_val* CopyValue(
@@ -1814,47 +1812,6 @@ namespace MPL::PointLightPatcher
             // Base-record fade already includes the resolved brightness multiplier.
             runtime.fade = light->fade;
             UpdateRuntimeRadius(extraLight->lightData->light.get(), static_cast<float>(light->data.radius));
-            return true;
-        }
-
-        bool RefreshEquippedLight(
-            RE::Actor* a_actor,
-            const AppliedState& a_state,
-            const std::string_view a_context)
-        {
-            if (!a_actor || !a_actor->Is3DLoaded()) return false;
-
-            RE::TESObjectLIGH* light = nullptr;
-            for (const bool leftHand : { true, false })
-            {
-                auto* equipped = a_actor->GetEquippedObject(leftHand);
-                auto* candidate = equipped ? equipped->As<RE::TESObjectLIGH>() : nullptr;
-                if (candidate && candidate->CanBeCarried())
-                {
-                    light = candidate;
-                    break;
-                }
-            }
-            if (!light) return false;
-
-            const auto* extraLight = a_actor->extraList.GetByType<RE::ExtraLight>();
-            if (!extraLight || !extraLight->lightData || !extraLight->lightData->light)
-            {
-                DetailedLogging::Info(
-                    "[Point Lights] equipped light | stage={} | actor={:08X} | base={:08X} | status=awaiting-light",
-                    a_context, a_actor->GetFormID(), light->GetFormID());
-                return false;
-            }
-
-            auto& runtime = extraLight->lightData->light->GetLightRuntimeData();
-            const auto before = runtime.fade;
-            // Base-record fade already includes the resolved brightness multiplier.
-            runtime.fade = light->fade;
-            UpdateRuntimeRadius(extraLight->lightData->light.get(), static_cast<float>(light->data.radius));
-            DetailedLogging::Info(
-                "[Point Lights] equipped light | stage={} | actor={:08X} | base={:08X} | multiplier={:.6f} | pre={:.6f} | final={:.6f}",
-                a_context, a_actor->GetFormID(), light->GetFormID(),
-                BrightnessFadeMultiplier(SettingsForBaseLight(light, a_state)), before, runtime.fade);
             return true;
         }
 
