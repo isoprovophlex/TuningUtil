@@ -4,6 +4,7 @@
 #include <SliderStorage.h>
 #include <SliderStorageFiles.h>
 #include <PresetCatalog.h>
+#include <FileIO.h>
 
 #include <algorithm>
 #include <array>
@@ -750,7 +751,7 @@ namespace MPL::SliderCreator
                     }
                     if (a_definition.useTimes || a_definition.hueScales)
                     {
-                        a_error = "Time filters and saturation scales do not apply to Base Object filters.";
+                        a_error = "Time filters and custom hue scales do not apply to Base Object filters.";
                         return false;
                     }
                 }
@@ -773,9 +774,9 @@ namespace MPL::SliderCreator
                         }
                         operation = entry->filterOperation;
                     }
-                    if (a_definition.useTimes || a_definition.hueScales)
+                    if (a_definition.useTimes)
                     {
-                        a_error = "Time filters and saturation scales do not apply to Base Light filters.";
+                        a_error = "Time filters do not apply to Base Light filters.";
                         return false;
                     }
                 }
@@ -786,13 +787,15 @@ namespace MPL::SliderCreator
                     {
                         if (entry->domain != SliderSettingCatalog::Domain::lighting ||
                             (!entry->path.starts_with("lightBrightnessMultiplier.") &&
+                                !entry->path.starts_with("lightSaturationMultiplier.") &&
                                 entry->path != "lightFogPowerMultiplier" &&
                                 entry->path != "lightFogMaxMultiplier") ||
                             (entry->filterOperation != SliderSettingCatalog::FilterOperation::brightness &&
+                                entry->filterOperation != SliderSettingCatalog::FilterOperation::saturation &&
                                 entry->filterOperation != SliderSettingCatalog::FilterOperation::fogPower &&
                                 entry->filterOperation != SliderSettingCatalog::FilterOperation::fogStrength))
                         {
-                            a_error = "Lighting Template filters support only Lighting brightness, Fog Power, and Fog Strength settings.";
+                            a_error = "Lighting Template filters support only Lighting brightness, saturation, Fog Power, and Fog Strength settings.";
                             return false;
                         }
                         if (operation && operation != entry->filterOperation)
@@ -802,9 +805,9 @@ namespace MPL::SliderCreator
                         }
                         operation = entry->filterOperation;
                     }
-                    if (a_definition.useTimes || a_definition.hueScales)
+                    if (a_definition.useTimes)
                     {
-                        a_error = "Time filters and saturation scales apply only to filtered weather sliders.";
+                        a_error = "Time filters apply only to filtered weather sliders.";
                         return false;
                     }
                 }
@@ -826,20 +829,21 @@ namespace MPL::SliderCreator
                         }
                         operation = entry->filterOperation;
                     }
-                    if (a_definition.hueScales && *operation != SliderSettingCatalog::FilterOperation::saturation)
-                    {
-                        a_error = "Slider-specific saturation scales are supported only by filtered saturation sliders.";
-                        return false;
-                    }
                 }
             }
             else if (a_definition.hueScales)
             {
-                a_error = "Slider-specific saturation scales require a filtered weather slider.";
+                a_error = "Custom hue scales require a saturation slider with record filters.";
                 return false;
             }
             if (a_definition.hueScales)
             {
+                if (!std::ranges::all_of(entries, [](const auto* entry)
+                        { return entry->filterOperation == SliderSettingCatalog::FilterOperation::saturation; }))
+                {
+                    a_error = "Custom hue scales are supported only by saturation sliders.";
+                    return false;
+                }
                 const auto& scales = *a_definition.hueScales;
                 const std::array values{
                     scales.red, scales.orange, scales.yellow, scales.green,
@@ -847,7 +851,7 @@ namespace MPL::SliderCreator
                 };
                 if (std::ranges::any_of(values, [](const double a_value) { return !std::isfinite(a_value); }))
                 {
-                    a_error = "Every slider-specific saturation scale must be a finite number.";
+                    a_error = "Every custom hue scale must be a finite number.";
                     return false;
                 }
             }
@@ -874,6 +878,7 @@ namespace MPL::SliderCreator
             std::ifstream file(a_path, std::ios::binary);
             if (!file) return std::nullopt;
             std::string text(std::istreambuf_iterator<char>(file), {});
+            if (file.bad()) return std::nullopt;
             constexpr std::string_view bom = "\xEF\xBB\xBF";
             if (text.starts_with(bom)) text.erase(0, bom.size());
             return text;
@@ -904,12 +909,12 @@ namespace MPL::SliderCreator
                 const auto length = source.gcount();
                 if (length > 0) destination.write(buffer.data(), length);
             }
+            destination.close();
             if (!source.eof())
             {
                 a_error = std::format("The source profile file {} could not be read.", a_source.string());
                 return false;
             }
-            destination.flush();
             if (!destination)
             {
                 a_error = std::format("The copied profile file {} could not be written.", a_destination.string());
@@ -993,31 +998,7 @@ namespace MPL::SliderCreator
                 output = *draft;
             }
 
-            auto temporaryPath = a_path;
-            temporaryPath += ".tmp";
-            {
-                std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
-                file << output << '\n';
-                if (!file)
-                {
-                    file.close();
-                    std::error_code removeError;
-                    std::filesystem::remove(temporaryPath, removeError);
-                    a_error = "The temporary JSON file could not be written.";
-                    return false;
-                }
-            }
-            if (::MoveFileExW(
-                    temporaryPath.c_str(),
-                    a_path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-                return true;
-
-            const std::error_code moveError(static_cast<int>(::GetLastError()), std::system_category());
-            std::error_code removeError;
-            std::filesystem::remove(temporaryPath, removeError);
-            a_error = std::format("The JSON file could not be replaced: {}", moveError.message());
-            return false;
+            return FileIO::WriteAtomically(a_path, output + '\n', a_error);
         }
 
         bool ReplaceRootStringMember(
@@ -1433,6 +1414,7 @@ namespace MPL::SliderCreator
         {
             std::ofstream menuFile(profileDirectory / "skseMenu.json", std::ios::binary | std::ios::trunc);
             menuFile.write(menuText->data(), static_cast<std::streamsize>(menuText->size()));
+            menuFile.close();
             if (!menuFile)
             {
                 menuFile.close();
@@ -1457,6 +1439,7 @@ namespace MPL::SliderCreator
             settingsFile << std::format(
                 "{{\n  \"profile\": \"{}\",\n  \"EnableProfile\": true\n}}\n",
                 profileName);
+            settingsFile.close();
             if (!settingsFile)
             {
                 settingsFile.close();
@@ -2096,9 +2079,7 @@ namespace MPL::SliderCreator
                     const auto id = SliderIdentity::Make(title, dropBoxes, name);
                     if (!ids.insert(SliderIdentity::ComparisonKey(id)).second)
                     {
-                        a_error = std::format(
-                            "Cannot save page '{}': duplicate slider ID '{}'. Rename a slider or its drop box.",
-                            title, id);
+                        a_error = SliderStorage::DuplicateSliderIDError;
                         return false;
                     }
                 }

@@ -1,4 +1,5 @@
 #include <PresetCatalog.h>
+#include <FileIO.h>
 
 #include <algorithm>
 #include <cctype>
@@ -7,8 +8,6 @@
 #include <format>
 #include <memory>
 #include <ranges>
-#include <system_error>
-#include <Windows.h>
 #include <yyjson.h>
 
 namespace MPL::PresetCatalog
@@ -244,6 +243,11 @@ namespace MPL::PresetCatalog
             return std::nullopt;
         }
         std::string text(std::istreambuf_iterator<char>(file), {});
+        if (file.bad())
+        {
+            a_error = "The preset catalog could not be completely read.";
+            return std::nullopt;
+        }
         constexpr std::string_view utf8Bom = "\xEF\xBB\xBF";
         if (text.starts_with(utf8Bom)) text.erase(0, utf8Bom.size());
         auto result = Parse(text, a_error);
@@ -265,33 +269,7 @@ namespace MPL::PresetCatalog
             return false;
         }
 
-        auto temporaryPath = a_path;
-        temporaryPath += ".tmp";
-        {
-            std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
-            file << *text << '\n';
-            if (!file)
-            {
-                file.close();
-                std::error_code removeError;
-                std::filesystem::remove(temporaryPath, removeError);
-                a_error = "The temporary preset catalog could not be written.";
-                return false;
-            }
-        }
-        if (::MoveFileExW(
-                temporaryPath.c_str(),
-                a_path.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        {
-            return true;
-        }
-
-        const std::error_code moveError(static_cast<int>(::GetLastError()), std::system_category());
-        std::error_code removeError;
-        std::filesystem::remove(temporaryPath, removeError);
-        a_error = "The preset catalog could not be replaced: " + moveError.message();
-        return false;
+        return FileIO::WriteAtomically(a_path, *text + '\n', a_error);
     }
 
     Category* FindCategory(Catalog& a_catalog, const std::string_view a_name)

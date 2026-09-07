@@ -1,5 +1,6 @@
 #include <CSTonemapping.h>
 #include <DetailedLogging.h>
+#include <FileIO.h>
 #include <Config/Common.h>
 #include <ImageSpacePatcher.h>
 #include <JsonOverlay.h>
@@ -47,8 +48,16 @@ namespace MPL::TuningUtil
         bool pluginDependencyFilterReady = false;
         bool runtimeStateReleased = false;
         std::uint64_t settingsRevision = 0;
+        std::uint64_t sliderBindingsRevision = 0;
         std::vector<Profile> profiles;
         std::vector<std::filesystem::path> pluginFilteredProfileDirectories;
+        struct PreparedProfileStack
+        {
+            std::optional<std::string> defaults;
+            std::optional<std::string> presets;
+            std::optional<std::string> user;
+            std::string adjustments;
+        };
         struct CachedSettings
         {
             Settings settings;
@@ -56,6 +65,7 @@ namespace MPL::TuningUtil
             std::string presetDefaults{ "{}" };
             std::string explicitUserSettings{ "{}" };
             std::optional<std::string> presetPreviewUserLayer;
+            std::optional<PreparedProfileStack> preparedStack;
         };
         std::unordered_map<std::string, CachedSettings> settingsCache;
         std::optional<std::string> globalDefaultsCache;
@@ -117,6 +127,7 @@ namespace MPL::TuningUtil
                 return std::nullopt;
             }
             std::string text(std::istreambuf_iterator<char>(file), {});
+            if (file.bad()) return std::nullopt;
             constexpr std::string_view bom = "\xEF\xBB\xBF";
             if (text.starts_with(bom))
             {
@@ -341,6 +352,17 @@ namespace MPL::TuningUtil
                 LightingCustomLinkField);
         }
 
+        std::optional<WeatherPatcher::AmbientHueScales> CreatorHueScales(
+            const std::optional<SliderCreator::HueScales>& a_configured)
+        {
+            if (!a_configured) return std::nullopt;
+            const auto& scales = *a_configured;
+            return WeatherPatcher::AmbientHueScales{
+                scales.red, scales.orange, scales.yellow, scales.green,
+                scales.teal, scales.blue, scales.magenta,
+            };
+        }
+
         struct ParsedFilteredWeatherSetting
         {
             FilteredWeatherSetting setting;
@@ -388,6 +410,13 @@ namespace MPL::TuningUtil
                     .target = Lowercase(entry->target),
                 };
             }
+            if (a_setting.starts_with("lightSaturationMultiplier.") && !entry->target.empty())
+            {
+                return FilteredLightingTemplateSetting{
+                    .operation = FilteredLightingTemplateOperation::saturation,
+                    .target = Lowercase(entry->target),
+                };
+            }
             if (a_setting == "lightFogMaxMultiplier")
             {
                 return FilteredLightingTemplateSetting{
@@ -418,11 +447,6 @@ namespace MPL::TuningUtil
                 result.operation = FilteredBaseLightOperation::radius;
             else if (entry->path == "pointLights.saturationMultiplier")
                 result.operation = FilteredBaseLightOperation::saturation;
-            else if (entry->path.starts_with("pointLights.hueScales.") && !entry->hue.empty())
-            {
-                result.operation = FilteredBaseLightOperation::hueScale;
-                result.hue = Lowercase(entry->hue);
-            }
             else if (entry->path.starts_with("pointLights.hueShift.") && !entry->hue.empty())
             {
                 result.operation = FilteredBaseLightOperation::hueShift;
@@ -727,6 +751,7 @@ namespace MPL::TuningUtil
                 .id = id,
                 .controlID = id,
                 .customLinks = JsonCustomLightingLinks(a_control),
+                .hueScales = JsonHueScales(a_control),
             };
             if (auto* value = yyjson_obj_get(a_control, "ignoreProfileFilters"); yyjson_is_bool(value))
                 rule.ignoreProfileFilters = yyjson_get_bool(value);
@@ -745,7 +770,10 @@ namespace MPL::TuningUtil
                 setting->scale = specification.scale;
                 rule.settings.push_back(std::move(*setting));
             }
-            if (rule.settings.empty())
+            if (rule.settings.empty() || !std::ranges::all_of(rule.settings, [&](const auto& a_setting)
+                    { return a_setting.operation == rule.settings.front().operation; }) || (rule.hueScales &&
+                !std::ranges::all_of(rule.settings, [](const auto& a_setting)
+                    { return a_setting.operation == FilteredLightingTemplateOperation::saturation; })))
             {
                 logger::warn(
                     "[TuningUtil] filtered Lighting Template slider={} | source={} | settings unsupported",
@@ -786,6 +814,7 @@ namespace MPL::TuningUtil
             FilteredBaseLightRule rule{
                 .id = id,
                 .controlID = id,
+                .hueScales = JsonHueScales(a_control),
             };
             std::optional<SliderSettingCatalog::FilterOperation> operation;
             for (const auto& specification : JsonSliderSettings(a_control))
@@ -813,7 +842,8 @@ namespace MPL::TuningUtil
                 setting->scale = specification.scale;
                 rule.settings.push_back(std::move(*setting));
             }
-            if (rule.settings.empty()) return std::nullopt;
+            if (rule.settings.empty() || (rule.hueScales &&
+                *operation != SliderSettingCatalog::FilterOperation::saturation)) return std::nullopt;
             rule.defaultValue = rule.settings.front().operation == FilteredBaseLightOperation::hueShift ? 0.0 : 1.0;
             rule.include = JsonWeatherFilter(yyjson_obj_get(a_control, "baseLightFilter"), "include");
             rule.exclude = JsonWeatherFilter(yyjson_obj_get(a_control, "baseLightFilter"), "exclude");
@@ -879,22 +909,8 @@ namespace MPL::TuningUtil
             return rule;
         }
 
-        std::vector<FilteredWeatherRule> ReadFilteredWeatherRules(const std::filesystem::path& a_profileDirectory)
+        std::vector<FilteredWeatherRule> ReadFilteredWeatherRules(yyjson_val* root, const std::filesystem::path& path)
         {
-            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
-            const auto text = ReadText(path);
-            const auto document = text ? Parse(*text) : nullptr;
-            auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
-            if (!yyjson_is_obj(root))
-            {
-                return {};
-            }
-            auto* schemaVersion = yyjson_obj_get(root, "schemaVersion");
-            if (!yyjson_is_num(schemaVersion) || yyjson_get_num(schemaVersion) != 1.0)
-            {
-                return {};
-            }
-
             std::vector<FilteredWeatherRule> rules;
             const auto readModules = [&](yyjson_val* a_modules)
             {
@@ -933,16 +949,8 @@ namespace MPL::TuningUtil
         }
 
         std::vector<FilteredLightingTemplateRule> ReadFilteredLightingTemplateRules(
-            const std::filesystem::path& a_profileDirectory)
+            yyjson_val* root, const std::filesystem::path& path)
         {
-            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
-            const auto text = ReadText(path);
-            const auto document = text ? Parse(*text) : nullptr;
-            auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
-            if (!yyjson_is_obj(root)) return {};
-            auto* schemaVersion = yyjson_obj_get(root, "schemaVersion");
-            if (!yyjson_is_num(schemaVersion) || yyjson_get_num(schemaVersion) != 1.0) return {};
-
             std::vector<FilteredLightingTemplateRule> rules;
             const auto readModules = [&](yyjson_val* a_modules)
             {
@@ -980,16 +988,8 @@ namespace MPL::TuningUtil
         }
 
         std::vector<FilteredBaseLightRule> ReadFilteredBaseLightRules(
-            const std::filesystem::path& a_profileDirectory)
+            yyjson_val* root, const std::filesystem::path& path)
         {
-            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
-            const auto text = ReadText(path);
-            const auto document = text ? Parse(*text) : nullptr;
-            auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
-            if (!yyjson_is_obj(root)) return {};
-            auto* schemaVersion = yyjson_obj_get(root, "schemaVersion");
-            if (!yyjson_is_num(schemaVersion) || yyjson_get_num(schemaVersion) != 1.0) return {};
-
             std::vector<FilteredBaseLightRule> rules;
             const auto readModules = [&](yyjson_val* a_modules)
             {
@@ -1023,16 +1023,8 @@ namespace MPL::TuningUtil
         }
 
         std::vector<FilteredObjectLightingRule> ReadFilteredObjectLightingRules(
-            const std::filesystem::path& a_profileDirectory)
+            yyjson_val* root, const std::filesystem::path& path)
         {
-            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
-            const auto text = ReadText(path);
-            const auto document = text ? Parse(*text) : nullptr;
-            auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
-            if (!yyjson_is_obj(root)) return {};
-            auto* schemaVersion = yyjson_obj_get(root, "schemaVersion");
-            if (!yyjson_is_num(schemaVersion) || yyjson_get_num(schemaVersion) != 1.0) return {};
-
             std::vector<FilteredObjectLightingRule> rules;
             const auto readModules = [&](yyjson_val* a_modules)
             {
@@ -1075,17 +1067,8 @@ namespace MPL::TuningUtil
             std::vector<std::string> weatherDeclaredSettings;
         };
 
-        LightingSliderLinkRules ReadLightingSliderLinkRules(
-            const std::filesystem::path& a_profileDirectory)
+        LightingSliderLinkRules ReadLightingSliderLinkRules(yyjson_val* root)
         {
-            const auto path = SliderCreator::ActiveLayoutPath(a_profileDirectory / kMenuDefinitionFile);
-            const auto text = ReadText(path);
-            const auto document = text ? Parse(*text) : nullptr;
-            auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
-            if (!yyjson_is_obj(root)) return {};
-            auto* schemaVersion = yyjson_obj_get(root, "schemaVersion");
-            if (!yyjson_is_num(schemaVersion) || yyjson_get_num(schemaVersion) != 1.0) return {};
-
             LightingSliderLinkRules result;
             auto weatherProfile = false;
             const auto add = [](std::vector<std::string>& a_values, const std::string& a_value)
@@ -1137,8 +1120,6 @@ namespace MPL::TuningUtil
                         }
                         else if (Config::IEquals(setting, "lightHueShift"))
                             add(result.declaredSettings, "lightHueShift");
-                        else if (Config::IEquals(setting, "lightHueScales"))
-                            add(result.declaredSettings, "lightAmbientHueScales");
                         continue;
                     }
                     if (!Config::IEquals(type, "slider") ||
@@ -1177,10 +1158,56 @@ namespace MPL::TuningUtil
             else
             {
                 add(result.declaredSettings, "links.lighting");
-                add(result.declaredSettings, "lightAmbientHueScales");
                 add(result.declaredSettings, "lightHueRanges");
             }
             return result;
+        }
+
+        struct ProfileLayout
+        {
+            std::vector<SliderStorage::Binding> bindings;
+            std::vector<FilteredWeatherRule> weatherRules;
+            std::vector<FilteredLightingTemplateRule> lightingRules;
+            std::vector<FilteredBaseLightRule> baseLightRules;
+            std::vector<FilteredObjectLightingRule> objectLightingRules;
+            LightingSliderLinkRules lightingLinks;
+            std::string text;
+        };
+
+        std::optional<ProfileLayout> ReadProfileLayout(const std::filesystem::path& a_directory, std::string& a_error,
+            const bool a_allowMissing = false)
+        {
+            a_error.clear();
+            const auto path = SliderCreator::ActiveLayoutPath(a_directory / kMenuDefinitionFile);
+            std::error_code fileError;
+            if (a_allowMissing && !std::filesystem::exists(path, fileError) && !fileError)
+                return ProfileLayout{};
+            auto text = ReadText(path);
+            const auto document = text ? Parse(*text) : nullptr;
+            auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
+            auto* pages = yyjson_is_obj(root) ? yyjson_obj_get(root, "pages") : nullptr;
+            auto* version = yyjson_is_obj(root) ? yyjson_obj_get(root, "schemaVersion") : nullptr;
+            if (!yyjson_is_arr(pages) || !yyjson_is_num(version) || yyjson_get_num(version) != 1.0)
+            {
+                a_error = std::format("The profile layout could not be read or has an invalid schema: {}", path.string());
+                return std::nullopt;
+            }
+            std::size_t index, count;
+            yyjson_val* page;
+            yyjson_arr_foreach(pages, index, count, page)
+            {
+                if (!yyjson_is_obj(page) || !yyjson_is_arr(yyjson_obj_get(page, "modules")))
+                {
+                    a_error = std::format("The profile layout contains an invalid page: {}", path.string());
+                    return std::nullopt;
+                }
+            }
+            auto bindings = SliderStorage::ReadLayout(root, a_error);
+            if (!a_error.empty()) return std::nullopt;
+            return ProfileLayout{
+                std::move(bindings), ReadFilteredWeatherRules(root, path),
+                ReadFilteredLightingTemplateRules(root, path), ReadFilteredBaseLightRules(root, path),
+                ReadFilteredObjectLightingRules(root, path), ReadLightingSliderLinkRules(root), std::move(*text) };
         }
 
         std::optional<std::string> StringMember(
@@ -1239,20 +1266,6 @@ namespace MPL::TuningUtil
             return a_dependencies.empty() || AnyPluginLoaded(a_dependencies);
         }
 
-        std::string PluginDependencyList(const std::span<const std::string> a_dependencies)
-        {
-            std::string result;
-            for (const auto& dependency : a_dependencies)
-            {
-                if (!result.empty())
-                {
-                    result.append(", ");
-                }
-                result.append(dependency);
-            }
-            return result;
-        }
-
         std::vector<std::string> SettingRoots(const std::string_view a_json)
         {
             std::vector<std::string> roots;
@@ -1304,7 +1317,6 @@ namespace MPL::TuningUtil
                 AddSettingPath(a_paths, "lightFogPowerMultiplier");
                 AddSettingPath(a_paths, "lightFogMaxMultiplier");
             }
-            else if (a_setting == "lightHueScales") AddSettingPath(a_paths, "lightAmbientHueScales");
             else AddSettingPath(a_paths, a_setting);
         }
 
@@ -1370,13 +1382,6 @@ namespace MPL::TuningUtil
             return settings;
         }
 
-        std::vector<SliderStorage::Binding> ReadSliderBindings(const std::filesystem::path& a_directory)
-        {
-            const auto text = ReadText(SliderCreator::ActiveLayoutPath(a_directory / "skseMenu.json"));
-            std::string error;
-            return text ? SliderStorage::ReadLayout(*text, error) : std::vector<SliderStorage::Binding>{};
-        }
-
         std::string SerializeProfileSettings(const Profile& a_profile, const Settings& a_settings)
         {
             std::string error;
@@ -1418,8 +1423,8 @@ namespace MPL::TuningUtil
                                    std::nullopt;
             const auto savedLayout = ReadText(a_profile.directory / "skseMenu.json");
             const auto savedBindings = savedLayout ? SliderStorage::ReadLayout(*savedLayout, a_error) : a_profile.sliderBindings;
-            const auto migrated = local ? SliderStorage::Remap(*local, savedBindings, a_profile.sliderBindings, a_error) : std::nullopt;
-            return migrated ? SliderStorage::Store(*migrated, a_profile.sliderBindings, true, a_error) : std::nullopt;
+            const auto remapped = local ? SliderStorage::Remap(*local, savedBindings, a_profile.sliderBindings, a_error) : std::nullopt;
+            return remapped ? SliderStorage::Store(*remapped, a_profile.sliderBindings, true, a_error) : std::nullopt;
         }
 
         std::optional<std::string> ActivePresetSettingsText(
@@ -1475,7 +1480,6 @@ namespace MPL::TuningUtil
                     const auto userText = ReadText(UserSettingsPath(a_profile)).value_or("{}");
                     const auto converted = SliderStorage::Store(userText, a_profile.sliderBindings, false, error);
                     explicitUserSettings = UserSettingsValuesOnly(converted.value_or(userText), error).value_or("{}");
-                    DetailedLogging::Info("[TuningUtil] {} user overrides | source={}", a_profile.name, UserSettingsPath(a_profile).string());
                 }
             }
             else if (!stored)
@@ -1603,11 +1607,6 @@ namespace MPL::TuningUtil
                     error);
                 return;
             }
-            logger::info(
-                "[TuningUtil] user settings sanitized | profile={} | settingsChanged={} | presetSelectionsRemoved={}",
-                a_profile.name,
-                sanitized->settingsChanged,
-                sanitized->removedPresetSelections);
         }
 
         std::vector<std::string> ExpandSettingScopes(const std::span<const std::string> a_scopes)
@@ -1646,7 +1645,9 @@ namespace MPL::TuningUtil
         bool ApplySettingsPatch(
             const Profile& a_profile,
             std::string& a_profileName,
-            const std::string_view a_patch)
+            const std::string_view a_patch,
+            const std::string_view a_trigger,
+            const std::source_location a_source = std::source_location::current())
         {
             const auto patch = Parse(a_patch);
             auto* patchRoot = patch ? yyjson_doc_get_root(patch.get()) : nullptr;
@@ -1670,7 +1671,7 @@ namespace MPL::TuningUtil
                 return false;
             }
             GetSettings(a_profileName) = std::move(*parsed);
-            ApplySettings();
+            ApplySettings(std::format("{} | profile={}", a_trigger, a_profileName), true, a_source);
             return true;
         }
 
@@ -1720,7 +1721,8 @@ namespace MPL::TuningUtil
                 logger::warn("[TuningUtil] user settings save failed | path={} | {}", path.string(), error);
                 return false;
             }
-            logger::info("[TuningUtil] user overrides | path={} | status=saved", path.string());
+            if (const auto cached = settingsCache.find(Lowercase(a_profile.name)); cached != settingsCache.end())
+                cached->second.preparedStack.reset();
             return true;
         }
 
@@ -1729,31 +1731,7 @@ namespace MPL::TuningUtil
             const std::string_view a_text,
             std::string& a_error)
         {
-            auto temporaryPath = a_path;
-            temporaryPath += ".tmp";
-            {
-                std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
-                file << a_text << '\n';
-                if (!file)
-                {
-                    file.close();
-                    std::error_code removeError;
-                    std::filesystem::remove(temporaryPath, removeError);
-                    a_error = std::format("The temporary settings file could not be written: {}", temporaryPath.string());
-                    return false;
-                }
-            }
-            if (::MoveFileExW(
-                    temporaryPath.c_str(),
-                    a_path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-                return true;
-
-            const std::error_code moveError(static_cast<int>(::GetLastError()), std::system_category());
-            std::error_code removeError;
-            std::filesystem::remove(temporaryPath, removeError);
-            a_error = std::format("The settings file could not be replaced: {}", moveError.message());
-            return false;
+            return FileIO::WriteAtomically(a_path, std::string(a_text) + '\n', a_error);
         }
 
         bool WriteSettings(
@@ -1827,6 +1805,8 @@ namespace MPL::TuningUtil
             const auto profile = std::ranges::find_if(profiles, [&](const Profile& a_candidate)
                 { return Config::IEquals(a_candidate.name, a_profile.name); });
             if (profile != profiles.end()) profile->defaultSettingRoots = SettingRoots(*updated);
+            if (const auto cached = settingsCache.find(Lowercase(a_profile.name)); cached != settingsCache.end())
+                cached->second.preparedStack.reset();
             return true;
         }
 
@@ -1863,6 +1843,23 @@ namespace MPL::TuningUtil
                        std::nullopt;
         }
 
+        const PreparedProfileStack& PreparedStack(const Profile& a_profile)
+        {
+            auto name = a_profile.name;
+            const auto& settings = GetSettings(name);
+            auto& cached = settingsCache.at(Lowercase(a_profile.name));
+            if (!cached.preparedStack)
+            {
+                std::string error;
+                cached.preparedStack = PreparedProfileStack{
+                    ReadText(ProfileDefaultsPath(a_profile)), ActivePresetSettingsText(a_profile, error),
+                    CurrentUserLayer(a_profile, error), SerializeSettings(settings) };
+                if (!error.empty())
+                    logger::warn("[TuningUtil] profile stack preparation failed | profile={} | {}", a_profile.name, error);
+            }
+            return *cached.preparedStack;
+        }
+
         bool HasAnyRoot(
             const std::span<const std::string> a_declaredRoots,
             const std::span<const std::string_view> a_requestedRoots)
@@ -1879,7 +1876,7 @@ namespace MPL::TuningUtil
             const std::span<const std::string_view> a_requestedRoots)
         {
             for (const auto& binding : a_profile.sliderBindings)
-                if (binding.legacyMap.empty())
+                if (binding.ruleValueMap.empty())
                     for (const auto& target : binding.targets)
                         for (const auto root : a_requestedRoots)
                             if (target.path == root || target.path.starts_with(std::string(root) + ".")) return true;
@@ -1998,7 +1995,6 @@ namespace MPL::TuningUtil
                 a_path == "lightBrightnessMultiplier" || a_path.starts_with("lightBrightnessMultiplier.") ||
                 a_path == "lightSaturationMultiplier" || a_path.starts_with("lightSaturationMultiplier.") ||
                 a_path == "lightHueShift" || a_path.starts_with("lightHueShift.") ||
-                a_path == "lightAmbientHueScales" || a_path.starts_with("lightAmbientHueScales.") ||
                 a_path == "lightFogPowerMultiplier" ||
                 a_path == "lightFogMaxMultiplier")
             {
@@ -2211,6 +2207,7 @@ namespace MPL::TuningUtil
 
         void SortProfiles()
         {
+            ++sliderBindingsRevision;
             std::ranges::sort(profiles, [](const Profile& a_left, const Profile& a_right)
             {
                 if (a_left.priority != a_right.priority)
@@ -2238,6 +2235,7 @@ namespace MPL::TuningUtil
 
     void InvalidateDiscoveryCaches()
     {
+        ++sliderBindingsRevision;
         WeatherPatcher::InvalidatePresetCache();
         discoveryInitialized = false;
         profiles.clear();
@@ -2316,10 +2314,6 @@ namespace MPL::TuningUtil
             if (pluginDependencyFilterReady && !PluginDependenciesSatisfied(dependencies))
             {
                 pluginFilteredProfileDirectories.push_back(iterator->path());
-                logger::info(
-                    "[TuningUtil] {} disabled | PluginDependency missing={}",
-                    name,
-                    PluginDependencyList(dependencies));
                 continue;
             }
             const auto disabledProfiles = JsonStrings(
@@ -2355,7 +2349,15 @@ namespace MPL::TuningUtil
             {
                 priority = IntegerMember(*user, "profilePriority").value_or(priority);
             }
-            auto lightingSliderLinks = ReadLightingSliderLinkRules(iterator->path());
+            std::string layoutError;
+            auto loadedLayout = ReadProfileLayout(iterator->path(), layoutError, true);
+            if (!loadedLayout)
+            {
+                logger::warn("[TuningUtil] profile layout unavailable | profile={} | {}", name, layoutError);
+                continue;
+            }
+            auto layout = std::move(*loadedLayout);
+            auto& lightingSliderLinks = layout.lightingLinks;
             profiles.push_back({
                 .name = name,
                 .priority = priority,
@@ -2364,15 +2366,16 @@ namespace MPL::TuningUtil
                 .runtimeCompressionAnchors = runtimeCompressionAnchors,
                 .disabledProfiles = disabledProfiles,
                 .defaultSettingRoots = SettingRoots(*defaults),
-                .sliderBindings = ReadSliderBindings(iterator->path()),
-                .filteredWeatherRules = ReadFilteredWeatherRules(iterator->path()),
-                .filteredLightingTemplateRules = ReadFilteredLightingTemplateRules(iterator->path()),
-                .filteredBaseLightRules = ReadFilteredBaseLightRules(iterator->path()),
-                .filteredObjectLightingRules = ReadFilteredObjectLightingRules(iterator->path()),
+                .sliderBindings = std::move(layout.bindings),
+                .filteredWeatherRules = std::move(layout.weatherRules),
+                .filteredLightingTemplateRules = std::move(layout.lightingRules),
+                .filteredBaseLightRules = std::move(layout.baseLightRules),
+                .filteredObjectLightingRules = std::move(layout.objectLightingRules),
                 .lightingSliderSettings = std::move(lightingSliderLinks.settings),
                 .customLightingSliderLinks = std::move(lightingSliderLinks.customLinks),
                 .lightingMenuSettings = std::move(lightingSliderLinks.declaredSettings),
                 .weatherMenuSettings = std::move(lightingSliderLinks.weatherDeclaredSettings),
+                .hasMenuLayout = !layout.text.empty(),
             });
             disableRules.push_back({ name, std::move(disabledProfiles), profileEnabled });
         }
@@ -2399,19 +2402,12 @@ namespace MPL::TuningUtil
                 const auto disabled = disabledBy.find(Lowercase(a_profile.name));
                 if (disabled == disabledBy.end()) return false;
                 pluginFilteredProfileDirectories.push_back(a_profile.directory);
-                logger::info(
-                    "[TuningUtil] {} disabled | DisableProfile source={}",
-                    a_profile.name,
-                    disabled->second);
                 return true;
             });
         }
 
         SortProfiles();
         discoveryInitialized = true;
-        DetailedLogging::Info(
-            "[TuningUtil] profiles={}",
-            profiles.size());
         return profiles;
     }
 
@@ -2649,18 +2645,27 @@ namespace MPL::TuningUtil
         return result;
     }
 
-    bool ReloadFilteredRules(const bool a_force)
+    bool ReloadFilteredRules(const bool a_force, const ProfileLayoutValidator& a_validate)
     {
         auto changed = false;
         for (auto& profile : profiles)
         {
-            auto weatherRules = ReadFilteredWeatherRules(profile.directory);
-            auto sliderBindings = ReadSliderBindings(profile.directory);
-            auto lightingRules = ReadFilteredLightingTemplateRules(profile.directory);
-            auto baseLightRules = ReadFilteredBaseLightRules(profile.directory);
-            auto objectLightingRules = ReadFilteredObjectLightingRules(profile.directory);
-            auto lightingSliderLinks = ReadLightingSliderLinkRules(profile.directory);
-            if (!a_force && sliderBindings == profile.sliderBindings && weatherRules == profile.filteredWeatherRules &&
+            std::string layoutError;
+            auto layout = ReadProfileLayout(profile.directory, layoutError, !profile.hasMenuLayout);
+            if (!layout)
+            {
+                logger::warn("[TuningUtil] profile layout reload rejected | profile={} | {}", profile.name, layoutError);
+                continue;
+            }
+            if (a_validate && !layout->text.empty() && !a_validate(profile, layout->text)) continue;
+            auto& weatherRules = layout->weatherRules;
+            auto& sliderBindings = layout->bindings;
+            auto& lightingRules = layout->lightingRules;
+            auto& baseLightRules = layout->baseLightRules;
+            auto& objectLightingRules = layout->objectLightingRules;
+            auto& lightingSliderLinks = layout->lightingLinks;
+            if (!a_force && profile.hasMenuLayout == !layout->text.empty() &&
+                sliderBindings == profile.sliderBindings && weatherRules == profile.filteredWeatherRules &&
                 lightingRules == profile.filteredLightingTemplateRules &&
                 baseLightRules == profile.filteredBaseLightRules &&
                 objectLightingRules == profile.filteredObjectLightingRules &&
@@ -2684,6 +2689,8 @@ namespace MPL::TuningUtil
                     presetPreviewUserLayer = SliderStorage::Remap(*presetPreviewUserLayer, profile.sliderBindings, sliderBindings, error);
             }
             WeatherPatcher::RemapPresetSliderValues(profile.name, profile.sliderBindings, sliderBindings);
+            ++sliderBindingsRevision;
+            profile.hasMenuLayout = !layout->text.empty();
             profile.sliderBindings = std::move(sliderBindings);
             profile.filteredWeatherRules = std::move(weatherRules);
             profile.filteredLightingTemplateRules = std::move(lightingRules);
@@ -2698,42 +2705,6 @@ namespace MPL::TuningUtil
             auto& reloaded = GetSettings(name);
             if (runtimeSettings)
             {
-                auto filteredDefaults = reloaded.filteredWeatherAdjustments;
-                for (auto& [id, value] : filteredDefaults)
-                {
-                    const auto existing = std::ranges::find_if(
-                        runtimeSettings->filteredWeatherAdjustments,
-                        [&](const auto& a_entry) { return Config::IEquals(a_entry.first, id); });
-                    if (existing != runtimeSettings->filteredWeatherAdjustments.end()) value = existing->second;
-                }
-                runtimeSettings->filteredWeatherAdjustments = std::move(filteredDefaults);
-                auto filteredLightingDefaults = reloaded.filteredLightingTemplateAdjustments;
-                for (auto& [id, value] : filteredLightingDefaults)
-                {
-                    const auto existing = std::ranges::find_if(
-                        runtimeSettings->filteredLightingTemplateAdjustments,
-                        [&](const auto& a_entry) { return Config::IEquals(a_entry.first, id); });
-                    if (existing != runtimeSettings->filteredLightingTemplateAdjustments.end()) value = existing->second;
-                }
-                runtimeSettings->filteredLightingTemplateAdjustments = std::move(filteredLightingDefaults);
-                auto filteredBaseLightDefaults = reloaded.filteredBaseLightAdjustments;
-                for (auto& [id, value] : filteredBaseLightDefaults)
-                {
-                    const auto existing = std::ranges::find_if(
-                        runtimeSettings->filteredBaseLightAdjustments,
-                        [&](const auto& a_entry) { return Config::IEquals(a_entry.first, id); });
-                    if (existing != runtimeSettings->filteredBaseLightAdjustments.end()) value = existing->second;
-                }
-                runtimeSettings->filteredBaseLightAdjustments = std::move(filteredBaseLightDefaults);
-                auto filteredObjectLightingDefaults = reloaded.filteredObjectLightingAdjustments;
-                for (auto& [id, value] : filteredObjectLightingDefaults)
-                {
-                    const auto existing = std::ranges::find_if(
-                        runtimeSettings->filteredObjectLightingAdjustments,
-                        [&](const auto& a_entry) { return Config::IEquals(a_entry.first, id); });
-                    if (existing != runtimeSettings->filteredObjectLightingAdjustments.end()) value = existing->second;
-                }
-                runtimeSettings->filteredObjectLightingAdjustments = std::move(filteredObjectLightingDefaults);
                 if (remappedSettings)
                 {
                     std::string error;
@@ -2746,13 +2717,6 @@ namespace MPL::TuningUtil
                 ++settingsRevision;
             }
             changed = true;
-            DetailedLogging::Info(
-                "[TuningUtil] {} filters | weather={} | lightingTemplates={} | baseLights={} | baseObjects={}",
-                profile.name,
-                profile.filteredWeatherRules.size(),
-                profile.filteredLightingTemplateRules.size(),
-                profile.filteredBaseLightRules.size(),
-                profile.filteredObjectLightingRules.size());
         }
         return changed;
     }
@@ -2763,12 +2727,16 @@ namespace MPL::TuningUtil
         const SliderCreator::Definition& a_definition,
         const double a_value,
         bool& a_changed,
-        std::string& a_error)
+        std::string& a_error,
+        SettingsUpdate::Targets& a_targets)
     {
         constexpr std::string_view previewRuleID = "$sliderCreatorPreview";
         a_changed = false;
+        a_targets = SettingsUpdate::Targets::none;
         a_error.clear();
-        if (a_definition.settings.empty() || !std::isfinite(a_value))
+        if (a_definition.settings.empty() || !std::isfinite(a_value) ||
+            std::ranges::any_of(a_definition.settings, [](const auto& a_target)
+                { return !SliderSettingCatalog::Find(a_target.setting); }))
         {
             a_error = "The functional preview requires a valid slider.";
             return false;
@@ -2788,14 +2756,16 @@ namespace MPL::TuningUtil
         auto& settings = GetSettings(settingsName);
         const auto runtimeID = a_existingRuleID.empty() ? std::string(previewRuleID) : std::string(a_existingRuleID);
         auto binding = std::ranges::find(profile->sliderBindings, runtimeID, &SliderStorage::Binding::controlID);
+        if (binding != profile->sliderBindings.end()) a_targets = SettingsUpdate::ForBinding(*binding);
         if (binding == profile->sliderBindings.end())
         {
             SliderStorage::Binding preview;
             preview.id = runtimeID;
             preview.valueID = runtimeID;
             preview.controlID = runtimeID;
-            preview.legacyID = runtimeID;
+            preview.ruleID = runtimeID;
             profile->sliderBindings.push_back(std::move(preview));
+            ++sliderBindingsRevision;
             binding = std::prev(profile->sliderBindings.end());
             a_changed = true;
         }
@@ -2812,10 +2782,12 @@ namespace MPL::TuningUtil
             case SliderCreator::FilterDomain::baseObject: map = "filteredObjectLightingAdjustments"; break;
             }
         }
-        a_changed |= binding->targets != targets || binding->legacyMap != map ||
+        if (binding->targets != targets || binding->ruleValueMap != map) ++sliderBindingsRevision;
+        a_changed |= binding->targets != targets || binding->ruleValueMap != map ||
             !settings.sliderValues.contains(binding->valueID) || settings.sliderValues[binding->valueID] != a_value;
         binding->targets = std::move(targets);
-        binding->legacyMap = std::move(map);
+        binding->ruleValueMap = std::move(map);
+        a_targets = a_targets | SettingsUpdate::ForBinding(*binding);
         binding->neutral = SliderStorage::Neutral(binding->targets.front().path);
         settings.sliderValues[binding->valueID] = a_value;
         const auto filter = [](const SliderCreator::Filter& a_filter)
@@ -2830,6 +2802,7 @@ namespace MPL::TuningUtil
             const auto originalSize = a_rules.size();
             std::erase_if(a_rules, [&](const auto& a_rule)
                 { return Config::IEquals(a_rule.id, runtimeID); });
+            if (a_rules.size() != originalSize) ++sliderBindingsRevision;
             return a_rules.size() != originalSize;
         };
         const auto findValue = [&](auto& a_values)
@@ -2864,6 +2837,7 @@ namespace MPL::TuningUtil
                 .controlID = runtimeID,
                 .customLinks = CreatorWeatherLinks(a_definition.customLinks),
                 .ignoreProfileFilters = a_definition.ignoreProfileFilters,
+                .hueScales = CreatorHueScales(a_definition.hueScales),
             };
             std::optional<FilteredWeatherOperation> operation;
             for (const auto& target : a_definition.settings)
@@ -2887,19 +2861,6 @@ namespace MPL::TuningUtil
             }
             rule.include = filter(a_definition.include);
             rule.exclude = filter(a_definition.exclude);
-            if (a_definition.hueScales)
-            {
-                const auto& scales = *a_definition.hueScales;
-                rule.hueScales = WeatherPatcher::AmbientHueScales{
-                    scales.red,
-                    scales.orange,
-                    scales.yellow,
-                    scales.green,
-                    scales.teal,
-                    scales.blue,
-                    scales.magenta,
-                };
-            }
             rule.defaultValue = *operation == FilteredWeatherOperation::hueShift ? 0.0 : 1.0;
 
             const auto existing = std::ranges::find_if(profile->filteredWeatherRules, [&](const auto& a_rule)
@@ -2918,6 +2879,7 @@ namespace MPL::TuningUtil
             eraseRule(profile->filteredBaseLightRules);
             eraseRule(profile->filteredObjectLightingRules);
             profile->filteredWeatherRules.push_back(std::move(rule));
+            ++sliderBindingsRevision;
             assignValue(settings.filteredWeatherAdjustments);
         }
         else if (a_definition.filterDomain == SliderCreator::FilterDomain::lightingTemplate)
@@ -2927,6 +2889,7 @@ namespace MPL::TuningUtil
                 .controlID = runtimeID,
                 .customLinks = CreatorLightingLinks(a_definition.customLinks),
                 .ignoreProfileFilters = a_definition.ignoreProfileFilters,
+                .hueScales = CreatorHueScales(a_definition.hueScales),
             };
             std::optional<FilteredLightingTemplateOperation> operation;
             for (const auto& target : a_definition.settings)
@@ -2965,6 +2928,7 @@ namespace MPL::TuningUtil
             eraseRule(profile->filteredBaseLightRules);
             eraseRule(profile->filteredObjectLightingRules);
             profile->filteredLightingTemplateRules.push_back(std::move(rule));
+            ++sliderBindingsRevision;
             assignValue(settings.filteredLightingTemplateAdjustments);
         }
         else if (a_definition.filterDomain == SliderCreator::FilterDomain::baseLight)
@@ -2978,6 +2942,7 @@ namespace MPL::TuningUtil
                     !a_definition.xemiExclude.formIDs.empty() || !a_definition.xemiExclude.contains.empty(),
                 .xemiInclude = filter(a_definition.xemiInclude),
                 .xemiExclude = filter(a_definition.xemiExclude),
+                .hueScales = CreatorHueScales(a_definition.hueScales),
             };
             if (!HueFilter::Valid(rule.hueFilter))
             {
@@ -3023,6 +2988,7 @@ namespace MPL::TuningUtil
             eraseRule(profile->filteredBaseLightRules);
             eraseRule(profile->filteredObjectLightingRules);
             profile->filteredBaseLightRules.push_back(std::move(rule));
+            ++sliderBindingsRevision;
             assignValue(settings.filteredBaseLightAdjustments);
         }
         else
@@ -3063,6 +3029,7 @@ namespace MPL::TuningUtil
             eraseRule(profile->filteredBaseLightRules);
             eraseRule(profile->filteredObjectLightingRules);
             profile->filteredObjectLightingRules.push_back(std::move(rule));
+            ++sliderBindingsRevision;
             assignValue(settings.filteredObjectLightingAdjustments);
         }
 
@@ -3096,14 +3063,29 @@ namespace MPL::TuningUtil
         return settingsCache.try_emplace(cacheKey, std::move(*settings)).first->second.settings;
     }
 
+    void InvalidatePreparedProfileStack(const std::string_view a_profile)
+    {
+        if (a_profile.empty())
+        {
+            for (auto& [name, cached] : settingsCache) cached.preparedStack.reset();
+        }
+        else if (const auto cached = settingsCache.find(Lowercase(std::string(a_profile))); cached != settingsCache.end())
+            cached->second.preparedStack.reset();
+    }
+
     Settings ResolveSettingsStack(const std::span<const std::string> a_profileNames)
     {
         std::string error;
         auto combined = GlobalDefaultsText();
+        std::vector<std::pair<std::string_view, const PreparedProfileStack*>> prepared;
         for (const auto& profileName : a_profileNames)
         {
             const auto* profile = FindProfile(profileName);
-            const auto defaults = profile ? ReadText(ProfileDefaultsPath(*profile)) : std::nullopt;
+            if (profile) prepared.emplace_back(profile->name, std::addressof(PreparedStack(*profile)));
+        }
+        for (const auto& [profileName, contribution] : prepared)
+        {
+            const auto& defaults = contribution->defaults;
             if (!defaults)
             {
                 continue;
@@ -3117,10 +3099,9 @@ namespace MPL::TuningUtil
                 logger::warn("[TuningUtil] {} stack defaults failed | {}", profileName, error);
             }
         }
-        for (const auto& profileName : a_profileNames)
+        for (const auto& [profileName, contribution] : prepared)
         {
-            const auto* profile = FindProfile(profileName);
-            const auto activePresets = profile ? ActivePresetSettingsText(*profile, error) : std::nullopt;
+            const auto& activePresets = contribution->presets;
             if (!activePresets)
             {
                 continue;
@@ -3134,10 +3115,9 @@ namespace MPL::TuningUtil
                 logger::warn("[TuningUtil] {} stack presets failed | {}", profileName, error);
             }
         }
-        for (const auto& profileName : a_profileNames)
+        for (const auto& [profileName, contribution] : prepared)
         {
-            const auto* profile = FindProfile(profileName);
-            const auto user = profile ? CurrentUserLayer(*profile, error) : std::nullopt;
+            const auto& user = contribution->user;
             if (!user)
             {
                 continue;
@@ -3152,11 +3132,9 @@ namespace MPL::TuningUtil
             }
         }
         std::vector<std::string> contributions;
-        for (auto name : a_profileNames) contributions.push_back(SerializeSettings(GetSettings(name)));
+        for (const auto& [profileName, contribution] : prepared) contributions.push_back(contribution->adjustments);
         const auto stacked = SliderStorage::Stack(contributions, error);
-        std::vector<std::string> paths;
-        for (const auto& entry : SliderSettingCatalog::Entries())
-            if (SliderStorage::IsAdjustment(entry.path)) paths.push_back(entry.path);
+        const auto& paths = SliderStorage::AdjustmentPaths();
         const auto adjustments = stacked ? JsonOverlay::ProjectPaths(*stacked, paths, error) : std::nullopt;
         if (adjustments)
             if (auto resolved = JsonOverlay::Overlay(combined, *adjustments, error)) combined = std::move(*resolved);
@@ -3270,7 +3248,9 @@ namespace MPL::TuningUtil
         std::string& a_profileName,
         const PresetSelections& a_selections,
         const std::string_view a_changedSettings,
-        std::string& a_error)
+        std::string& a_error,
+        const std::string_view a_trigger,
+        const std::source_location a_source)
     {
         a_error.clear();
         const auto* profile = FindProfile(a_profileName);
@@ -3297,7 +3277,7 @@ namespace MPL::TuningUtil
         WeatherPatcher::InvalidatePresetCache();
         settingsCache.erase(Lowercase(profile->name));
         (void)GetSettings(a_profileName);
-        ApplySettings();
+        ApplySettings(std::format("{} | profile={}", a_trigger, a_profileName), true, a_source);
         return true;
     }
 
@@ -3305,7 +3285,9 @@ namespace MPL::TuningUtil
         std::string& a_profileName,
         const std::string_view a_effectivePresetSettings,
         const std::string_view a_changedPresetSettings,
-        std::string& a_error)
+        std::string& a_error,
+        const std::string_view a_trigger,
+        const std::source_location a_source)
     {
         a_error.clear();
         const auto* profile = FindProfile(a_profileName);
@@ -3344,7 +3326,7 @@ namespace MPL::TuningUtil
 
         cached->second.settings = std::move(*settings);
         cached->second.presetPreviewUserLayer = std::move(userLayer);
-        ApplySettings();
+        ApplySettings(std::format("{} | profile={}", a_trigger, a_profileName), true, a_source);
         return true;
     }
 
@@ -3390,6 +3372,7 @@ namespace MPL::TuningUtil
             if (!localDefaults || !presetDefaults) return false;
             cached->second.localDefaults = *localDefaults;
             cached->second.presetDefaults = *presetDefaults;
+            cached->second.preparedStack.reset();
         }
         a_profileName = profile->name;
         return true;
@@ -3421,7 +3404,8 @@ namespace MPL::TuningUtil
         }
 
         GetSettings(a_profileName) = std::move(*settings);
-        ApplySettings();
+        ApplySettings(std::format("setup-restore | profile={} | domain={}", a_profileName,
+            a_domain == ProfileSetup::Domain::weather ? "weather" : "lighting"));
         a_profileName = profile->name;
         return true;
     }
@@ -3491,7 +3475,7 @@ namespace MPL::TuningUtil
                           std::nullopt;
         if (!parsed) return false;
         restoredSettings = std::move(*parsed);
-        ApplySettings();
+        ApplySettings(std::format("profile-restore | profile={}", a_profileName));
         return true;
     }
 
@@ -3516,7 +3500,7 @@ namespace MPL::TuningUtil
             const auto explicitSettings = retained && restored ? JsonOverlay::Overlay(*retained, *restored, error) : std::nullopt;
             if (explicitSettings) cached->second.explicitUserSettings = std::move(*explicitSettings);
         }
-        return ApplySettingsPatch(*profile, a_profileName, *page);
+        return ApplySettingsPatch(*profile, a_profileName, *page, "page-restore");
     }
 
     bool ResetAllSettingsToDefault(std::string& a_profileName)
@@ -3549,7 +3533,7 @@ namespace MPL::TuningUtil
         cached.presetDefaults = JsonOverlay::Overlay(*defaults, activePresets, error).value_or(*defaults);
         cached.explicitUserSettings = "{}";
         cached.presetPreviewUserLayer.reset();
-        ApplySettings();
+        ApplySettings(std::format("profile-reset-defaults | profile={}", a_profileName));
         return true;
     }
 
@@ -3571,55 +3555,63 @@ namespace MPL::TuningUtil
                 cached->second.explicitUserSettings = std::move(*retained);
             }
         }
-        return ApplySettingsPatch(*profile, a_profileName, *page);
+        return ApplySettingsPatch(*profile, a_profileName, *page, "page-reset-defaults");
     }
+
 
     namespace
     {
-        bool editingSliderValues = false;
-        bool deferredSliderApply = false;
-        bool deferredLightPlacerCommit = false;
-    }
-
-    void BeginSliderValueEdit()
-    {
-        assert(!editingSliderValues);
-        editingSliderValues = true;
-        deferredSliderApply = false;
-        deferredLightPlacerCommit = false;
-    }
-
-    void EndSliderValueEdit(const bool a_changed)
-    {
-        editingSliderValues = false;
-        if (a_changed || deferredSliderApply) ApplySettings(deferredLightPlacerCommit);
-    }
-
-    void ApplySettings(const bool a_commitLightPlacer)
-    {
-        if (editingSliderValues)
+        void LogSettingsUpdate(const std::string_view a_trigger, const SettingsUpdate::Targets a_targets,
+            const std::string_view a_rebuildProfile, const bool a_commitLightPlacer,
+            const std::source_location a_source)
         {
-            deferredSliderApply = true;
-            deferredLightPlacerCommit |= a_commitLightPlacer;
-            return;
+            if (!DetailedLogging::IsEnabled()) return;
+            const std::string_view sourceFile = a_source.file_name();
+            const auto filename = sourceFile.substr(sourceFile.find_last_of("/\\") + 1);
+            DetailedLogging::Info(
+                "[Settings Update] trigger={} | caller={}:{} | targets={} | rebuildProfile={} | commitLightPlacer={} | status={}",
+                a_trigger, filename, a_source.line(), SettingsUpdate::Describe(a_targets), a_rebuildProfile, a_commitLightPlacer,
+                runtimeStateReleased ? "skipped-runtime-released" : "apply");
         }
+    }
+
+    void ApplySettings(const std::string_view a_trigger, const bool a_commitLightPlacer,
+        const std::source_location a_source)
+    {
+        ApplyProfileSettings({}, SettingsUpdate::Targets::all, a_trigger, a_commitLightPlacer, a_source);
+    }
+
+    void ApplyProfileSettings(const std::string_view a_profile, const SettingsUpdate::Targets a_targets,
+        const std::string_view a_trigger, const bool a_commitLightPlacer, const std::source_location a_source)
+    {
+        LogSettingsUpdate(a_trigger, a_targets, a_profile.empty() ? "all" : a_profile, a_commitLightPlacer, a_source);
         if (runtimeStateReleased)
         {
             return;
         }
         for (const auto& profile : profiles)
         {
+            if (!a_profile.empty() && !Config::IEquals(profile.name, a_profile)) continue;
             const auto cached = settingsCache.find(Lowercase(profile.name));
             if (cached == settingsCache.end()) continue;
+            cached->second.preparedStack.reset();
             if (auto expanded = ParseProfileSettings(SerializeSettings(cached->second.settings), profile))
                 cached->second.settings = std::move(*expanded);
         }
         ++settingsRevision;
-        SynchronizeProfilePriorities();
-        WeatherPatcher::ApplyAllSettings();
-        LightingPatcher::ApplyAllSettings(a_commitLightPlacer);
-        ObjectLightingPatcher::ApplyAllSettings();
-        ImageSpacePatcher::ApplyFilmicCurveWhitePoint();
+        if (a_profile.empty()) SynchronizeProfilePriorities();
+        using enum SettingsUpdate::Targets;
+        if (SettingsUpdate::Contains(a_targets, weather)) WeatherPatcher::ApplyAllSettings();
+        if (SettingsUpdate::Contains(a_targets, lighting)) LightingPatcher::ApplyTemplateSettings();
+        if (SettingsUpdate::Contains(a_targets, pointLights)) LightingPatcher::ApplyPointLightSettings(a_commitLightPlacer);
+        if (SettingsUpdate::Contains(a_targets, objects)) ObjectLightingPatcher::ApplyAllSettings();
+        if (SettingsUpdate::Contains(a_targets, imageSpaces)) ImageSpacePatcher::ApplyFilmicCurveWhitePoint();
+    }
+
+    void CommitLightPlacerSettings(const std::string_view a_trigger, const std::source_location a_source)
+    {
+        LogSettingsUpdate(a_trigger, SettingsUpdate::Targets::pointLights, "none", true, a_source);
+        if (!runtimeStateReleased) LightingPatcher::ApplyPointLightSettings(true);
     }
 
     std::uint64_t GetSettingsRevision()
@@ -3627,8 +3619,14 @@ namespace MPL::TuningUtil
         return settingsRevision;
     }
 
+    std::uint64_t GetSliderBindingsRevision()
+    {
+        return sliderBindingsRevision;
+    }
+
     void ApplyDataLoaded()
     {
+        DetailedLogging::Info("[Settings Update] trigger={} | status=apply", "data-loaded");
         ++settingsRevision;
         runtimeStateReleased = false;
         startupSettingTargetOverlapCache.clear();
@@ -3658,6 +3656,7 @@ namespace MPL::TuningUtil
             LightingPatcher::ReleaseRuntimeState();
             ImageSpacePatcher::ReleaseRuntimeState();
             CSTonemapping::ReleaseRuntimeState();
+            ++sliderBindingsRevision;
             profiles = {};
             settingsCache = {};
             globalDefaultsCache.reset();

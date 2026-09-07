@@ -8,6 +8,8 @@ namespace MPL::LightingPatcher
     using Settings = TuningUtil::Settings;
     void ApplyDataLoaded();
     void ApplyAllSettings(bool a_commitLightPlacer = true);
+    void ApplyTemplateSettings();
+    void ApplyPointLightSettings(bool a_commitLightPlacer = true);
     void ReleaseRuntimeState();
     bool ProfilesShareLightingTarget(const std::string&, const std::string&);
     bool ProfilesShareFilteredLightingTemplateTarget(const std::string&, const std::string&, std::string_view);

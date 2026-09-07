@@ -26,8 +26,6 @@ namespace MPL::ProfileSetup
         "links.lighting",
         "enableTemplateInherit",
         "cellExclusions",
-        "lightAmbientHueScales",
-        "pointLights.hueScales",
         "lightHueRanges",
         "lightingTemplateInclusions",
         "lightingTemplateExclusions",

@@ -1,4 +1,5 @@
 #include <SKSEMenuSettings.h>
+#include <SliderStorage.h>
 
 #include <algorithm>
 #include <cctype>
@@ -109,6 +110,7 @@ namespace MPL::SKSEMenuSettings
         {
             static const std::unordered_map<std::string, std::string> messages{
                 { "profileMenusReloaded", "Reloaded {count} profile menu(s)." },
+                { "profileMenusReloadFailure", "Some profile menus could not be reloaded. Previous layouts were kept." },
                 { "quickSelectSaveFailure", "Quick Select changed for this session, but its list could not be saved." },
                 { "quickSelectClearSaveFailure", "Quick Select was cleared for this session, but its list could not be saved." },
                 { "weatherLockEnabledSession", "Weather lock enabled for {weather} for this session." },
@@ -186,6 +188,7 @@ namespace MPL::SKSEMenuSettings
                 { "layoutPageSaved", "Page edits saved." },
                 { "layoutPageRestored", "Saved page edits restored." },
                 { "layoutPageSaveFailure", "Page edits could not be saved. Check the TuningUtil log for details." },
+                { "layoutDuplicateSliderIDsFailure", std::string(SliderStorage::DuplicateSliderIDError) },
                 { "layoutPageRestoreFailure", "Saved page edits could not be restored. Check the TuningUtil log for details." },
                 { "layoutProfileSaved", "Profile edits saved." },
                 { "layoutProfileRestored", "Saved profile edits restored." },
@@ -255,21 +258,21 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorNoValidSettings", "Add at least one valid setting to the slider." },
                 { "sliderCreatorUnsupportedSettingPath", "The slider contains a setting path that TuningUtil does not support." },
                 { "sliderCreatorFilteredUnsupportedSetting", "Filtered sliders support only weather brightness, saturation, and hue-shift settings." },
-                { "sliderCreatorFilteredLightingUnsupportedSetting", "Lighting Template filters support only Lighting brightness, Fog Power, and Fog Strength settings." },
+                { "sliderCreatorFilteredLightingUnsupportedSetting", "Lighting Template filters support only Lighting brightness, saturation, Fog Power, and Fog Strength settings." },
                 { "sliderCreatorFilteredBaseLightUnsupportedSetting", "Base Light filters support only Point Lights settings." },
                 { "sliderCreatorHueRequiresBaseLight", "Hue filters apply only to Point Light sliders with a Base Light filter." },
                 { "sliderCreatorInvalidHueFilter", "Select valid hue bands for the Hue Filter." },
-                { "sliderCreatorBaseLightWeatherFeatures", "Time filters and saturation scales do not apply to Base Light filters." },
+                { "sliderCreatorBaseLightWeatherFeatures", "Time filters do not apply to Base Light filters." },
                 { "sliderCreatorFilteredBaseObjectUnsupportedSetting", "Base Object filters support only Object Effect Lighting settings." },
                 { "sliderCreatorObjectLightingRequiresFilter", "Object Effect Lighting sliders require a Base Object filter." },
                 { "sliderCreatorXemiRequiresObjectOrPointLight", "XEMI filters apply only to Object Effect Lighting and Point Light Brightness sliders with record filters." },
-                { "sliderCreatorBaseObjectWeatherFeatures", "Time filters and saturation scales do not apply to Base Object filters." },
-                { "sliderCreatorLightingWeatherFeatures", "Time filters and saturation scales apply only to filtered weather sliders." },
+                { "sliderCreatorBaseObjectWeatherFeatures", "Time filters and custom hue scales do not apply to Base Object filters." },
+                { "sliderCreatorLightingWeatherFeatures", "Time filters apply only to filtered weather sliders." },
                 { "sliderCreatorMixedFilteredOperations", "Every setting in a filtered slider must use the same operation." },
                 { "sliderCreatorMixedFilterDomains", "Every setting in a filtered slider must use the same filter domain." },
-                { "sliderCreatorHueScalesRequireSaturation", "Slider-specific saturation scales are supported only by filtered saturation sliders." },
-                { "sliderCreatorHueScalesRequireFilter", "Slider-specific saturation scales require a filtered weather slider." },
-                { "sliderCreatorInvalidHueScale", "Every slider-specific saturation scale must be a finite number." },
+                { "sliderCreatorHueScalesRequireSaturation", "Custom hue scales are supported only by saturation sliders." },
+                { "sliderCreatorHueScalesRequireFilter", "Custom hue scales require a saturation slider with record filters." },
+                { "sliderCreatorInvalidHueScale", "Every custom hue scale must be a finite number." },
                 { "sliderCreatorNoTimeSelected", "Select at least one time of day or disable the time filter." },
                 { "sliderCreatorInvalidRange", "The slider minimum must be lower than its maximum." },
                 { "sliderCreatorNegativeStep", "The slider step cannot be negative." },
@@ -406,7 +409,7 @@ namespace MPL::SKSEMenuSettings
                 { "xemiRegion", "XEMI Region" },
                 { "baseObject", "Base Object" },
                 { "sliderCreatorIgnoreProfileFilters", "Ignore Profile Filters" },
-                { "saturationScales", "Saturation Scales" },
+                { "weatherSaturationScales", "Saturation Scales" },
                 { "weatherLinks", "Links" },
                 { "hueRanges", "Hue Ranges" },
                 { "compressionAnchor", "Compression Anchor" },
@@ -430,8 +433,6 @@ namespace MPL::SKSEMenuSettings
                 { "cell", "Cell" },
                 { "addExcludedCell", "Add Excluded Cell" },
                 { "excludedCells", "Excluded Cells" },
-                { "lightingSaturationScales", "Saturation Scales" },
-                { "lightingBulbSaturationScales", "Bulb Saturation Scales" },
                 { "lightingHueRanges", "Ambient & Bulb Hue Ranges" },
                 { "weatherFilterWeather", "Weather" },
                 { "lightingTemplate", "Lighting Template" },
@@ -443,7 +444,8 @@ namespace MPL::SKSEMenuSettings
                 { "excludedList", "Excluded List" },
                 { "includedPlugins", "Included Plugins" },
                 { "excludedPlugins", "Excluded Plugins" },
-                { "pluginOwnership", "Plugin Ownership" },
+                { "weatherOwnership", "Weather Ownership" },
+                { "templateOwnership", "Template Ownership" },
                 { "pluginName", "Plugin" },
                 { "addOrUpdatePlugin", "Add / Update Plugin" },
                 { "clearPlugins", "Clear Plugins" },
@@ -499,7 +501,7 @@ namespace MPL::SKSEMenuSettings
                 { "sliderCreatorWidth", "Width" },
                 { "sliderCreatorFinalize", "Finalize" },
                 { "sliderCreatorLoadExisting", "Slider" },
-                { "sliderCreatorUniqueHueScales", "Unique Saturation Scales" },
+                { "sliderCreatorCustomHueScales", "Custom Hue Scales" },
                 { "devMode", "Dev Mode" },
                 { "editPage", "Edit Page" },
                 { "newPage", "New Page" },
@@ -745,10 +747,6 @@ namespace MPL::SKSEMenuSettings
 
             settings = std::move(loaded);
             loadedWriteTime = writeTime;
-            logger::info(
-                "[Tuning Menu] presentation | source={} | file={}",
-                kSettingsPath.string(),
-                exists);
         }
 
         std::string ResolveMessage(

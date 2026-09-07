@@ -4,8 +4,11 @@
 #include <HueFilter.h>
 #include <ProfileSetup.h>
 #include <SliderStorage.h>
+#include <SettingsUpdate.h>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <source_location>
 
 namespace MPL::SliderCreator
 {
@@ -52,6 +55,7 @@ namespace MPL::TuningUtil
     enum class FilteredLightingTemplateOperation
     {
         brightness,
+        saturation,
         fogPower,
         fogStrength,
     };
@@ -78,6 +82,7 @@ namespace MPL::TuningUtil
         std::vector<std::string> inclusionMultiLocationExceptions;
         std::vector<std::string> exclusionMultiLocationExceptions;
         bool ignoreProfileFilters = false;
+        std::optional<WeatherPatcher::AmbientHueScales> hueScales;
         double defaultValue = 1.0;
 
         bool operator==(const FilteredLightingTemplateRule&) const = default;
@@ -88,7 +93,6 @@ namespace MPL::TuningUtil
         brightness,
         radius,
         saturation,
-        hueScale,
         hueShift,
     };
 
@@ -112,6 +116,7 @@ namespace MPL::TuningUtil
         bool useXemiFilter = false;
         WeatherFilter xemiInclude;
         WeatherFilter xemiExclude;
+        std::optional<WeatherPatcher::AmbientHueScales> hueScales;
         double defaultValue = 1.0;
 
         bool operator==(const FilteredBaseLightRule&) const = default;
@@ -163,13 +168,19 @@ namespace MPL::TuningUtil
         std::map<std::string, LightingPatcher::LightingLinks, std::less<>> customLightingSliderLinks;
         std::vector<std::string> lightingMenuSettings;
         std::vector<std::string> weatherMenuSettings;
+        bool hasMenuLayout = false;
     };
 
     void ApplyDataLoaded();
-    void ApplySettings(bool a_commitLightPlacer = true);
-    void BeginSliderValueEdit();
-    void EndSliderValueEdit(bool a_changed);
+    void ApplySettings(std::string_view a_trigger, bool a_commitLightPlacer = true,
+        std::source_location a_source = std::source_location::current());
+    void ApplyProfileSettings(std::string_view a_profile, SettingsUpdate::Targets a_targets,
+        std::string_view a_trigger, bool a_commitLightPlacer = true,
+        std::source_location a_source = std::source_location::current());
+    void CommitLightPlacerSettings(std::string_view a_trigger,
+        std::source_location a_source = std::source_location::current());
     std::uint64_t GetSettingsRevision();
+    std::uint64_t GetSliderBindingsRevision();
     void InvalidateDiscoveryCaches();
     const std::vector<Profile>& GetProfiles();
     bool IsProfilePluginFiltered(const std::filesystem::path&);
@@ -194,16 +205,19 @@ namespace MPL::TuningUtil
     std::map<std::string, LightingPatcher::LightingLinks, std::less<>> ResolveLightingSliderLinkOverrides(
         std::span<const std::string>,
         std::string_view);
-    bool ReloadFilteredRules(bool a_force = false);
+    using ProfileLayoutValidator = std::function<bool(const Profile&, std::string_view)>;
+    bool ReloadFilteredRules(bool a_force = false, const ProfileLayoutValidator& a_validate = {});
     bool SetSliderCreatorPreview(
         std::string&,
         std::string_view,
         const SliderCreator::Definition&,
         double,
         bool&,
-        std::string&);
+        std::string&,
+        SettingsUpdate::Targets&);
     Settings& GetSettings(std::string&);
     Settings ResolveSettingsStack(std::span<const std::string>);
+    void InvalidatePreparedProfileStack(std::string_view a_profile = {});
     WeatherPatcher::WeatherCompressionAnchors ResolveCompressionAnchors(std::span<const std::string>);
     std::optional<std::string> SerializePresetSettings(std::string&, std::string&);
     std::optional<std::string> ResolvePresetResetSettings(
@@ -216,8 +230,11 @@ namespace MPL::TuningUtil
         std::string&,
         const PresetSelections&,
         std::string_view,
-        std::string&);
-    bool ApplyPresetPreview(std::string&, std::string_view, std::string_view, std::string&);
+        std::string&,
+        std::string_view,
+        std::source_location = std::source_location::current());
+    bool ApplyPresetPreview(std::string&, std::string_view, std::string_view, std::string&,
+        std::string_view, std::source_location = std::source_location::current());
     bool SaveSettings(std::string&);
     bool SaveProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);
     bool RestoreProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);

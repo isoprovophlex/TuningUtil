@@ -71,7 +71,6 @@ namespace MPL::TuningUtil
         LightingPatcher::LightingColorSettings lightBrightnessMultiplier;
         LightingPatcher::LightingColorSettings lightSaturationMultiplier;
         LightingPatcher::LightingHueShiftSettings lightHueShift;
-        WeatherPatcher::AmbientHueScales lightAmbientHueScales;
         WeatherPatcher::HueRanges lightHueRanges;
         double lightFogPowerMultiplier = 1.0;
         double lightFogMaxMultiplier = 1.0;

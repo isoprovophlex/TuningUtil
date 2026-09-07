@@ -19,9 +19,15 @@ namespace MPL::SliderStorage
         struct WriteDeleter { void operator()(yyjson_mut_doc* a_value) const { yyjson_mut_doc_free(a_value); } };
         using Document = std::unique_ptr<yyjson_doc, ReadDeleter>;
         using Mutable = std::unique_ptr<yyjson_mut_doc, WriteDeleter>;
-        constexpr std::array legacyMaps{
+        constexpr std::array runtimeRuleMaps{
             "filteredWeatherAdjustments", "filteredLightingTemplateAdjustments",
             "filteredBaseLightAdjustments", "filteredObjectLightingAdjustments" };
+        constexpr std::array moduleCompressionPaths{
+            std::string_view{ "withinWeatherCompression.ambient" },
+            std::string_view{ "betweenWeatherCompression.ambient" },
+            std::string_view{ "withinWeatherCompression.sunlight" },
+            std::string_view{ "betweenWeatherCompression.sunlight" },
+        };
 
         Document Parse(const std::string_view a_text)
         {
@@ -41,7 +47,7 @@ namespace MPL::SliderStorage
             const auto separator = a_path.find('.');
             if (separator == a_path.npos) return Member(a_object, a_path);
             const auto first = a_path.substr(0, separator);
-            if (first == "sliderValues" || std::ranges::find(legacyMaps, first) != legacyMaps.end())
+            if (first == "sliderValues" || std::ranges::find(runtimeRuleMaps, first) != runtimeRuleMaps.end())
                 return Member(Member(a_object, first), a_path.substr(separator + 1));
             return Find(Member(a_object, first), a_path.substr(separator + 1));
         }
@@ -99,7 +105,7 @@ namespace MPL::SliderStorage
             const auto add = [&](yyjson_val* a_value)
             {
                 auto path = yyjson_is_str(a_value) ? std::string(yyjson_get_str(a_value)) : Text(a_value, "setting");
-                if (IsAdjustment(path)) result.push_back({ std::move(path), Numeric(Member(a_value, "scale")).value_or(1.0) });
+                if (SliderSettingCatalog::Find(path)) result.push_back({ std::move(path), Numeric(Member(a_value, "scale")).value_or(1.0) });
             };
             auto* settings = Member(a_module, "settings");
             if (yyjson_is_arr(settings))
@@ -112,72 +118,109 @@ namespace MPL::SliderStorage
         }
         std::string FilterMap(yyjson_val* a_module)
         {
-            if (yyjson_is_obj(Member(a_module, "baseObjectFilter"))) return legacyMaps[3];
-            if (yyjson_is_obj(Member(a_module, "baseLightFilter"))) return legacyMaps[2];
-            if (yyjson_is_obj(Member(a_module, "lightingTemplateFilter"))) return legacyMaps[1];
+            if (yyjson_is_obj(Member(a_module, "baseObjectFilter"))) return runtimeRuleMaps[3];
+            if (yyjson_is_obj(Member(a_module, "baseLightFilter"))) return runtimeRuleMaps[2];
+            if (yyjson_is_obj(Member(a_module, "lightingTemplateFilter"))) return runtimeRuleMaps[1];
             if (yyjson_is_obj(Member(a_module, "weatherFilter")) || yyjson_is_arr(Member(a_module, "times")) ||
                 yyjson_is_obj(Member(a_module, "hueScales")) || yyjson_is_bool(Member(a_module, "ignoreProfileFilters")))
-                return legacyMaps[0];
+                return runtimeRuleMaps[0];
             return {};
         }
-        std::vector<std::pair<std::string, std::string>> ModuleTargets(const std::string_view a_category)
+    }
+
+    std::vector<ModuleSlider> ModuleSliders(const std::string_view a_category)
+    {
+        std::vector<ModuleSlider> result;
+        std::string prefix;
+        if (a_category == "brightness") prefix = "brightnessMultiplier.";
+        else if (a_category == "saturation") prefix = "saturationMultiplier.";
+        else if (a_category == "hueShift") prefix = "hueShift.";
+        else if (a_category == "lightBrightness") prefix = "lightBrightnessMultiplier.";
+        else if (a_category == "lightSaturation") prefix = "lightSaturationMultiplier.";
+        else if (a_category == "lightHueShift") prefix = "lightHueShift.";
+        else if (a_category == "pointLights.hueShift") prefix = "pointLights.hueShift.";
+        else if (a_category == "exteriorImageSpace" || a_category == "lightImageSpace") prefix = std::string(a_category) + ".";
+        if (!prefix.empty())
+            for (const auto& entry : SliderSettingCatalog::Entries())
+                if (entry.path.starts_with(prefix))
+                    result.emplace_back(entry.path, entry.label);
+        if (a_category == "brightness") result.emplace_back("volumetricLightingIntensityMultiplier", "Volumetric Lighting Intensity");
+        if (a_category == "lightBrightness")
         {
-            std::vector<std::pair<std::string, std::string>> result;
-            std::string prefix;
-            if (a_category == "brightness") prefix = "brightnessMultiplier.";
-            else if (a_category == "saturation") prefix = "saturationMultiplier.";
-            else if (a_category == "hueShift") prefix = "hueShift.";
-            else if (a_category == "lightBrightness") prefix = "lightBrightnessMultiplier.";
-            else if (a_category == "lightSaturation") prefix = "lightSaturationMultiplier.";
-            else if (a_category == "lightHueShift") prefix = "lightHueShift.";
-            else if (a_category == "pointLights.hueShift") prefix = "pointLights.hueShift.";
-            else if (a_category == "exteriorImageSpace" || a_category == "lightImageSpace") prefix = std::string(a_category) + ".";
-            if (!prefix.empty())
-                for (const auto& entry : SliderSettingCatalog::Entries())
-                    if (entry.path.starts_with(prefix) && IsAdjustment(entry.path))
-                        result.emplace_back(entry.path, entry.label);
-            if (a_category == "brightness") result.emplace_back("volumetricLightingIntensityMultiplier", "Volumetric Lighting Intensity");
-            if (a_category == "lightBrightness")
+            result.emplace_back("lightFogPowerMultiplier", "Fog Power");
+            result.emplace_back("lightFogMaxMultiplier", "Fog Strength");
+        }
+        if (a_category == "pointLights")
+        {
+            result.emplace_back("pointLights.fadeMultiplier", "Brightness");
+            result.emplace_back("pointLights.radiusMultiplier", "Radius");
+            result.emplace_back("pointLights.saturationMultiplier", "Saturation");
+        }
+        if (a_category == "ambientCompression" || a_category == "sunlightCompression")
+        {
+            const std::string field = a_category == "ambientCompression" ? "ambient" : "sunlight";
+            result.emplace_back("brightnessMultiplier." + field, "Brightness");
+            result.emplace_back("withinWeatherCompression." + field, "Night Brightness");
+            result.emplace_back("betweenWeatherCompression." + field, "Dark Weather Brightness");
+        }
+        for (auto& slider : result)
+        {
+            const auto& path = slider.setting;
+            if (a_category == "brightness" && path != "volumetricLightingIntensityMultiplier") slider.minimum = 0.1f;
+            if (a_category == "saturation" || a_category == "lightSaturation") slider.maximum = 6.0f;
+            if (a_category == "lightBrightness" && path.starts_with("lightBrightnessMultiplier.")) slider.maximum = 10.0f;
+            if (a_category == "pointLights") slider.maximum = path == "pointLights.saturationMultiplier" ? 6.0f : 10.0f;
+            if (a_category == "hueShift" || a_category == "lightHueShift" || a_category == "pointLights.hueShift")
             {
-                result.emplace_back("lightFogPowerMultiplier", "Fog Power");
-                result.emplace_back("lightFogMaxMultiplier", "Fog Strength");
-            }
-            if (a_category == "pointLights")
-            {
-                result.emplace_back("pointLights.fadeMultiplier", "Brightness");
-                result.emplace_back("pointLights.radiusMultiplier", "Radius");
-                result.emplace_back("pointLights.saturationMultiplier", "Saturation");
+                slider.minimum = -180.0f;
+                slider.maximum = 180.0f;
             }
             if (a_category == "ambientCompression" || a_category == "sunlightCompression")
             {
-                const std::string field = a_category == "ambientCompression" ? "ambient" : "sunlight";
-                result.emplace_back("brightnessMultiplier." + field, "Brightness");
-                result.emplace_back("withinWeatherCompression." + field, "Night Brightness");
-                result.emplace_back("betweenWeatherCompression." + field, "Dark Weather Brightness");
+                if (path.starts_with("brightnessMultiplier."))
+                {
+                    slider.minimum = 0.1f;
+                    slider.maximum = 2.0f;
+                }
+                else
+                {
+                    slider.minimum = -200.0f;
+                    slider.maximum = 100.0f;
+                    slider.step = 10.0f;
+                    slider.format = "%.0f%%";
+                }
             }
-            return result;
         }
+        return result;
+    }
+
+    const std::vector<std::string>& AdjustmentPaths()
+    {
+        static const auto paths = []
+        {
+            std::vector<std::string> result;
+            for (const auto& entry : SliderSettingCatalog::Entries()) result.push_back(entry.path);
+            for (const auto path : moduleCompressionPaths) result.emplace_back(path);
+            return result;
+        }();
+        return paths;
     }
 
     bool IsAdjustment(const std::string_view a_path)
     {
-        const auto* entry = SliderSettingCatalog::Find(a_path);
-        if (!entry) return false;
-        return !a_path.starts_with("hueScales.") && !a_path.starts_with("lightAmbientHueScales.") &&
-            !a_path.starts_with("pointLights.hueScales.") && !a_path.starts_with("hueRanges.") && !a_path.starts_with("lightHueRanges.");
+        return SliderSettingCatalog::Find(a_path) != nullptr || std::ranges::contains(moduleCompressionPaths, a_path);
     }
     double Neutral(const std::string_view a_path)
     {
         return a_path.starts_with("hueShift.") || a_path.starts_with("lightHueShift.") ||
-            a_path.starts_with("pointLights.hueShift.") || a_path.starts_with("withinWeatherCompression.") ||
-            a_path.starts_with("betweenWeatherCompression.") ? 0.0 : 1.0;
+            a_path.starts_with("pointLights.hueShift.") || std::ranges::contains(moduleCompressionPaths, a_path) ? 0.0 : 1.0;
     }
     double Combine(const std::string_view a_path, const double a_left, const double a_right)
     {
         const auto neutral = Neutral(a_path);
         if (a_left == neutral) return a_right;
         if (a_right == neutral) return a_left;
-        if (a_path.starts_with("withinWeatherCompression.") || a_path.starts_with("betweenWeatherCompression."))
+        if (std::ranges::contains(moduleCompressionPaths, a_path))
             return 100.0 * (1.0 - (1.0 - a_left / 100.0) * (1.0 - a_right / 100.0));
         return Neutral(a_path) == 0.0 ? a_left + a_right : a_left * a_right;
     }
@@ -190,9 +233,14 @@ namespace MPL::SliderStorage
 
     std::vector<Binding> ReadLayout(const std::string_view a_json, std::string& a_error)
     {
-        a_error.clear();
         const auto document = Parse(a_json);
-        auto* pages = document ? Member(yyjson_doc_get_root(document.get()), "pages") : nullptr;
+        return ReadLayout(document ? yyjson_doc_get_root(document.get()) : nullptr, a_error);
+    }
+
+    std::vector<Binding> ReadLayout(yyjson_val* a_root, std::string& a_error)
+    {
+        a_error.clear();
+        auto* pages = Member(a_root, "pages");
         if (!yyjson_is_arr(pages)) { a_error = "The slider layout has no pages."; return {}; }
         std::vector<Binding> bindings;
         std::size_t p, pageCount; yyjson_val* page;
@@ -228,8 +276,8 @@ namespace MPL::SliderStorage
                             a_label.erase(0, separator + 3);
                         }
                     const auto id = SliderIdentity::Make(Text(page, "title"), hierarchy, a_label);
-                    const auto legacyID = controlID + a_suffix;
-                    bindings.push_back({ p, m, id, id, controlID, legacyID, filter,
+                    const auto ruleID = controlID + a_suffix;
+                    bindings.push_back({ p, m, id, id, controlID, ruleID, filter,
                         std::move(a_targets), type == "settings" });
                     bindings.back().neutral = Neutral(bindings.back().targets.front().path);
                 };
@@ -243,13 +291,14 @@ namespace MPL::SliderStorage
                 }
                 else
                 {
-                    for (const auto& [path, label] : ModuleTargets(Text(module, "setting")))
+                    for (const auto& slider : ModuleSliders(Text(module, "setting")))
                     {
+                        const auto& path = slider.setting;
                         if (!filter.empty() && path == "volumetricLightingIntensityMultiplier") continue;
                         const auto* entry = SliderSettingCatalog::Find(path);
                         auto suffix = entry && !entry->target.empty() ? "_" + SliderIdentity::ComparisonKey(entry->target) : "_" + path;
                         if (entry && !entry->hue.empty()) suffix += "_" + entry->hue;
-                        add({ { path, 1.0 } }, label, std::move(suffix));
+                        add({ { path, 1.0 } }, slider.label, std::move(suffix));
                     }
                 }
             }
@@ -273,7 +322,6 @@ namespace MPL::SliderStorage
         auto* root = yyjson_mut_doc_get_root(document.get());
         auto* values = Object(document.get(), root, "sliderValues");
         auto* existing = Member(sourceRoot, "sliderValues");
-        std::unordered_set<std::string> claimed;
         for (const auto& binding : a_bindings)
         {
             if (binding.controlID == "$sliderCreatorPreview")
@@ -283,22 +331,14 @@ namespace MPL::SliderStorage
                 continue;
             }
             auto value = Numeric(Member(existing, binding.valueID));
-            if (!value && binding.valueID != binding.id) value = Numeric(Member(existing, binding.id));
-            if (!value && !binding.legacyMap.empty()) value = Numeric(Member(Member(sourceRoot, binding.legacyMap), binding.legacyID));
-            if (binding.legacyMap.empty())
+            if (binding.ruleValueMap.empty())
             {
                 for (const auto& target : binding.targets)
-                {
-                    const auto old = Numeric(Find(sourceRoot, target.path));
-                    if (!value && old && !claimed.contains(target.path) && std::abs(target.scale) > 0.000001)
-                        value = target.scale == 1.0 ? *old : binding.neutral + (*old - binding.neutral) / target.scale;
-                    claimed.insert(target.path);
                     Remove(root, target.path);
-                }
             }
             if (value || a_defaults) Put(document.get(), values, binding.valueID, value.value_or(binding.neutral));
         }
-        for (const auto map : legacyMaps) yyjson_mut_obj_remove_key(root, map);
+        for (const auto map : runtimeRuleMaps) yyjson_mut_obj_remove_key(root, map);
         if (yyjson_mut_obj_size(values) == 0) yyjson_mut_obj_remove_key(root, "sliderValues");
         return Write(document.get(), a_error);
     }
@@ -311,12 +351,13 @@ namespace MPL::SliderStorage
         Mutable document(yyjson_doc_mut_copy(source.get(), nullptr));
         auto* root = yyjson_mut_doc_get_root(document.get());
         auto* values = Member(sourceRoot, "sliderValues");
+        for (const auto map : runtimeRuleMaps) yyjson_mut_obj_remove_key(root, map);
         std::map<std::string, double> targets;
         for (const auto& binding : a_bindings)
         {
             const auto value = Numeric(Member(values, binding.valueID)).value_or(binding.neutral);
-            if (!binding.legacyMap.empty())
-                Put(document.get(), Object(document.get(), root, binding.legacyMap), binding.legacyID, value);
+            if (!binding.ruleValueMap.empty())
+                Put(document.get(), Object(document.get(), root, binding.ruleValueMap), binding.ruleID, value);
             else for (const auto& target : binding.targets)
             {
                 auto [position, inserted] = targets.try_emplace(target.path, Neutral(target.path));
@@ -338,13 +379,12 @@ namespace MPL::SliderStorage
             combined = std::move(*next);
             const auto document = Parse(profile);
             auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
-            for (const auto& entry : SliderSettingCatalog::Entries())
+            for (const auto& path : AdjustmentPaths())
             {
-                if (!IsAdjustment(entry.path)) continue;
-                if (const auto value = Numeric(Find(root, entry.path)))
+                if (const auto value = Numeric(Find(root, path)))
                 {
-                    auto [position, inserted] = values.try_emplace(entry.path, Neutral(entry.path));
-                    position->second = Combine(entry.path, position->second, *value);
+                    auto [position, inserted] = values.try_emplace(path, Neutral(path));
+                    position->second = Combine(path, position->second, *value);
                 }
             }
         }
@@ -395,7 +435,7 @@ namespace MPL::SliderStorage
         for (const auto& binding : bindings)
             if ((!a_page || binding.page == *a_page) && binding.id != binding.valueID)
             {
-                a_error = std::format("Cannot save: duplicate slider ID '{}'. Rename a slider or its drop box.", binding.id);
+                a_error = DuplicateSliderIDError;
                 return std::nullopt;
             }
         const auto source = Parse(a_json);

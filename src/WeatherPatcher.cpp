@@ -718,6 +718,8 @@ namespace MPL::WeatherPatcher
     template <class Fn>
     void ForEachFieldColor(RE::TESWeather* a_weather, const std::size_t a_field, const std::uint32_t a_time, Fn&& a_fn)
     {
+        if (!a_weather || a_field >= kWeatherBrightnessFieldCount || a_time >= RE::TESWeather::ColorTime::kTotal)
+            return;
         if (a_field == 0)
         {
             ForEachDALCColor(a_weather->directionalAmbientLightingColors[a_time], a_fn);
@@ -1030,8 +1032,7 @@ namespace MPL::WeatherPatcher
         return minimumFloorValue <= 255.0 ? std::max(requestedGain, 1.0 / minimumFloorValue) : requestedGain;
     }
 
-    std::array<double, kBrightnessFieldCount> ApplyBrightness(
-        const SourceWeatherSet& a_weatherSet,
+    std::array<double, kBrightnessFieldCount> ResolveBrightnessGains(
         const BrightnessResolution& a_brightness,
         const AnchorValues& a_anchors)
     {
@@ -1088,7 +1089,15 @@ namespace MPL::WeatherPatcher
         {
             resolveGain(field);
         }
+        return gains;
+    }
 
+    std::array<double, kBrightnessFieldCount> ApplyBrightness(
+        const SourceWeatherSet& a_weatherSet,
+        const BrightnessResolution& a_brightness,
+        const AnchorValues& a_anchors)
+    {
+        const auto gains = ResolveBrightnessGains(a_brightness, a_anchors);
         for (auto* weather : a_weatherSet)
         {
             if (!weather)
@@ -1557,7 +1566,7 @@ namespace MPL::WeatherPatcher
     using ChangedVolumetricLightingSet = std::unordered_set<RE::BGSVolumetricLighting*>;
 
     ChangedVolumetricLightingSet ApplyVolumetricLightingSettings(
-        const SourceWeatherSet& a_weatherSet,
+        const std::span<RE::BGSVolumetricLighting* const> a_records,
         double a_intensityMultiplier,
         double a_brightnessMultiplier,
         const SaturationResolution& a_saturation,
@@ -1566,7 +1575,6 @@ namespace MPL::WeatherPatcher
         const HueRanges& a_hueRanges)
     {
         auto* stat = MPL::Config::StatData::GetSingleton();
-        std::unordered_set<RE::BGSVolumetricLighting*> records;
         ChangedVolumetricLightingSet changed;
         const double intensityMultiplier = std::max(0.0, a_intensityMultiplier);
         const double brightnessMultiplier = std::max(0.1, a_brightnessMultiplier);
@@ -1580,26 +1588,9 @@ namespace MPL::WeatherPatcher
         }
         constexpr double maximum = std::numeric_limits<float>::max();
 
-        for (auto* weather : a_weatherSet)
+        for (auto* volumetricLighting : a_records)
         {
-            if (!weather)
-            {
-                continue;
-            }
-
-            for (std::uint32_t time = 0; time < RE::TESWeather::ColorTime::kTotal; ++time)
-            {
-                auto* volumetricLighting = weather->volumetricLighting[time];
-                if (!volumetricLighting)
-                {
-                    continue;
-                }
-                records.insert(volumetricLighting);
-            }
-        }
-
-        for (auto* volumetricLighting : records)
-        {
+            if (!volumetricLighting) continue;
             bool intensityChanged = false;
             if (intensityActive)
             {
@@ -1797,6 +1788,7 @@ namespace MPL::WeatherPatcher
         GetPresetCatalogs().erase(profileKey);
         GetActivePresetCaches().erase(profileKey);
         GetPresetPreviewCaches().erase(profileKey);
+        TuningUtil::InvalidatePreparedProfileStack(profileKey);
     }
 
     std::optional<Settings> LoadSettings(std::string& a_sourceFile)
@@ -1955,6 +1947,7 @@ namespace MPL::WeatherPatcher
         GetPresetCatalogs().clear();
         GetActivePresetCaches().clear();
         GetPresetPreviewCaches().clear();
+        TuningUtil::InvalidatePreparedProfileStack({});
     }
 
     void DiscardPresetCatalogChanges(std::string& a_profileName)
@@ -2334,7 +2327,8 @@ namespace MPL::WeatherPatcher
         const Settings& a_settings,
         const SourceWeatherSet& a_weatherSet,
         const AnchorValues& a_anchors,
-        const std::span<const std::string> a_profiles)
+        const std::span<const std::string> a_profiles,
+        const ChangedVolumetricLightingSet& a_changedVolumetricLighting)
     {
         std::size_t patched = 0;
         const auto brightness = ResolveBrightnessWithLinks(a_settings.brightnessMultiplier, a_settings.links.weather);
@@ -2426,23 +2420,6 @@ namespace MPL::WeatherPatcher
             brightnessGains = ApplyBrightness(a_weatherSet, brightness, a_anchors);
         }
 
-        const auto changedVolumetricLighting = ApplyVolumetricLightingSettings(
-            a_weatherSet,
-            a_settings.volumetricLightingIntensityMultiplier,
-            brightnessGains[kVolumetricLightingBrightnessField],
-            saturation,
-            hueScales,
-            hueShift,
-            a_settings.hueRanges);
-        if (!changedVolumetricLighting.empty())
-        {
-            DetailedLogging::Info(
-                "[Weather] VOLI | intensity={:.4f}x | brightness={:.4f}x | targets={}",
-                std::max(0.0, a_settings.volumetricLightingIntensityMultiplier),
-                brightnessGains[kVolumetricLightingBrightnessField],
-                changedVolumetricLighting.size());
-        }
-
         const auto ambientWithinCompressionStatus = BuildCompressionStatus(
             ambientWithinGaugeSource,
             withinWeatherCompression.values.ambientCompression,
@@ -2488,7 +2465,7 @@ namespace MPL::WeatherPatcher
             DynamicBrightnessField::sunlight,
             sunlightBetweenCompressionStatus);
 
-        if (!weatherColorActive && changedVolumetricLighting.empty())
+        if (!weatherColorActive && a_changedVolumetricLighting.empty())
         {
             return 0;
         }
@@ -2500,7 +2477,7 @@ namespace MPL::WeatherPatcher
                 continue;
             }
 
-            const bool volumetricLightingChanged = ReferencesChangedVolumetricLighting(weather, changedVolumetricLighting);
+            const bool volumetricLightingChanged = ReferencesChangedVolumetricLighting(weather, a_changedVolumetricLighting);
             if (!weatherColorActive && !volumetricLightingChanged)
             {
                 continue;
@@ -2606,6 +2583,11 @@ namespace MPL::WeatherPatcher
 
         double maximumValue = 0.0;
         double minimumFloorValue = 256.0;
+        const auto inspectValue = [&](const double a_value)
+        {
+            maximumValue = std::max(maximumValue, a_value);
+            if (a_value >= 10.0) minimumFloorValue = std::min(minimumFloorValue, a_value);
+        };
         for (auto* weather : a_weatherSet)
         {
             if (!weather)
@@ -2618,12 +2600,19 @@ namespace MPL::WeatherPatcher
                 {
                     continue;
                 }
-                ForEachFieldColor(weather, a_field, time, [&](const RE::Color& a_color)
+                if (a_field == kVolumetricLightingBrightnessField)
                 {
-                    const double value = HSVValue(a_color);
-                    maximumValue = std::max(maximumValue, value);
-                    if (value >= 10.0) minimumFloorValue = std::min(minimumFloorValue, value);
-                });
+                    if (const auto* volumetricLighting = weather->volumetricLighting[time])
+                    {
+                        const auto& color = volumetricLighting->color;
+                        inspectValue(255.0 * std::max({ color.red, color.green, color.blue }));
+                    }
+                }
+                else
+                {
+                    ForEachFieldColor(weather, a_field, time, [&](const RE::Color& a_color)
+                        { inspectValue(HSVValue(a_color)); });
+                }
             }
         }
         if (maximumValue <= 0.0)
@@ -2951,6 +2940,8 @@ namespace MPL::WeatherPatcher
             if (!volumetricLighting || !adjustment.Active()) continue;
             stat->volumetricLightingColorBaselines.try_emplace(volumetricLighting, volumetricLighting->color);
             auto adjustedColor = volumetricLighting->color;
+            if (std::abs(adjustment.brightness - 1.0) > 0.0001)
+                MultiplyBrightnessColor(adjustedColor, adjustment.brightness);
             if (!adjustment.saturation.empty())
             {
                 double multiplier = 1.0;
@@ -2978,15 +2969,48 @@ namespace MPL::WeatherPatcher
         return patched + volumetricPatched.size();
     }
 
+    struct ActiveWeatherProfile
+    {
+        std::string name;
+        Settings settings;
+        std::unordered_set<RE::TESWeather*> targets;
+    };
+
+    struct VolumetricLightingStack
+    {
+        std::vector<std::string> profiles;
+        std::vector<RE::BGSVolumetricLighting*> records;
+    };
+
+    std::vector<VolumetricLightingStack> BuildVolumetricLightingStacks(
+        const std::span<const ActiveWeatherProfile> a_profiles)
+    {
+        std::unordered_map<RE::BGSVolumetricLighting*, std::vector<std::string>> recordProfiles;
+        for (const auto& profile : a_profiles)
+        {
+            std::unordered_set<RE::BGSVolumetricLighting*> records;
+            for (const auto* weather : profile.targets)
+                if (weather)
+                    for (auto* record : weather->volumetricLighting)
+                        if (record) records.insert(record);
+            for (auto* record : records) recordProfiles[record].push_back(profile.name);
+        }
+
+        std::vector<VolumetricLightingStack> result;
+        std::unordered_map<std::string, std::size_t> indexes;
+        for (auto& [record, profiles] : recordProfiles)
+        {
+            std::string signature;
+            for (const auto& profile : profiles) signature.append(LowercaseKey(profile)).push_back('\x1F');
+            const auto [entry, inserted] = indexes.try_emplace(signature, result.size());
+            if (inserted) result.push_back({ std::move(profiles), {} });
+            result[entry->second].records.push_back(record);
+        }
+        return result;
+    }
+
     void ApplyAllSettings()
     {
-        struct ActiveProfile
-        {
-            std::string name;
-            Settings settings;
-            std::unordered_set<RE::TESWeather*> targets;
-        };
-
         struct WeatherStack
         {
             std::vector<std::string> profiles;
@@ -3011,7 +3035,7 @@ namespace MPL::WeatherPatcher
 
         std::size_t configsApplied = 0;
         std::size_t weathersApplied = 0;
-        std::vector<ActiveProfile> profiles;
+        std::vector<ActiveWeatherProfile> profiles;
         std::vector<ActiveFilteredWeatherProfile> filteredProfiles;
         const auto weatherOwners = ResolveWeatherOwners(weatherSets);
 
@@ -3136,6 +3160,24 @@ namespace MPL::WeatherPatcher
             stacks[entry->second].weathers.push_back(weather);
         }
 
+        ChangedVolumetricLightingSet changedVolumetricLighting;
+        for (const auto& stack : BuildVolumetricLightingStacks(profiles))
+        {
+            const auto settings = TuningUtil::ResolveSettingsStack(stack.profiles);
+            const auto anchors = ResolveAnchors(settings.compressionAnchor, settings.links.weather,
+                TuningUtil::ResolveCompressionAnchors(stack.profiles));
+            const auto gains = ResolveBrightnessGains(
+                ResolveBrightnessWithLinks(settings.brightnessMultiplier, settings.links.weather), anchors);
+            const auto changed = ApplyVolumetricLightingSettings(stack.records,
+                settings.volumetricLightingIntensityMultiplier, gains[kVolumetricLightingBrightnessField],
+                ResolveSaturation(settings.saturationMultiplier, settings.links.weather),
+                ResolveHueScales(settings.hueScales), ResolveHueShift(settings.hueShift, settings.links.weather),
+                settings.hueRanges);
+            changedVolumetricLighting.insert(changed.begin(), changed.end());
+        }
+        if (!changedVolumetricLighting.empty())
+            DetailedLogging::Info("[Weather] VOLI | targets={}", changedVolumetricLighting.size());
+
         for (auto& stack : stacks)
         {
             auto settings = TuningUtil::ResolveSettingsStack(stack.profiles);
@@ -3148,7 +3190,8 @@ namespace MPL::WeatherPatcher
                 settings,
                 stack.weathers,
                 profileAnchors,
-                stack.profiles);
+                stack.profiles,
+                changedVolumetricLighting);
             weathersApplied += profileWeathersApplied;
 
             ++configsApplied;
@@ -3197,9 +3240,7 @@ namespace MPL::WeatherPatcher
         emittanceWeatherSettingsWereApplied = false;
         ResetWeatherResolutionCache();
         GetDynamicBrightnessStatuses().clear();
-        GetPresetCatalogs() = {};
-        GetActivePresetCaches() = {};
-        GetPresetPreviewCaches() = {};
+        InvalidatePresetCache();
 
         auto* stat = Config::StatData::GetSingleton();
         stat->weatherBaselines = {};
@@ -3441,7 +3482,6 @@ namespace MPL::WeatherPatcher
                 a_error = std::format("The preset catalog could not be inspected: {}", fileError.message());
                 return nullptr;
             }
-            logger::warn("[Preset] catalog missing | profile={} | path={}", profileName, path.string());
             return std::addressof(catalogs.emplace(cacheKey, PresetCatalog::Catalog{}).first->second);
         }
 
@@ -3460,11 +3500,6 @@ namespace MPL::WeatherPatcher
                         if (!stored) return nullptr;
                         preset.settings = *stored;
                     }
-        DetailedLogging::Info(
-            "[Preset] catalog | profile={} | categories={} | path={}",
-            profileName,
-            catalog->categories.size(),
-            path.string());
         return std::addressof(catalogs.emplace(cacheKey, std::move(*catalog)).first->second);
     }
 
@@ -3524,7 +3559,6 @@ namespace MPL::WeatherPatcher
         std::vector<std::string> presets;
         presets.reserve(actualCategory->presets.size());
         for (const auto& preset : actualCategory->presets) presets.push_back(preset.name);
-        DetailedLogging::Info("[Preset] cache | profile={} | category={} | presets={}", profileName, *category, presets.size());
         return presets;
     }
 
@@ -3650,11 +3684,13 @@ namespace MPL::WeatherPatcher
             remap(preview->second.changedSettings);
             for (auto& [category, schema] : preview->second.resetSettingSchemas) remap(schema);
         }
+        TuningUtil::InvalidatePreparedProfileStack(a_profile);
     }
 
     void DiscardPresetPreview(std::string& a_profileName)
     {
-        GetPresetPreviewCaches().erase(LowercaseKey(ProfileNameFromKey(a_profileName)));
+        const auto key = LowercaseKey(ProfileNameFromKey(a_profileName));
+        if (GetPresetPreviewCaches().erase(key)) TuningUtil::InvalidatePreparedProfileStack(key);
     }
 
     static bool RebuildPresetPreview(
@@ -3774,7 +3810,7 @@ namespace MPL::WeatherPatcher
         const auto profileKey = LowercaseKey(ProfileNameFromKey(a_profileName));
         GetActivePresetCaches().erase(profileKey);
         GetPresetPreviewCaches().erase(profileKey);
-        logger::info("[Preset] {} | category={} | profile={} | status=staged", *presetName, *category, a_profileName);
+        TuningUtil::InvalidatePreparedProfileStack(profileKey);
         return true;
     }
 
@@ -3845,12 +3881,6 @@ namespace MPL::WeatherPatcher
         {
             return false;
         }
-        logger::info(
-            "[Preset] move | category={} | preset={} | direction={} | profile={}",
-            actualCategory->name,
-            *presetName,
-            a_direction,
-            profileName);
         return true;
     }
 
@@ -3917,19 +3947,13 @@ namespace MPL::WeatherPatcher
         if (selected != selections.end())
         {
             selected->second = *newName;
-            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, "{}", a_error))
+            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, "{}", a_error, "preset-rename"))
             {
                 std::string rollbackError;
                 (void)WritePresetCatalog(a_profileName, originalCatalog, rollbackError);
                 return false;
             }
         }
-        logger::info(
-            "[Preset] rename | category={} | from={} | to={} | profile={}",
-            actualCategoryName,
-            actualPresetName,
-            *newName,
-            profileName);
         return true;
     }
 
@@ -3986,18 +4010,13 @@ namespace MPL::WeatherPatcher
             const auto preset = selected->second;
             selections.erase(selected);
             selections.insert_or_assign(*newName, preset);
-            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, "{}", a_error))
+            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, "{}", a_error, "preset-category-rename"))
             {
                 std::string rollbackError;
                 (void)WritePresetCatalog(a_profileName, originalCatalog, rollbackError);
                 return false;
             }
         }
-        logger::info(
-            "[Preset] category rename | from={} | to={} | profile={}",
-            actualCategoryName,
-            *newName,
-            profileName);
         return true;
     }
 
@@ -4067,14 +4086,15 @@ namespace MPL::WeatherPatcher
         }
         preview.changedCategories.insert(categoryKey);
         if (!RebuildPresetPreview(a_profileName, preview, a_error) ||
-            !TuningUtil::ApplyPresetPreview(a_profileName, preview.settings, preview.changedSettings, a_error))
+            !TuningUtil::ApplyPresetPreview(a_profileName, preview.settings, preview.changedSettings, a_error,
+                std::format("preset-preview | category={} | preset={}", *category, *selected)))
         {
             if (a_error.empty()) a_error = "The preset preview could not be applied.";
             return false;
         }
 
         GetPresetPreviewCaches().insert_or_assign(cacheKey, std::move(preview));
-        DetailedLogging::Info("[Preset] preview | profile={} | category={} | preset={}", a_profileName, *category, *selected);
+        TuningUtil::InvalidatePreparedProfileStack(cacheKey);
         return true;
     }
 
@@ -4137,17 +4157,15 @@ namespace MPL::WeatherPatcher
         }
         preview.changedCategories.insert(categoryKey);
         if (!RebuildPresetPreview(a_profileName, preview, a_error) ||
-            !TuningUtil::ApplyPresetPreview(a_profileName, preview.settings, preview.changedSettings, a_error))
+            !TuningUtil::ApplyPresetPreview(a_profileName, preview.settings, preview.changedSettings, a_error,
+                std::format("preset-default-preview | category={}", *actualCategory)))
         {
             if (a_error.empty()) a_error = "The preset defaults could not be previewed.";
             return false;
         }
 
         GetPresetPreviewCaches().insert_or_assign(cacheKey, std::move(preview));
-        DetailedLogging::Info(
-            "[Preset] preview | profile={} | category={} | preset=default",
-            a_profileName,
-            *actualCategory);
+        TuningUtil::InvalidatePreparedProfileStack(cacheKey);
         return true;
     }
 
@@ -4158,7 +4176,6 @@ namespace MPL::WeatherPatcher
         const auto preview = GetPresetPreviewCaches().find(cacheKey);
         if (preview == GetPresetPreviewCaches().end() || preview->second.changedCategories.empty())
         {
-            DetailedLogging::Info("[Preset] selections | profile={} | status=unchanged", a_profileName);
             return true;
         }
 
@@ -4167,19 +4184,18 @@ namespace MPL::WeatherPatcher
         {
             selections.insert_or_assign(selected.category, selected.name);
         }
-        const auto changedCategoryCount = preview->second.changedCategories.size();
         const auto changedSettings = preview->second.changedSettings;
         if (!TuningUtil::SavePresetSelectionSnapshot(
                 a_profileName,
                 selections,
                 changedSettings,
-                a_error))
+                a_error,
+                "preset-selections-save"))
         {
             if (a_error.empty()) a_error = "Preset settings could not be saved to user settings.";
             return false;
         }
 
-        logger::info("[Preset] selections | profile={} | saved={}", a_profileName, changedCategoryCount);
         return true;
     }
 
@@ -4308,7 +4324,7 @@ namespace MPL::WeatherPatcher
 
         if (selectionChanged)
         {
-            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, *reset, a_error))
+            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, selections, *reset, a_error, "preset-remove"))
             {
                 std::string rollbackError;
                 (void)WritePresetCatalog(a_profileName, originalCatalog, rollbackError);
@@ -4316,11 +4332,6 @@ namespace MPL::WeatherPatcher
                 return false;
             }
         }
-        logger::info(
-            "[Preset] remove | categories={} | presets={} | profile={}",
-            a_categories.size(),
-            a_presets.size(),
-            profileName);
         return true;
     }
 

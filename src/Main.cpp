@@ -59,10 +59,6 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     {
         MPL::WeatherLock::InstallHooks();
     }
-    else
-    {
-        logger::info("[Weather Lock] hooks=skipped | tuningMenu=false");
-    }
     SKSE::GetMessagingInterface()->RegisterListener(OnSKSEMessage);
     MPL::LumaClient::SetRuntimeReady(true);
     return true;

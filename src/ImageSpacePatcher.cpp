@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <ranges>
 #include <unordered_map>
@@ -24,6 +25,7 @@ namespace MPL::ImageSpacePatcher
         {
             bool initialized = false;
             ImageSpaceSet imageSpaces;
+            ImageSpaceSet appliedTargets;
         };
 
         struct RuntimeMonitorCache
@@ -118,10 +120,14 @@ namespace MPL::ImageSpacePatcher
 
             const auto apply = [](float& a_value, const double a_multiplier)
             {
+                if (!std::isfinite(a_value) || std::isnan(a_multiplier)) return;
                 const auto multiplier = std::max(0.0, a_multiplier);
                 if (std::abs(multiplier - 1.0) > 0.0001)
                 {
-                    a_value *= static_cast<float>(multiplier);
+                    const auto adjusted = static_cast<double>(a_value) * multiplier;
+                    constexpr double maximum = std::numeric_limits<float>::max();
+                    if (!std::isnan(adjusted))
+                        a_value = static_cast<float>(std::clamp(adjusted, -maximum, maximum));
                 }
             };
             apply(a_imageSpace->data.cinematic.saturation, a_settings.saturationMultiplier);
@@ -153,7 +159,8 @@ namespace MPL::ImageSpacePatcher
 
             const auto* extra = cell->extraList.GetByType<RE::ExtraCellImageSpace>();
             auto* imageSpace = extra ? extra->imageSpace : nullptr;
-            if (!imageSpace || !a_settings.contains(imageSpace))
+            if (!imageSpace || (!a_settings.contains(imageSpace) &&
+                !GetLightingImageSpaceCache().appliedTargets.contains(imageSpace)))
             {
                 return;
             }
@@ -239,9 +246,7 @@ namespace MPL::ImageSpacePatcher
                 continue;
             }
             const auto baseline = stat->imageSpaceBaselines.try_emplace(imageSpace, imageSpace->data).first;
-            const auto white = imageSpace->data.hdr.white;
-            imageSpace->data = baseline->second;
-            imageSpace->data.hdr.white = white;
+            CopyAdjustedFields(imageSpace->data, baseline->second);
         }
 
         const auto& lightImageSpaces = GetLightingImageSpaces();
@@ -399,6 +404,10 @@ namespace MPL::ImageSpacePatcher
         applySettings(lightingSettings);
         applySettings(exteriorSettings);
         SynchronizeCurrentLightingImageSpace(lightingSettings);
+        auto& appliedLightingTargets = GetLightingImageSpaceCache().appliedTargets;
+        appliedLightingTargets.clear();
+        for (const auto& [imageSpace, settings] : lightingSettings)
+            appliedLightingTargets.insert(imageSpace);
 
         CSTonemapping::SetForcedTargets(explicitWhiteTargets);
 

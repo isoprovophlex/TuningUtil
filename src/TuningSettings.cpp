@@ -28,11 +28,6 @@ namespace MPL::TuningSettings
             tuningMenuConfigured = menuEnabled;
         }
         DetailedLogging::SetEnabled(detailedLogging);
-        logger::info(
-            "[TuningUtil] settings | tuningMenu={} | detailedLogging={} | startupOnly={}",
-            menuEnabled,
-            detailedLogging,
-            !menuEnabled);
     }
 
     bool IsTuningMenuEnabledForSession()
