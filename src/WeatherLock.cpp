@@ -102,7 +102,6 @@ namespace MPL::WeatherLock
                 return 0;
             }
 
-            SKSE::AllocTrampoline(a_sites.size() * 14);
             auto& trampoline = SKSE::GetTrampoline();
             for (const auto& site : a_sites)
             {
@@ -125,6 +124,11 @@ namespace MPL::WeatherLock
         const REL::Relocation<std::uintptr_t> forceWeatherTarget{ REL::RelocationID(25696, 26243) };
         const auto setWeatherSites = FindDirectReferences(setWeatherTarget.address());
         const auto forceWeatherSites = FindDirectReferences(forceWeatherTarget.address());
+        const auto hookCount = setWeatherSites.size() + forceWeatherSites.size();
+        if (hookCount != 0)
+        {
+            SKSE::AllocTrampoline(hookCount * 14);
+        }
         const auto setWeatherHooks = InstallCallSiteHooks(setWeatherSites, SetWeatherThunk);
         InstallCallSiteHooks(forceWeatherSites, ForceWeatherThunk);
         if (setWeatherHooks == 0)

@@ -233,9 +233,14 @@ namespace MPL::SliderStorage
 
     std::vector<Binding> ReadLayout(const std::string_view a_json, std::string& a_error)
     {
-        a_error.clear();
         const auto document = Parse(a_json);
-        auto* pages = document ? Member(yyjson_doc_get_root(document.get()), "pages") : nullptr;
+        return ReadLayout(document ? yyjson_doc_get_root(document.get()) : nullptr, a_error);
+    }
+
+    std::vector<Binding> ReadLayout(yyjson_val* a_root, std::string& a_error)
+    {
+        a_error.clear();
+        auto* pages = Member(a_root, "pages");
         if (!yyjson_is_arr(pages)) { a_error = "The slider layout has no pages."; return {}; }
         std::vector<Binding> bindings;
         std::size_t p, pageCount; yyjson_val* page;

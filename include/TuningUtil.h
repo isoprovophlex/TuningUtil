@@ -6,6 +6,7 @@
 #include <SliderStorage.h>
 #include <SettingsUpdate.h>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <source_location>
 
@@ -167,6 +168,7 @@ namespace MPL::TuningUtil
         std::map<std::string, LightingPatcher::LightingLinks, std::less<>> customLightingSliderLinks;
         std::vector<std::string> lightingMenuSettings;
         std::vector<std::string> weatherMenuSettings;
+        bool hasMenuLayout = false;
     };
 
     void ApplyDataLoaded();
@@ -178,6 +180,7 @@ namespace MPL::TuningUtil
     void CommitLightPlacerSettings(std::string_view a_trigger,
         std::source_location a_source = std::source_location::current());
     std::uint64_t GetSettingsRevision();
+    std::uint64_t GetSliderBindingsRevision();
     void InvalidateDiscoveryCaches();
     const std::vector<Profile>& GetProfiles();
     bool IsProfilePluginFiltered(const std::filesystem::path&);
@@ -202,7 +205,8 @@ namespace MPL::TuningUtil
     std::map<std::string, LightingPatcher::LightingLinks, std::less<>> ResolveLightingSliderLinkOverrides(
         std::span<const std::string>,
         std::string_view);
-    bool ReloadFilteredRules(bool a_force = false);
+    using ProfileLayoutValidator = std::function<bool(const Profile&, std::string_view)>;
+    bool ReloadFilteredRules(bool a_force = false, const ProfileLayoutValidator& a_validate = {});
     bool SetSliderCreatorPreview(
         std::string&,
         std::string_view,
@@ -213,6 +217,7 @@ namespace MPL::TuningUtil
         SettingsUpdate::Targets&);
     Settings& GetSettings(std::string&);
     Settings ResolveSettingsStack(std::span<const std::string>);
+    void InvalidatePreparedProfileStack(std::string_view a_profile = {});
     WeatherPatcher::WeatherCompressionAnchors ResolveCompressionAnchors(std::span<const std::string>);
     std::optional<std::string> SerializePresetSettings(std::string&, std::string&);
     std::optional<std::string> ResolvePresetResetSettings(

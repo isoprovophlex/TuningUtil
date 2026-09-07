@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+struct yyjson_val;
+
 namespace MPL::SliderStorage
 {
     inline constexpr std::string_view DuplicateSliderIDError =
@@ -51,6 +53,7 @@ namespace MPL::SliderStorage
     double Combine(std::string_view, double, double);
     double Scaled(std::string_view, double, double);
     std::vector<Binding> ReadLayout(std::string_view, std::string&);
+    std::vector<Binding> ReadLayout(yyjson_val*, std::string&);
     std::optional<std::string> Store(std::string_view, std::span<const Binding>, bool, std::string&);
     std::optional<std::string> Materialize(std::string_view, std::span<const Binding>, std::string&);
     std::optional<std::string> Stack(std::span<const std::string>, std::string&);

@@ -4,6 +4,7 @@
 #include <SliderStorage.h>
 #include <SliderStorageFiles.h>
 #include <PresetCatalog.h>
+#include <FileIO.h>
 
 #include <algorithm>
 #include <array>
@@ -877,6 +878,7 @@ namespace MPL::SliderCreator
             std::ifstream file(a_path, std::ios::binary);
             if (!file) return std::nullopt;
             std::string text(std::istreambuf_iterator<char>(file), {});
+            if (file.bad()) return std::nullopt;
             constexpr std::string_view bom = "\xEF\xBB\xBF";
             if (text.starts_with(bom)) text.erase(0, bom.size());
             return text;
@@ -907,12 +909,12 @@ namespace MPL::SliderCreator
                 const auto length = source.gcount();
                 if (length > 0) destination.write(buffer.data(), length);
             }
+            destination.close();
             if (!source.eof())
             {
                 a_error = std::format("The source profile file {} could not be read.", a_source.string());
                 return false;
             }
-            destination.flush();
             if (!destination)
             {
                 a_error = std::format("The copied profile file {} could not be written.", a_destination.string());
@@ -996,31 +998,7 @@ namespace MPL::SliderCreator
                 output = *draft;
             }
 
-            auto temporaryPath = a_path;
-            temporaryPath += ".tmp";
-            {
-                std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
-                file << output << '\n';
-                if (!file)
-                {
-                    file.close();
-                    std::error_code removeError;
-                    std::filesystem::remove(temporaryPath, removeError);
-                    a_error = "The temporary JSON file could not be written.";
-                    return false;
-                }
-            }
-            if (::MoveFileExW(
-                    temporaryPath.c_str(),
-                    a_path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-                return true;
-
-            const std::error_code moveError(static_cast<int>(::GetLastError()), std::system_category());
-            std::error_code removeError;
-            std::filesystem::remove(temporaryPath, removeError);
-            a_error = std::format("The JSON file could not be replaced: {}", moveError.message());
-            return false;
+            return FileIO::WriteAtomically(a_path, output + '\n', a_error);
         }
 
         bool ReplaceRootStringMember(
@@ -1436,6 +1414,7 @@ namespace MPL::SliderCreator
         {
             std::ofstream menuFile(profileDirectory / "skseMenu.json", std::ios::binary | std::ios::trunc);
             menuFile.write(menuText->data(), static_cast<std::streamsize>(menuText->size()));
+            menuFile.close();
             if (!menuFile)
             {
                 menuFile.close();
@@ -1460,6 +1439,7 @@ namespace MPL::SliderCreator
             settingsFile << std::format(
                 "{{\n  \"profile\": \"{}\",\n  \"EnableProfile\": true\n}}\n",
                 profileName);
+            settingsFile.close();
             if (!settingsFile)
             {
                 settingsFile.close();

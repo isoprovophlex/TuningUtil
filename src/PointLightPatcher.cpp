@@ -1325,6 +1325,26 @@ namespace MPL::PointLightPatcher
                        .starts_with(kLightPlacerNodePrefix);
         }
 
+        bool HasLightPlacerColorTuning(const AppliedState& a_state)
+        {
+            const auto hasColorTuning = [](const Settings& a_settings)
+            {
+                const Settings defaults{};
+                return a_settings.saturationMultiplier != defaults.saturationMultiplier ||
+                       a_settings.hueShift != defaults.hueShift;
+            };
+            return hasColorTuning(a_state.settings) ||
+                   std::ranges::any_of(a_state.baseLightSettings,
+                       [&](const auto& a_entry) { return hasColorTuning(a_entry.second); });
+        }
+
+        bool NeedsDirectLightPlacerRefresh()
+        {
+            return kUseDirectLightPlacerNiLights && directLightPlacerState &&
+                   (HasLightPlacerColorTuning(*directLightPlacerState) ||
+                       !lightPlacerRuntimeBaselines.empty());
+        }
+
         bool TuneLightPlacerNode(
             RE::NiPointLight* a_light,
             const AppliedState& a_state)
@@ -1381,8 +1401,7 @@ namespace MPL::PointLightPatcher
             {
                 *a_result = {};
             }
-            if (!kUseDirectLightPlacerNiLights ||
-                !directLightPlacerState)
+            if (!NeedsDirectLightPlacerRefresh())
             {
                 return 0;
             }
@@ -1439,6 +1458,10 @@ namespace MPL::PointLightPatcher
                 {
                     return !seen.contains(a_entry.first);
                 });
+            if (!HasLightPlacerColorTuning(state))
+            {
+                lightPlacerRuntimeBaselines.clear();
+            }
             if (a_result)
             {
                 *a_result = {
@@ -1530,7 +1553,7 @@ namespace MPL::PointLightPatcher
 
         void QueuePostReloadDirectLightPlacerRefresh()
         {
-            if (!kUseDirectLightPlacerNiLights)
+            if (!NeedsDirectLightPlacerRefresh())
             {
                 return;
             }
@@ -1545,7 +1568,7 @@ namespace MPL::PointLightPatcher
 
         void QueueDirectLightPlacerRefresh()
         {
-            if (!kUseDirectLightPlacerNiLights)
+            if (!NeedsDirectLightPlacerRefresh())
             {
                 return;
             }
@@ -1747,8 +1770,11 @@ namespace MPL::PointLightPatcher
                 {
                     continue;
                 }
-                if (HasReferenceAdjustment(reference, a_state)) ++filtered;
-                else ++brightness;
+                if (logResult)
+                {
+                    if (HasReferenceAdjustment(reference, a_state)) ++filtered;
+                    else ++brightness;
+                }
             }
             if (logResult)
                 DetailedLogging::Info(
@@ -1921,7 +1947,7 @@ namespace MPL::PointLightPatcher
                     result.refreshed += runtimeProcessed ? 1 : 0;
                     if (logResult) result.counts.Record(fadeProcessed || runtimeProcessed,
                         before != CaptureLightSnapshot(a_reference));
-                    if (a_reference->Is3DLoaded())
+                    if (logResult && a_reference->Is3DLoaded())
                     {
                         if (HasReferenceAdjustment(a_reference, a_state)) ++result.filtered;
                         else ++result.brightness;
@@ -2126,8 +2152,8 @@ namespace MPL::PointLightPatcher
     void ResetCellTracking()
     {
         currentCell.store(0, std::memory_order_release);
-        ++referenceReconciliationGeneration;
         std::scoped_lock lock(referenceReconciliationLock);
+        ++referenceReconciliationGeneration;
         pendingReferenceReconciliations.clear();
         referenceReconciliationQueued = false;
     }
@@ -2135,10 +2161,8 @@ namespace MPL::PointLightPatcher
     void ReleaseRuntimeState()
     {
         ResetCellTracking();
-        appliedState.reset();
+        // Loaded references still need resolved settings and original fade baselines.
         lightPlacerState.reset();
-        referenceFadeBaselines.clear();
-        referenceRuntimeFadeBaselines.clear();
         if (!brokerReloadPending.load(std::memory_order_acquire))
         {
             std::scoped_lock lock(brokerStateLock);
@@ -2154,10 +2178,10 @@ namespace MPL::PointLightPatcher
             return;
         }
 
-        const auto generation =
-            referenceReconciliationGeneration.load(std::memory_order_acquire);
+        std::uint64_t generation;
         {
             std::scoped_lock lock(referenceReconciliationLock);
+            generation = referenceReconciliationGeneration.load(std::memory_order_relaxed);
             pendingReferenceReconciliations.insert(a_reference->GetFormID());
             if (referenceReconciliationQueued)
             {

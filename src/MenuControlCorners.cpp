@@ -81,62 +81,98 @@ namespace MPL::MenuControlCorners
             a_buffer.Size = size;
         }
 
-        bool ClipDrawList(ImGuiMCP::ImDrawList* a_list, const std::vector<const Frame*>& a_frames)
+        bool ClipDrawList(ImGuiMCP::ImDrawList* a_list, const std::vector<const Frame*>& a_frames,
+            const bool a_preserveVertices = true)
         {
             assert(a_list->_Splitter._Count <= 1);
             if (a_list->_Splitter._Count > 1 || a_list->CmdBuffer.Size == 0) return false;
             static std::vector<ImGuiMCP::ImDrawVert> vertices;
             static std::vector<ImGuiMCP::ImDrawIdx> indices;
             static std::vector<ImGuiMCP::ImDrawCmd> commands;
-            vertices.clear();
+            if (a_preserveVertices)
+                vertices.assign(a_list->VtxBuffer.Data, a_list->VtxBuffer.Data + a_list->VtxBuffer.Size);
+            else
+                vertices.clear();
             indices.clear();
             commands.clear();
-            vertices.reserve(static_cast<std::size_t>(a_list->IdxBuffer.Size));
             indices.reserve(static_cast<std::size_t>(a_list->IdxBuffer.Size));
             const auto supportsOffsets = (a_list->Flags & ImGuiMCP::ImDrawListFlags_AllowVtxOffset) != 0;
 
             for (int commandIndex = 0; commandIndex < a_list->CmdBuffer.Size; ++commandIndex)
             {
                 const auto original = a_list->CmdBuffer.Data[commandIndex];
-                const auto beginCommand = [&]()
+                const auto beginCommand = [&](const unsigned int a_vertexOffset)
                 {
                     auto command = original;
                     command.IdxOffset = static_cast<unsigned int>(indices.size());
-                    command.VtxOffset = supportsOffsets ? static_cast<unsigned int>(vertices.size()) : 0;
+                    command.VtxOffset = a_vertexOffset;
                     command.ElemCount = 0;
                     commands.push_back(command);
                 };
-                beginCommand();
+                beginCommand(a_preserveVertices ? original.VtxOffset :
+                    supportsOffsets ? static_cast<unsigned int>(vertices.size()) : 0);
                 if (original.UserCallback) continue;
                 assert(original.ElemCount % 3 == 0);
+                if (original.ElemCount % 3 != 0 ||
+                    original.IdxOffset > static_cast<unsigned int>(a_list->IdxBuffer.Size) ||
+                    original.ElemCount > static_cast<unsigned int>(a_list->IdxBuffer.Size) - original.IdxOffset)
+                    return false;
                 for (unsigned int element = 0; element < original.ElemCount; element += 3)
                 {
                     std::array<unsigned int, 3> sourceIndices{};
-                    Geometry::Polygon polygon;
-                    polygon.count = 3;
                     for (unsigned int corner = 0; corner < 3; ++corner)
                     {
                         const auto source = original.VtxOffset +
                                             a_list->IdxBuffer.Data[original.IdxOffset + element + corner];
+                        if (source >= static_cast<unsigned int>(a_list->VtxBuffer.Size)) return false;
                         sourceIndices[corner] = source;
-                        polygon.vertices[corner] = ReadVertex(a_list->VtxBuffer.Data[source]);
                     }
-                    for (const auto* frame : a_frames)
+                    const auto [firstVertex, lastVertex] = std::ranges::minmax(sourceIndices);
+                    auto candidate = std::ranges::upper_bound(a_frames, firstVertex, {},
+                        [](const Frame* a_frame) { return static_cast<unsigned int>(a_frame->vertexBegin); });
+                    const auto* frame = candidate != a_frames.begin() ? *std::prev(candidate) : nullptr;
+                    if (frame && lastVertex >= static_cast<unsigned int>(frame->vertexEnd)) frame = nullptr;
+
+                    Geometry::Polygon polygon;
+                    auto unchanged = true;
+                    if (frame)
                     {
-                        if (!std::ranges::all_of(sourceIndices, [&](const auto a_index)
-                                { return a_index >= static_cast<unsigned int>(frame->vertexBegin) &&
-                                         a_index < static_cast<unsigned int>(frame->vertexEnd); }))
-                            continue;
+                        polygon.count = 3;
+                        for (std::size_t corner = 0; corner < 3; ++corner)
+                            polygon.vertices[corner] = ReadVertex(a_list->VtxBuffer.Data[sourceIndices[corner]]);
                         if (frame->left) polygon = Geometry::ClipCorner(polygon, frame->bounds, frame->drop, true);
                         if (frame->right) polygon = Geometry::ClipCorner(polygon, frame->bounds, frame->drop, false);
+                        unchanged = polygon.count == 3;
+                        for (std::size_t corner = 0; unchanged && corner < 3; ++corner)
+                        {
+                            const auto& before = a_list->VtxBuffer.Data[sourceIndices[corner]];
+                            const auto& after = polygon.vertices[corner];
+                            unchanged = before.pos.x == after.position.x && before.pos.y == after.position.y &&
+                                        before.uv.x == after.uv.x && before.uv.y == after.uv.y && before.col == after.color;
+                        }
+                    }
+                    if (unchanged && a_preserveVertices)
+                    {
+                        if (commands.back().VtxOffset != original.VtxOffset) beginCommand(original.VtxOffset);
+                        const auto* source = a_list->IdxBuffer.Data + original.IdxOffset + element;
+                        indices.insert(indices.end(), source, source + 3);
+                        commands.back().ElemCount += 3;
+                        continue;
+                    }
+                    if (unchanged)
+                    {
+                        polygon.count = 3;
+                        for (std::size_t corner = 0; corner < 3; ++corner)
+                            polygon.vertices[corner] = ReadVertex(a_list->VtxBuffer.Data[sourceIndices[corner]]);
                     }
                     for (std::size_t triangle = 1; triangle + 1 < polygon.count; ++triangle)
                     {
                         if (vertices.size() - commands.back().VtxOffset + 3 >
                             std::numeric_limits<ImGuiMCP::ImDrawIdx>::max())
                         {
+                            if (a_preserveVertices) return ClipDrawList(a_list, a_frames, false);
                             if (!supportsOffsets) return false;
-                            beginCommand();
+                            beginCommand(static_cast<unsigned int>(vertices.size()));
                         }
                         for (const auto corner : std::array<std::size_t, 3>{ 0, triangle, triangle + 1 })
                         {
@@ -211,8 +247,11 @@ namespace MPL::MenuControlCorners
             if ((frame.left || frame.right) && frame.drop > 0.0f && frame.vertexEnd > frame.vertexBegin)
                 drawLists[frame.drawList].push_back(&frame);
         }
-        for (const auto& [drawList, targets] : drawLists)
+        for (auto& [drawList, targets] : drawLists)
         {
+            std::ranges::sort(targets, {}, [](const Frame* a_frame) { return a_frame->vertexBegin; });
+            assert(std::ranges::adjacent_find(targets, [](const Frame* a_left, const Frame* a_right)
+                { return a_left->vertexEnd > a_right->vertexBegin; }) == targets.end());
             if (!ClipDrawList(drawList, targets)) continue;
             for (const auto* frame : targets) DrawCornerBorders(*frame);
         }

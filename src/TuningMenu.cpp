@@ -725,6 +725,7 @@ namespace MPL::TuningMenu
         };
         std::unordered_map<std::string, ScrollState> scrollStates;
         std::size_t menuViewGeneration = 0;
+        std::size_t menuCatalogGeneration = 0;
         std::unordered_map<std::string, std::size_t> requestedProfilePageIndices;
         std::unordered_set<std::string> requestedAutomaticProfilePages;
         std::array<char, 96> newProfileName{};
@@ -967,13 +968,56 @@ namespace MPL::TuningMenu
                 a_search.size());
         }
 
-        template <std::size_t Size>
-        bool MatchesComboSearch(
-            const std::string_view a_label,
-            const std::array<char, Size>& a_search)
+        void ClearWeatherCatalogs()
         {
-            const auto query = Lowercase(Trim(a_search.data()));
-            return query.empty() || Lowercase(std::string(a_label)).contains(query);
+            weatherMenuEntries.clear();
+            sliderCreatorWeatherEntries.clear();
+            ++menuCatalogGeneration;
+        }
+
+        template <class Entries, std::size_t Size>
+        auto MatchingComboEntries(
+            const Entries& a_entries,
+            const std::array<char, Size>& a_search,
+            const ObjectShaderCapability a_requiredShaders = ObjectShaderCapability::none)
+        {
+            using Entry = std::remove_cvref_t<decltype(a_entries.front())>;
+            struct Search
+            {
+                const Entry* source = nullptr;
+                std::size_t size = 0;
+                std::string input;
+                ObjectShaderCapability shaders = ObjectShaderCapability::none;
+                std::vector<const Entry*> matches;
+            };
+            static std::unordered_map<const char*, Search> searches;
+            static std::pair<std::size_t, std::size_t> generation{
+                std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max() };
+            const auto revision = std::pair{ menuViewGeneration, menuCatalogGeneration };
+            if (generation != revision)
+            {
+                searches.clear();
+                generation = revision;
+            }
+            auto [cached, inserted] = searches.try_emplace(a_search.data());
+            auto& search = cached->second;
+            if (inserted || search.source != a_entries.data() || search.size != a_entries.size() ||
+                search.input != a_search.data() || search.shaders != a_requiredShaders)
+            {
+                search.source = a_entries.data();
+                search.size = a_entries.size();
+                search.input = a_search.data();
+                search.shaders = a_requiredShaders;
+                search.matches.clear();
+                const auto query = Lowercase(Trim(search.input));
+                for (const auto& entry : a_entries)
+                {
+                    if constexpr (std::same_as<Entry, BaseObjectMenuEntry>)
+                        if (!HasObjectShaderCapabilities(entry.shaderCapabilities, a_requiredShaders)) continue;
+                    if (query.empty() || Lowercase(entry.label).contains(query)) search.matches.push_back(&entry);
+                }
+            }
+            return std::span<const Entry* const>(search.matches);
         }
 
         std::string ControlLabel(
@@ -2191,23 +2235,10 @@ namespace MPL::TuningMenu
 
         std::optional<MenuDefinition> ReadMenuDefinition(
             const std::filesystem::path& a_path,
-            const std::string_view a_profile)
+            const std::string_view a_profile,
+            const std::string_view a_text)
         {
-            std::ifstream file(a_path, std::ios::binary);
-            if (!file)
-            {
-                logger::warn("[Tuning Menu] definition open failed | path={}", a_path.string());
-                return std::nullopt;
-            }
-
-            std::string text(std::istreambuf_iterator<char>(file), {});
-            constexpr std::string_view utf8Bom = "\xEF\xBB\xBF";
-            if (text.starts_with(utf8Bom))
-            {
-                text.erase(0, utf8Bom.size());
-            }
-
-            auto parsed = rfl::json::read<MenuDefinition, rfl::DefaultIfMissing>(text);
+            auto parsed = rfl::json::read<MenuDefinition, rfl::DefaultIfMissing>(a_text);
             if (!parsed)
             {
                 logger::warn("[Tuning Menu] definition load failed | path={} | {}", a_path.string(), parsed.error().what());
@@ -2280,10 +2311,18 @@ namespace MPL::TuningMenu
                 return;
             }
 
-            const auto filteredRulesChanged = TuningUtil::ReloadFilteredRules();
-
             std::vector<LoadedMenu> loaded;
             const auto& tuningProfiles = TuningUtil::GetProfiles();
+            const auto filteredRulesChanged = TuningUtil::ReloadFilteredRules(false,
+                [&](const TuningUtil::Profile& a_profile, const std::string_view a_text)
+                {
+                    const auto path = a_profile.directory / kMenuDefinitionFileName;
+                    auto definition = ReadMenuDefinition(path, a_profile.name, a_text);
+                    if (!definition) return false;
+                    loaded.push_back({ path, std::move(*definition) });
+                    return true;
+                });
+            auto reloadFailed = false;
             for (const auto& file : files)
             {
                 const auto profile = std::ranges::find_if(tuningProfiles, [&](const TuningUtil::Profile& a_candidate)
@@ -2298,12 +2337,15 @@ namespace MPL::TuningMenu
                     }
                     continue;
                 }
-                if (auto definition = ReadMenuDefinition(
-                        SliderCreator::ActiveLayoutPath(file.path),
-                        profile->name))
-                {
-                    loaded.push_back({ file.path, std::move(*definition) });
-                }
+                reloadFailed |= std::ranges::find(loaded, file.path, &LoadedMenu::path) == loaded.end();
+            }
+            for (auto& previous : profileMenus)
+            {
+                if (std::ranges::find(loaded, previous.path, &LoadedMenu::path) != loaded.end()) continue;
+                if (std::ranges::none_of(tuningProfiles, [&](const TuningUtil::Profile& a_profile)
+                        { return a_profile.directory == previous.path.parent_path(); })) continue;
+                loaded.push_back(std::move(previous));
+                reloadFailed = true;
             }
 
             std::ranges::sort(
@@ -2321,9 +2363,9 @@ namespace MPL::TuningMenu
                     return left != right ? left < right : a_left.definition.title < a_right.definition.title;
                 });
             profileMenus = std::move(loaded);
-            loadedDefinitionFiles = files;
-            weatherMenuEntries.clear();
-            sliderCreatorWeatherEntries.clear();
+            if (!reloadFailed) loadedDefinitionFiles = files;
+            else nextDefinitionCheck = std::chrono::steady_clock::now() + 5s;
+            ClearWeatherCatalogs();
             presetVisualStates.clear();
             ++menuViewGeneration;
 
@@ -2335,7 +2377,7 @@ namespace MPL::TuningMenu
             }
             if (!a_initialLoad)
             {
-                statusMessage = pendingMenuReloadStatus ?
+                statusMessage = reloadFailed ? StatusText("profileMenusReloadFailure") : pendingMenuReloadStatus ?
                                     std::move(*pendingMenuReloadStatus) :
                                     StatusText("profileMenusReloaded", { { "count", std::to_string(profileMenus.size()) } });
                 pendingMenuReloadStatus.reset();
@@ -2353,22 +2395,32 @@ namespace MPL::TuningMenu
             ReloadProfileMenus(false);
         }
 
-        std::vector<const SliderStorage::Binding*> ControlSliderBindings(const MenuDefinition& a_menu, const MenuControl& a_control)
+        std::span<const SliderStorage::Binding* const> ControlSliderBindings(const MenuDefinition& a_menu, const MenuControl& a_control)
         {
-            const auto& profiles = TuningUtil::GetProfiles();
-            const auto profile = std::ranges::find_if(profiles, [&](const auto& candidate)
-                { return Config::IEquals(candidate.name, a_menu.profile); });
-            if (profile == profiles.end()) return {};
-            for (std::size_t page = 0; page < a_menu.pages.size(); ++page)
-                for (std::size_t module = 0; module < a_menu.pages[page].modules.size(); ++module)
-                    if (&a_menu.pages[page].modules[module] == &a_control)
-                    {
-                        std::vector<const SliderStorage::Binding*> result;
-                        for (const auto& binding : profile->sliderBindings)
-                            if (binding.page == page && binding.module == module) result.push_back(&binding);
-                        return result;
-                    }
-            return {};
+            using Bindings = std::unordered_map<const MenuControl*, std::vector<const SliderStorage::Binding*>>;
+            static std::unordered_map<const MenuDefinition*, Bindings> menus;
+            static std::pair<std::size_t, std::size_t> cachedRevision{
+                std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max() };
+            const auto revision = std::pair{ menuViewGeneration, TuningUtil::GetSliderBindingsRevision() };
+            if (cachedRevision != revision)
+            {
+                menus.clear();
+                cachedRevision = revision;
+            }
+            auto [cached, inserted] = menus.try_emplace(&a_menu);
+            if (inserted)
+            {
+                const auto& profiles = TuningUtil::GetProfiles();
+                const auto profile = std::ranges::find_if(profiles, [&](const auto& candidate)
+                    { return Config::IEquals(candidate.name, a_menu.profile); });
+                if (profile != profiles.end())
+                    for (const auto& binding : profile->sliderBindings)
+                        if (binding.page < a_menu.pages.size() && binding.module < a_menu.pages[binding.page].modules.size())
+                            cached->second[&a_menu.pages[binding.page].modules[binding.module]].push_back(&binding);
+            }
+            const auto found = cached->second.find(&a_control);
+            return found != cached->second.end() ? std::span<const SliderStorage::Binding* const>(found->second) :
+                                                  std::span<const SliderStorage::Binding* const>{};
         }
 
         void DrawStoredSliderValue(const MenuDefinition& a_menu, const SliderStorage::Binding& binding,
@@ -3737,8 +3789,7 @@ namespace MPL::TuningMenu
             TuningUtil::ApplySettings(std::format("profile-enable-toggle | profile={} | enabled={}", profile, enabled));
             if (HasWeatherMenuControls(a_menu))
             {
-                weatherMenuEntries.clear();
-                sliderCreatorWeatherEntries.clear();
+                ClearWeatherCatalogs();
                 activeWeatherLockProfile.clear();
                 ActivateWeatherLockPreference(a_menu);
             }
@@ -4612,9 +4663,9 @@ namespace MPL::TuningMenu
                     weatherPreview.c_str(),
                     ImGuiMCP::ImGuiComboFlags_HeightLargest))
             {
-                for (const auto& entry : weatherEntries)
+                for (const auto* match : MatchingComboEntries(weatherEntries, state.searchInput))
                 {
-                    if (!MatchesComboSearch(entry.label, state.searchInput)) continue;
+                    const auto& entry = *match;
                     const auto label = entry.label + "##WeatherFilter" + id +
                                        std::format("{:08X}", entry.weather->GetFormID());
                     if (ImGuiMCP::Selectable(label.c_str(), entry.weather == state.selectedWeather))
@@ -4675,7 +4726,11 @@ namespace MPL::TuningMenu
 
             const auto changed = originalInclusions != a_settings.weatherInclusions ||
                                  originalExclusions != a_settings.weatherExclusions;
-            if (changed) weatherMenuEntries.erase(a_menu.profile);
+            if (changed)
+            {
+                weatherMenuEntries.erase(a_menu.profile);
+                ++menuCatalogGeneration;
+            }
             return changed;
         }
 
@@ -4728,6 +4783,7 @@ namespace MPL::TuningMenu
             {
                 weatherMenuEntries.erase(a_menu.profile);
                 sliderCreatorWeatherEntries.erase(a_menu.profile);
+                ++menuCatalogGeneration;
             }
             return changed;
         }
@@ -4792,9 +4848,9 @@ namespace MPL::TuningMenu
                     recordPreview.c_str(),
                     ImGuiMCP::ImGuiComboFlags_HeightLargest))
             {
-                for (const auto& entry : a_entries)
+                for (const auto* match : MatchingComboEntries(a_entries, state.searchInput))
                 {
-                    if (!MatchesComboSearch(entry.label, state.searchInput)) continue;
+                    const auto& entry = *match;
                     const auto label = entry.label + "##RecordFilter" + id +
                                        std::format("{:08X}", entry.form->GetFormID());
                     if (ImGuiMCP::Selectable(label.c_str(), entry.form == state.selectedRecord))
@@ -5054,9 +5110,9 @@ namespace MPL::TuningMenu
                         preview.c_str(),
                         ImGuiMCP::ImGuiComboFlags_HeightLargest))
                 {
-                    for (const auto& entry : entries)
+                    for (const auto* match : MatchingComboEntries(entries, state.searchInput))
                     {
-                        if (!MatchesComboSearch(entry.label, state.searchInput)) continue;
+                        const auto& entry = *match;
                         const auto label = entry.label + "##TemplateInheritanceCell" + id +
                                            std::format("{:08X}", entry.form->GetFormID());
                         if (ImGuiMCP::Selectable(label.c_str(), entry.form == state.selectedRecord))
@@ -5129,9 +5185,9 @@ namespace MPL::TuningMenu
                     state.working.c_str(),
                     ImGuiMCP::ImGuiComboFlags_HeightLargest))
             {
-                for (const auto& entry : entries)
+                for (const auto* match : MatchingComboEntries(entries, state.searchInput))
                 {
-                    if (!MatchesComboSearch(entry.label, state.searchInput)) continue;
+                    const auto& entry = *match;
                     const auto label = entry.label + "##AmbientAnchor" +
                                        std::format("{:08X}", entry.weather->GetFormID());
                     if (ImGuiMCP::Selectable(label.c_str(), Config::IEquals(entry.label, state.working)))
@@ -5223,8 +5279,7 @@ namespace MPL::TuningMenu
                 changed |= pluginOwnershipChanged;
                 if (pluginOwnershipChanged)
                 {
-                    weatherMenuEntries.clear();
-                    sliderCreatorWeatherEntries.clear();
+                    ClearWeatherCatalogs();
                 }
                 changed |= drawBox(
                     "PluginFilter",
@@ -5776,8 +5831,7 @@ namespace MPL::TuningMenu
 
         void RefreshAfterPresetChange(const MenuDefinition& a_menu)
         {
-            weatherMenuEntries.clear();
-            sliderCreatorWeatherEntries.clear();
+            ClearWeatherCatalogs();
             presetVisualStates.erase(Lowercase(a_menu.profile));
             activeWeatherLockProfile.clear();
             ActivateWeatherLockPreference(a_menu);
@@ -6005,8 +6059,7 @@ namespace MPL::TuningMenu
                             std::string error;
                             if (WeatherPatcher::PreviewPresetDefault(profile, category, error))
                             {
-                                weatherMenuEntries.clear();
-                                sliderCreatorWeatherEntries.clear();
+                                ClearWeatherCatalogs();
                                 activeWeatherLockProfile.clear();
                                 ActivateWeatherLockPreference(a_menu);
                                 statusMessage = StatusText(
@@ -6062,8 +6115,7 @@ namespace MPL::TuningMenu
                             std::string error;
                             if (WeatherPatcher::PreviewPreset(profile, category, preset, error))
                             {
-                                weatherMenuEntries.clear();
-                                sliderCreatorWeatherEntries.clear();
+                                ClearWeatherCatalogs();
                                 activeWeatherLockProfile.clear();
                                 ActivateWeatherLockPreference(a_menu);
                                 statusMessage = StatusText(
@@ -7896,9 +7948,9 @@ namespace MPL::TuningMenu
                     DrawComboSearch(state.weatherSearchInput, "SliderCreatorWeather" + stateKey);
                     if (ImGuiMCP::BeginCombo(("Weather##SliderCreator" + stateKey).c_str(), weatherPreview.c_str(), ImGuiMCP::ImGuiComboFlags_HeightLargest))
                     {
-                        for (const auto& entry : weatherEntries)
+                        for (const auto* match : MatchingComboEntries(weatherEntries, state.weatherSearchInput))
                         {
-                            if (!MatchesComboSearch(entry.label, state.weatherSearchInput)) continue;
+                            const auto& entry = *match;
                             const auto label = entry.label + "##SliderCreatorWeather" + stateKey +
                                                std::format("{:08X}", entry.weather->GetFormID());
                             if (ImGuiMCP::Selectable(label.c_str(), entry.weather == state.selectedWeather))
@@ -7970,10 +8022,9 @@ namespace MPL::TuningMenu
                             preview.c_str(),
                             ImGuiMCP::ImGuiComboFlags_HeightLargest))
                     {
-                        for (const auto& entry : GetBaseObjectMenuEntries())
+                        for (const auto* match : MatchingComboEntries(GetBaseObjectMenuEntries(), state.baseObjectSearchInput, requiredShaders))
                         {
-                            if (!HasObjectShaderCapabilities(entry.shaderCapabilities, requiredShaders)) continue;
-                            if (!MatchesComboSearch(entry.label, state.baseObjectSearchInput)) continue;
+                            const auto& entry = *match;
                             const auto label = entry.label + "##SliderCreatorBaseObject" + stateKey +
                                                std::format("{:08X}", entry.form->GetFormID());
                             if (ImGuiMCP::Selectable(label.c_str(), entry.form == state.selectedBaseObject))
@@ -8054,9 +8105,9 @@ namespace MPL::TuningMenu
                             preview.c_str(),
                             ImGuiMCP::ImGuiComboFlags_HeightLargest))
                     {
-                        for (const auto& entry : entries)
+                        for (const auto* match : MatchingComboEntries(entries, state.baseLightSearchInput))
                         {
-                            if (!MatchesComboSearch(entry.label, state.baseLightSearchInput)) continue;
+                            const auto& entry = *match;
                             const auto label = entry.label + "##SliderCreatorBaseLight" + stateKey +
                                                std::format("{:08X}", entry.form->GetFormID());
                             if (ImGuiMCP::Selectable(label.c_str(), entry.form == state.selectedBaseLight))
@@ -8168,9 +8219,9 @@ namespace MPL::TuningMenu
                             preview.c_str(),
                             ImGuiMCP::ImGuiComboFlags_HeightLargest))
                     {
-                        for (const auto& entry : entries)
+                        for (const auto* match : MatchingComboEntries(entries, state.lightingTemplateSearchInput))
                         {
-                            if (!MatchesComboSearch(entry.label, state.lightingTemplateSearchInput)) continue;
+                            const auto& entry = *match;
                             const auto label = entry.label + "##SliderCreatorLightingTemplate" + stateKey +
                                                std::format("{:08X}", entry.form->GetFormID());
                             if (ImGuiMCP::Selectable(label.c_str(), entry.form == state.selectedLightingTemplate))
@@ -8410,8 +8461,7 @@ namespace MPL::TuningMenu
             {
                 return;
             }
-            weatherMenuEntries.clear();
-            sliderCreatorWeatherEntries.clear();
+            ClearWeatherCatalogs();
             if (a_scopes.empty() ||
                 std::ranges::contains(a_scopes, "EnableProfile") ||
                 std::ranges::contains(a_scopes, "profile"))

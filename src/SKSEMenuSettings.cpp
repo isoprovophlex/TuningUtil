@@ -110,6 +110,7 @@ namespace MPL::SKSEMenuSettings
         {
             static const std::unordered_map<std::string, std::string> messages{
                 { "profileMenusReloaded", "Reloaded {count} profile menu(s)." },
+                { "profileMenusReloadFailure", "Some profile menus could not be reloaded. Previous layouts were kept." },
                 { "quickSelectSaveFailure", "Quick Select changed for this session, but its list could not be saved." },
                 { "quickSelectClearSaveFailure", "Quick Select was cleared for this session, but its list could not be saved." },
                 { "weatherLockEnabledSession", "Weather lock enabled for {weather} for this session." },

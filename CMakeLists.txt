@@ -177,6 +177,10 @@ if(TUNINGUTIL_BUILD_TESTS)
   target_include_directories(SliderStorageTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(SliderStorageTests PRIVATE reflectcpp::reflectcpp)
 
+  foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests PointLightRadiusTests SliderIdentityTests SliderStorageTests)
+    target_sources(${test_target} PRIVATE src/FileIO.cpp)
+  endforeach()
+
   set(
     TUNINGUTIL_ADDRESS_LIBRARY_1_7_99
     ""
