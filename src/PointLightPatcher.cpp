@@ -8,7 +8,7 @@
 #include <Config/Forms.h>
 #include <TuningSettings.h>
 #include <WeatherPatcher.h>
-#include <HeliosphanAPI.h>
+#include <HeliosphanClient.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -159,7 +159,7 @@ namespace MPL::PointLightPatcher
         std::atomic<std::uint64_t> referenceReconciliationGeneration{ 0 };
         std::mutex brokerStateLock;
         std::optional<AppliedState> brokerTransformState;
-        const HeliosphanAPI::Interface* heliosphanAPI = nullptr;
+        API::Heliosphan::IHeliosphanService* heliosphanService = nullptr;
         bool brokerConnectionAttempted = false;
         bool runtimeEventsInstalled = false;
         std::atomic_bool brokerReloadPending{ false };
@@ -904,7 +904,7 @@ namespace MPL::PointLightPatcher
             const char*,
             const char* a_input,
             const std::size_t a_inputSize,
-            const HeliosphanAPI::LightPlacerOutput a_output,
+            const API::Heliosphan::LightPlacerOutput a_output,
             void* a_context)
         {
             try
@@ -976,50 +976,29 @@ namespace MPL::PointLightPatcher
         {
             if (brokerConnectionAttempted)
             {
-                return heliosphanAPI != nullptr;
+                return heliosphanService != nullptr;
             }
             brokerConnectionAttempted = true;
-            const auto heliosphanModule =
-                GetModuleHandleW(L"Heliosphan.dll");
-            const auto requestHeliosphan =
-                heliosphanModule ?
-                    reinterpret_cast<HeliosphanAPI::RequestInterface>(
-                        GetProcAddress(
-                            heliosphanModule,
-                            "Heliosphan_RequestAPI")) :
-                    nullptr;
-            heliosphanAPI = requestHeliosphan ?
-                                requestHeliosphan(HeliosphanAPI::kVersion) :
-                                nullptr;
-            if (!heliosphanAPI && requestHeliosphan)
+            heliosphanService = HeliosphanClient::Get();
+            if (!heliosphanService)
             {
-                heliosphanAPI = requestHeliosphan(HeliosphanAPI::kLegacyVersion);
-            }
-            if (!heliosphanAPI ||
-                (heliosphanAPI->version != HeliosphanAPI::kVersion &&
-                    heliosphanAPI->version != HeliosphanAPI::kLegacyVersion) ||
-                !heliosphanAPI->RegisterLightPlacerTransformer ||
-                !heliosphanAPI->RequestLightPlacerReload ||
-                !heliosphanAPI->RegisterReferenceClient)
-            {
-                heliosphanAPI = nullptr;
                 DetailedLogging::Info("{}", "[Point Lights] Light Placer broker=standalone | Heliosphan unavailable");
                 return false;
             }
-            static const HeliosphanAPI::LightPlacerTransformer transformer{
+            static const API::Heliosphan::LightPlacerTransformer transformer{
                 .id = "TuningUtil",
                 .TransformJson = TransformBrokeredLightPlacerJson,
                 .OnReloadComplete =
                     OnBrokeredLightPlacerReloadComplete,
             };
-            if (!heliosphanAPI->RegisterLightPlacerTransformer(
+            if (!heliosphanService->RegisterLightPlacerTransformer(
                     std::addressof(transformer)))
             {
-                heliosphanAPI = nullptr;
+                heliosphanService = nullptr;
                 logger::warn("[Point Lights] Light Placer broker=standalone | transformer rejected");
                 return false;
             }
-            static const HeliosphanAPI::ReferenceCallbacks
+            static const API::Heliosphan::ReferenceCallbacks
                 heliosphanReferenceCallbacks{
                     .id = "TuningUtil",
                     .OnReferenceEmittanceChanged = [](RE::TESObjectREFR* a_reference)
@@ -1029,7 +1008,7 @@ namespace MPL::PointLightPatcher
                     },
                 };
             const bool heliosphanReferenceNotifications =
-                heliosphanAPI->RegisterReferenceClient(
+                heliosphanService->RegisterReferenceClient(
                     std::addressof(heliosphanReferenceCallbacks));
             if (!heliosphanReferenceNotifications)
             {
@@ -2084,7 +2063,7 @@ namespace MPL::PointLightPatcher
                     brokerReloadPending.store(
                         true,
                         std::memory_order_release);
-                    brokered = heliosphanAPI->RequestLightPlacerReload();
+                    brokered = heliosphanService->RequestLightPlacerReload();
                     if (!brokered)
                     {
                         brokerReloadPending.store(

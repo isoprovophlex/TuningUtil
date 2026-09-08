@@ -1,7 +1,7 @@
 #include <CSTonemapping.h>
 #include <Config.h>
 #include <DetailedLogging.h>
-#include <HeliosphanAPI.h>
+#include <HeliosphanClient.h>
 #include <ImageSpacePatcher.h>
 #include <TuningUtil.h>
 #include <algorithm>
@@ -326,7 +326,7 @@ namespace MPL::ImageSpacePatcher
         for (auto& profileName : TuningUtil::GetProfilesWithSettings(exteriorRoots))
         {
             const auto& settings = TuningUtil::GetSettings(profileName);
-            if (const auto* api = CSTonemapping::GetHeliosphanAPI())
+            if (auto* api = HeliosphanClient::Get())
             {
                 const auto force = settings.exteriorImageSpace.ForceCSTonemapping;
                 api->SetAutoCSTonemappingSuppressed(
@@ -420,7 +420,7 @@ namespace MPL::ImageSpacePatcher
 
     std::optional<bool> IsAutoCSTonemappingApplied(const std::string_view a_profile)
     {
-        const auto* api = CSTonemapping::GetHeliosphanAPI();
+        auto* api = HeliosphanClient::Get();
         if (!api)
         {
             return std::nullopt;

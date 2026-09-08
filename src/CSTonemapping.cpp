@@ -1,5 +1,5 @@
 #include <CSTonemapping.h>
-#include <HeliosphanAPI.h>
+#include <HeliosphanClient.h>
 
 #include <cmath>
 #include <mutex>
@@ -80,8 +80,7 @@ namespace MPL::CSTonemapping
             {
                 return;
             }
-            if (const auto* api = GetHeliosphanAPI();
-                api && api->version == HeliosphanAPI::kVersion && api->SetCSTonemappingForcedTargets)
+            if (auto* api = HeliosphanClient::Get())
             {
                 const std::vector targets(a_state.forcedTargets.begin(), a_state.forcedTargets.end());
                 if (api->SetCSTonemappingForcedTargets(targets.data(), targets.size()))
@@ -151,23 +150,6 @@ namespace MPL::CSTonemapping
                 a_state.forcedTargets.size(),
                 forceFilmic);
         }
-    }
-
-    const HeliosphanAPI::Interface* GetHeliosphanAPI()
-    {
-        static const auto* api = []
-        {
-            const auto module = GetModuleHandleW(L"Heliosphan.dll");
-            const auto request = module ? reinterpret_cast<HeliosphanAPI::RequestInterface>(
-                GetProcAddress(module, "Heliosphan_RequestAPI")) : nullptr;
-            auto* result = request ? request(HeliosphanAPI::kVersion) : nullptr;
-            if (!result && request) result = request(HeliosphanAPI::kLegacyVersion);
-            return result && (result->version == HeliosphanAPI::kVersion ||
-                                  result->version == HeliosphanAPI::kLegacyVersion) &&
-                           result->IsAutoCSTonemappingApplied && result->SetAutoCSTonemappingSuppressed ?
-                result : nullptr;
-        }();
-        return api;
     }
 
     void Initialize()

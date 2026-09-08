@@ -1,3 +1,4 @@
+#include <HeliosphanClient.h>
 #include <LumaServiceAPI.h>
 #include <LumaClient.h>
 #include <ObjectLightingPatcher.h>
@@ -59,6 +60,7 @@ namespace
         {
         case SKSE::MessagingInterface::kDataLoaded:
             {
+                MPL::HeliosphanClient::Initialize(MPL::API::MMSF::RequestMMSFAPI());
                 MPL::PointLightPatcher::InstallRuntimeEvents();
                 MPL::ObjectLightingPatcher::InstallRuntimeEvents();
                 MPL::TuningUtil::ApplyDataLoaded();
