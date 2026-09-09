@@ -19,6 +19,15 @@ namespace MPL::TuningUtil
 {
     using PresetSelections = std::map<std::string, std::string>;
 
+    enum class ControlDomain
+    {
+        weather,
+        exteriorImageSpace,
+        lightingTemplates,
+        cellLighting,
+        lightingImageSpace,
+    };
+
     enum class FilteredWeatherOperation
     {
         brightness,
@@ -109,6 +118,7 @@ namespace MPL::TuningUtil
     {
         std::string id;
         std::string controlID;
+        int priority = 0;
         std::vector<FilteredBaseLightSetting> settings;
         WeatherFilter include;
         WeatherFilter exclude;
@@ -140,6 +150,7 @@ namespace MPL::TuningUtil
     {
         std::string id;
         std::string controlID;
+        int priority = 0;
         std::vector<FilteredObjectLightingSetting> settings;
         WeatherFilter include;
         WeatherFilter exclude;
@@ -185,6 +196,7 @@ namespace MPL::TuningUtil
     const std::vector<Profile>& GetProfiles();
     bool IsProfilePluginFiltered(const std::filesystem::path&);
     std::vector<std::string> GetProfilesWithSettings(std::span<const std::string_view>);
+    std::optional<std::string> GetExclusiveController(ControlDomain);
     std::optional<std::string> GetOverridingProfile(
         const std::string&,
         std::span<const std::string>);
@@ -238,6 +250,10 @@ namespace MPL::TuningUtil
     bool SaveSettings(std::string&);
     bool SaveProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);
     bool RestoreProfileSetupSettings(std::string&, ProfileSetup::Domain, std::string&);
+    bool SaveSettingsAsProfileDefaults(
+        std::string&,
+        const std::vector<std::string>&,
+        std::string&);
     bool SavePageSettings(std::string&, const std::vector<std::string>&);
     bool RestoreSettings(std::string&);
     bool RestorePageSettings(std::string&, const std::vector<std::string>&);

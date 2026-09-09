@@ -4,6 +4,7 @@
 #include <Config/Common.h>
 #include <ImageSpacePatcher.h>
 #include <JsonOverlay.h>
+#include <JsonFormatting.h>
 #include <LightingPatcher.h>
 #include <ObjectLightingPatcher.h>
 #include <PresetCatalog.h>
@@ -22,7 +23,6 @@
 #include <limits>
 #include <memory>
 #include <ranges>
-#include <regex>
 #include <unordered_map>
 #include <yyjson.h>
 
@@ -168,6 +168,16 @@ namespace MPL::TuningUtil
             auto* value = yyjson_is_obj(a_object) ? yyjson_obj_getn(a_object, a_key.data(), a_key.size()) : nullptr;
             return yyjson_is_str(value) ?
                        std::optional<std::string>{ std::string(yyjson_get_str(value), yyjson_get_len(value)) } :
+                       std::nullopt;
+        }
+
+        std::optional<int> JsonInteger(yyjson_val* a_object, const std::string_view a_key)
+        {
+            auto* value = yyjson_is_obj(a_object) ? yyjson_obj_getn(a_object, a_key.data(), a_key.size()) : nullptr;
+            if (!yyjson_is_int(value) && !yyjson_is_uint(value)) return std::nullopt;
+            const auto number = yyjson_get_sint(value);
+            return number >= (std::numeric_limits<int>::min)() && number <= (std::numeric_limits<int>::max)() ?
+                       std::optional<int>{ static_cast<int>(number) } :
                        std::nullopt;
         }
 
@@ -814,6 +824,7 @@ namespace MPL::TuningUtil
             FilteredBaseLightRule rule{
                 .id = id,
                 .controlID = id,
+                .priority = std::clamp(JsonInteger(a_control, "priority").value_or(0), 0, 99),
                 .hueScales = JsonHueScales(a_control),
             };
             std::optional<SliderSettingCatalog::FilterOperation> operation;
@@ -885,6 +896,7 @@ namespace MPL::TuningUtil
             FilteredObjectLightingRule rule{
                 .id = id,
                 .controlID = id,
+                .priority = std::clamp(JsonInteger(a_control, "priority").value_or(0), 0, 99),
             };
             for (const auto& specification : JsonSliderSettings(a_control))
             {
@@ -1363,7 +1375,7 @@ namespace MPL::TuningUtil
         std::optional<Settings> ParseSettings(const std::string& a_json, const std::filesystem::path& a_source)
         {
             static constexpr std::string_view filterSchema =
-                R"({"weatherInclusions":{"formIDs":[],"contains":[]},"weatherExclusions":{"formIDs":[],"contains":[]},"weatherPluginOwnership":{"exact":[],"contains":[]},"weatherPluginInclusions":{"exact":[],"contains":[]},"weatherPluginExclusions":{"exact":[],"contains":[]},"lightingTemplateInclusions":[],"lightingTemplateExclusions":[],"lightingTemplatePluginOwnership":{"exact":[],"contains":[]},"lightingTemplatePluginInclusions":{"exact":[],"contains":[]},"lightingTemplatePluginExclusions":{"exact":[],"contains":[]},"lightingTemplateFilter":{"include":{"locationTypes":[],"multiLocationExceptions":[]},"exclude":{"locationTypes":[],"multiLocationExceptions":[]}}})";
+                R"({"weatherInclusions":{"formIDs":[],"contains":[]},"weatherExclusions":{"formIDs":[],"contains":[]},"weatherPluginOwnership":{"exact":[],"contains":[]},"weatherPluginInclusions":{"exact":[],"contains":[]},"weatherPluginExclusions":{"exact":[],"contains":[]},"lightingTemplateInclusions":[],"lightingTemplateExclusions":[],"lightingTemplatePluginOwnership":{"exact":[],"contains":[]},"lightingTemplatePluginInclusions":{"exact":[],"contains":[]},"lightingTemplatePluginExclusions":{"exact":[],"contains":[]}})";
             std::string normalizationError;
             const auto normalized = JsonOverlay::Overlay(filterSchema, a_json, normalizationError);
             if (!normalized)
@@ -1493,13 +1505,6 @@ namespace MPL::TuningUtil
                 std::move(explicitUserSettings) };
         }
 
-        std::string CompactLinkArrays(const std::string& a_json)
-        {
-            static const std::regex arrays(
-                R"json(\[\s*("(?:\\.|[^"\\])*")\s*,\s*(-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*\])json");
-            return std::regex_replace(a_json, arrays, "[ $1, $2 ]");
-        }
-
         bool WriteTextAtomically(
             const std::filesystem::path&,
             std::string_view,
@@ -1593,7 +1598,7 @@ namespace MPL::TuningUtil
                     return;
                 }
             }
-            const auto output = CompactLinkArrays(sanitized->text);
+            const auto output = JsonFormatting::Pretty(sanitized->text);
             if (!WriteTextAtomically(path, output, error))
             {
                 logger::warn(
@@ -1712,7 +1717,7 @@ namespace MPL::TuningUtil
                 logger::warn("[TuningUtil] user settings sanitation failed | path={} | {}", path.string(), error);
                 return false;
             }
-            if (!WriteTextAtomically(path, CompactLinkArrays(sanitized->text), error))
+            if (!WriteTextAtomically(path, JsonFormatting::Pretty(sanitized->text), error))
             {
                 logger::warn("[TuningUtil] user settings save failed | path={} | {}", path.string(), error);
                 return false;
@@ -1792,7 +1797,7 @@ namespace MPL::TuningUtil
                                      JsonOverlay::Overlay(*retained, a_setup, a_error) :
                                      std::nullopt;
             if (!updated || !ParseSettings(*updated, path) ||
-                !WriteTextAtomically(path, CompactLinkArrays(*updated), a_error))
+                !WriteTextAtomically(path, JsonFormatting::Pretty(*updated), a_error))
             {
                 if (a_error.empty()) a_error = "The profile setup could not be prepared.";
                 return false;
@@ -1937,6 +1942,7 @@ namespace MPL::TuningUtil
                 std::string_view{ "profilePriority" },
                 std::string_view{ "PluginDependency" },
                 std::string_view{ "DisableProfile" },
+                std::string_view{ "exclusiveControl" },
                 std::string_view{ "ambientAnchorWeather" },
                 std::string_view{ "EnableProfile" },
                 std::string_view{ "ShowAdvanced" },
@@ -1950,12 +1956,68 @@ namespace MPL::TuningUtil
                 std::string_view{ "lightingTemplatePluginOwnership" },
                 std::string_view{ "lightingTemplatePluginInclusions" },
                 std::string_view{ "lightingTemplatePluginExclusions" },
-                std::string_view{ "lightingTemplateFilter" },
                 std::string_view{ "enableTemplateInherit" },
                 std::string_view{ "cellExclusions" },
             };
             return std::ranges::any_of(roots, [&](const auto root)
                 { return a_path == root || (a_path.starts_with(root) && a_path.size() > root.size() && a_path[root.size()] == '.'); });
+        }
+
+        bool ClaimsExclusiveControl(const Settings& a_settings, const ControlDomain a_domain)
+        {
+            switch (a_domain)
+            {
+            case ControlDomain::weather:
+                return a_settings.exclusiveControl.weather;
+            case ControlDomain::exteriorImageSpace:
+                return a_settings.exclusiveControl.exteriorImageSpace;
+            case ControlDomain::lightingTemplates:
+                return a_settings.exclusiveControl.lightingTemplates;
+            case ControlDomain::cellLighting:
+                return a_settings.exclusiveControl.cellLighting;
+            case ControlDomain::lightingImageSpace:
+                return a_settings.exclusiveControl.lightingImageSpace;
+            }
+            return false;
+        }
+
+        std::vector<ControlDomain> ControlDomainsForSetting(const std::string_view a_path)
+        {
+            if (a_path == "exteriorImageSpace" || a_path.starts_with("exteriorImageSpace."))
+            {
+                return { ControlDomain::exteriorImageSpace };
+            }
+            if (a_path == "lightImageSpace" || a_path.starts_with("lightImageSpace."))
+            {
+                return { ControlDomain::lightingImageSpace };
+            }
+            if (a_path.starts_with("filteredLightingTemplateAdjustments."))
+            {
+                return { ControlDomain::lightingTemplates };
+            }
+            if (a_path == "links.lighting" || a_path.starts_with("links.lighting.") ||
+                a_path == "lightBrightnessMultiplier" || a_path.starts_with("lightBrightnessMultiplier.") ||
+                a_path == "lightSaturationMultiplier" || a_path.starts_with("lightSaturationMultiplier.") ||
+                a_path == "lightHueShift" || a_path.starts_with("lightHueShift.") ||
+                a_path == "lightFogPowerMultiplier" || a_path == "lightFogMaxMultiplier")
+            {
+                return { ControlDomain::lightingTemplates, ControlDomain::cellLighting };
+            }
+            if (a_path.starts_with("filteredWeatherAdjustments.") ||
+                a_path == "links.weather" || a_path.starts_with("links.weather.") ||
+                a_path == "brightnessMultiplier" || a_path.starts_with("brightnessMultiplier.") ||
+                a_path == "volumetricLightingIntensityMultiplier" ||
+                a_path == "saturationMultiplier" || a_path.starts_with("saturationMultiplier.") ||
+                a_path == "hueScales" || a_path.starts_with("hueScales.") ||
+                a_path == "hueRanges" || a_path.starts_with("hueRanges.") ||
+                a_path == "hueShift" || a_path.starts_with("hueShift.") ||
+                a_path == "betweenWeatherCompression" || a_path.starts_with("betweenWeatherCompression.") ||
+                a_path == "withinWeatherCompression" || a_path.starts_with("withinWeatherCompression.") ||
+                a_path == "compressionAnchor" || a_path.starts_with("compressionAnchor."))
+            {
+                return { ControlDomain::weather };
+            }
+            return {};
         }
 
         enum class SettingFilterDomain
@@ -2426,6 +2488,21 @@ namespace MPL::TuningUtil
         return result;
     }
 
+    std::optional<std::string> GetExclusiveController(const ControlDomain a_domain)
+    {
+        std::optional<std::string> result;
+        for (const auto& profile : GetProfiles())
+        {
+            auto profileName = profile.name;
+            const auto& settings = GetSettings(profileName);
+            if (settings.EnableProfile && ClaimsExclusiveControl(settings, a_domain))
+            {
+                result = profile.name;
+            }
+        }
+        return result;
+    }
+
     std::optional<std::string> GetOverridingProfile(
         const std::string& a_profileName,
         const std::span<const std::string> a_settingPaths)
@@ -2438,12 +2515,60 @@ namespace MPL::TuningUtil
         }
 
         std::vector<std::string> requestedPaths;
+        std::optional<std::string> exclusiveOverride;
+        const auto addRequestedSetting = [&](const std::string_view a_setting, const bool a_includeNormalOverride)
+        {
+            if (exclusiveOverride) return;
+            std::vector<std::string> expandedPaths;
+            AddExpandedSettingPaths(expandedPaths, a_setting);
+            for (const auto& expandedPath : expandedPaths)
+            {
+                const auto domains = ControlDomainsForSetting(expandedPath);
+                auto allDomainsExclusivelyControlledByCurrent = !domains.empty();
+                for (const auto domain : domains)
+                {
+                    const auto controller = GetExclusiveController(domain);
+                    if (!controller)
+                    {
+                        allDomainsExclusivelyControlledByCurrent = false;
+                        continue;
+                    }
+                    if (!Config::IEquals(*controller, currentProfile->name))
+                    {
+                        exclusiveOverride = std::move(controller);
+                        return;
+                    }
+                }
+                if (a_includeNormalOverride && !allDomainsExclusivelyControlledByCurrent)
+                {
+                    AddSettingPath(requestedPaths, expandedPath);
+                }
+            }
+        };
         for (const auto& path : a_settingPaths)
         {
-            if (!IsProfileLocalSettingPath(path) && !SliderStorage::IsAdjustment(path) && !path.starts_with("sliderValues."))
+            if (IsProfileLocalSettingPath(path)) continue;
+            if (path.starts_with("sliderValues."))
             {
-                AddExpandedSettingPaths(requestedPaths, path);
+                const auto valueID = std::string_view(path).substr(std::string_view("sliderValues.").size());
+                for (const auto& binding : currentProfile->sliderBindings)
+                {
+                    if (!Config::IEquals(binding.valueID, valueID)) continue;
+                    for (const auto& target : binding.targets)
+                    {
+                        addRequestedSetting(target.path, !SliderStorage::IsAdjustment(target.path));
+                    }
+                    if (!binding.ruleValueMap.empty())
+                    {
+                        addRequestedSetting(binding.ruleValueMap, false);
+                    }
+                }
             }
+            else
+            {
+                addRequestedSetting(path, !SliderStorage::IsAdjustment(path));
+            }
+            if (exclusiveOverride) return exclusiveOverride;
         }
         if (requestedPaths.empty())
         {
@@ -2932,6 +3057,7 @@ namespace MPL::TuningUtil
             FilteredBaseLightRule rule{
                 .id = runtimeID,
                 .controlID = runtimeID,
+                .priority = a_definition.priority,
                 .hueFilter = a_definition.hueFilter,
                 .useXemiFilter = a_definition.useXemiFilter ||
                     !a_definition.xemiInclude.formIDs.empty() || !a_definition.xemiInclude.contains.empty() ||
@@ -2992,6 +3118,7 @@ namespace MPL::TuningUtil
             FilteredObjectLightingRule rule{
                 .id = runtimeID,
                 .controlID = runtimeID,
+                .priority = a_definition.priority,
             };
             for (const auto& target : a_definition.settings)
             {
@@ -3189,7 +3316,7 @@ namespace MPL::TuningUtil
             a_error = "Profile-only settings could not be removed from the preset.";
             return std::nullopt;
         }
-        return CompactLinkArrays(*preset);
+        return JsonFormatting::Pretty(*preset);
     }
 
     std::optional<std::string> ResolvePresetResetSettings(
@@ -3403,6 +3530,84 @@ namespace MPL::TuningUtil
         ApplySettings(std::format("setup-restore | profile={} | domain={}", a_profileName,
             a_domain == ProfileSetup::Domain::weather ? "weather" : "lighting"));
         a_profileName = profile->name;
+        return true;
+    }
+
+    bool SaveSettingsAsProfileDefaults(
+        std::string& a_profileName,
+        const std::vector<std::string>& a_scopes,
+        std::string& a_error)
+    {
+        a_error.clear();
+        (void)GetProfiles();
+        const auto profile = std::ranges::find_if(profiles, [&](const Profile& a_candidate)
+            { return Config::IEquals(a_candidate.name, a_profileName); });
+        if (profile == profiles.end())
+        {
+            a_error = "The profile is unavailable.";
+            return false;
+        }
+
+        const auto canonicalName = profile->name;
+        auto resolvedName = canonicalName;
+        (void)GetSettings(resolvedName);
+        const auto cached = settingsCache.find(Lowercase(canonicalName));
+        if (cached == settingsCache.end())
+        {
+            a_error = "The profile settings cache is unavailable.";
+            return false;
+        }
+
+        auto currentOverrides = cached->second.presetPreviewUserLayer;
+        if (!currentOverrides) currentOverrides = CurrentUserLayer(*profile, a_error);
+        const auto paths = ExpandSettingScopes(a_scopes);
+        const auto settingsToSave = currentOverrides && !paths.empty() ?
+                                        JsonOverlay::ProjectPaths(*currentOverrides, paths, a_error) :
+                                        currentOverrides;
+        const auto userDocument = settingsToSave ? Parse(*settingsToSave) : nullptr;
+        auto* userRoot = userDocument ? yyjson_doc_get_root(userDocument.get()) : nullptr;
+        if (!yyjson_is_obj(userRoot))
+        {
+            if (a_error.empty()) a_error = "The user settings could not be read.";
+            return false;
+        }
+        if (yyjson_obj_size(userRoot) == 0)
+        {
+            a_error = a_scopes.empty() ?
+                          "There are no user settings to make permanent." :
+                          "There are no user settings on this page to make permanent.";
+            return false;
+        }
+
+        const auto defaultsPath = ProfileDefaultsPath(*profile);
+        const auto profileSettings = ReadText(defaultsPath);
+        const auto merged = profileSettings ?
+                                JsonOverlay::Overlay(*profileSettings, *settingsToSave, a_error) :
+                                std::nullopt;
+        if (!merged || !ParseSettings(*merged, defaultsPath))
+        {
+            if (a_error.empty()) a_error = "The profile settings could not be prepared.";
+            return false;
+        }
+        if (!WriteTextAtomically(defaultsPath, JsonFormatting::Pretty(*merged), a_error)) return false;
+
+        profile->defaultSettingRoots = SettingRoots(*merged);
+        const auto localDefaults = LocalDefaultsText(*profile, a_error);
+        const auto presetDefaults = localDefaults ? PresetDefaultsText(*profile, a_error) : std::nullopt;
+        if (!localDefaults || !presetDefaults)
+        {
+            a_error = "The saved profile settings could not be reloaded.";
+            return false;
+        }
+        cached->second.localDefaults = *localDefaults;
+        cached->second.presetDefaults = *presetDefaults;
+        cached->second.preparedStack.reset();
+        WeatherPatcher::InvalidatePresetCache();
+        ApplySettings(std::format(
+            "settings-saved-as-default | profile={} | scope={}",
+            canonicalName,
+            a_scopes.empty() ? "all" : "page"));
+        a_profileName = canonicalName;
         return true;
     }
 

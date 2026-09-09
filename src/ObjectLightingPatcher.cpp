@@ -3,6 +3,7 @@
 #include <ObjectLightingPatcher.h>
 #include <ObjectLightingTracking.h>
 #include <RecordFilter.h>
+#include <RulePriority.h>
 #include <TuningUtil.h>
 
 #include <algorithm>
@@ -25,10 +26,12 @@ namespace MPL::ObjectLightingPatcher
         struct ActiveRule
         {
             std::string key;
+            std::string profile;
+            int priority = 0;
             RecordFilter::Resolved filter;
             std::optional<RecordFilter::Resolved> xemiFilter;
-            double emissiveMultiplier = 1.0;
-            double baseColorScale = 1.0;
+            std::optional<double> emissiveMultiplier;
+            std::optional<double> baseColorScale;
 
             bool operator==(const ActiveRule&) const = default;
         };
@@ -111,23 +114,27 @@ namespace MPL::ObjectLightingPatcher
 
                 for (const auto& rule : profile.filteredObjectLightingRules)
                 {
-                    auto emissiveMultiplier = 1.0;
-                    auto baseColorScale = 1.0;
+                    std::optional<double> emissiveMultiplier;
+                    std::optional<double> baseColorScale;
                     const auto value = RuleValue(settings, rule);
                     for (const auto& setting : rule.settings)
                     {
                         const auto multiplier = std::max(0.0, 1.0 + ((value - 1.0) * setting.scale));
                         if (setting.operation == TuningUtil::FilteredObjectLightingOperation::baseColorScale)
                         {
-                            baseColorScale *= multiplier;
+                            if (!baseColorScale) baseColorScale = 1.0;
+                            *baseColorScale *= multiplier;
                         }
                         else
                         {
-                            emissiveMultiplier *= multiplier;
+                            if (!emissiveMultiplier) emissiveMultiplier = 1.0;
+                            *emissiveMultiplier *= multiplier;
                         }
                     }
                     result.push_back({
                         .key = profile.name + "\x1F" + rule.id,
+                        .profile = profile.name,
+                        .priority = rule.priority,
                         .filter = RecordFilter::Resolve(rule.include, rule.exclude, noPlugins, noPlugins),
                         .xemiFilter = ResolveXemiFilter(rule.xemiInclude, rule.xemiExclude),
                         .emissiveMultiplier = emissiveMultiplier,
@@ -190,15 +197,14 @@ namespace MPL::ObjectLightingPatcher
             const std::unordered_set<std::string>& a_rules,
             const TuningUtil::FilteredObjectLightingOperation a_operation)
         {
-            auto result = 1.0;
-            for (const auto& rule : activeRules)
-            {
-                if (!a_rules.contains(rule.key)) continue;
-                result *= a_operation == TuningUtil::FilteredObjectLightingOperation::baseColorScale ?
-                              rule.baseColorScale :
-                              rule.emissiveMultiplier;
-            }
-            return std::max(0.0, result);
+            return RulePriority::ResolveMultiplier(1.0, activeRules,
+                [&](const auto& a_rule) { return a_rules.contains(a_rule.key); },
+                [&](const auto& a_rule)
+                {
+                    return a_operation == TuningUtil::FilteredObjectLightingOperation::baseColorScale ?
+                               a_rule.baseColorScale :
+                               a_rule.emissiveMultiplier;
+                });
         }
 
         void MarkDirty(RE::BSShaderProperty& a_property)
@@ -557,7 +563,7 @@ namespace MPL::ObjectLightingPatcher
             for (const auto& rule : activeRules)
                 DetailedLogging::Info(
                     "[Object Effect Lighting] setting | rule={} | emissiveMultiplier={} | baseColorScale={} | references={} | properties={} | awaiting3D={}",
-                    rule.key, rule.emissiveMultiplier, rule.baseColorScale,
+                    rule.key, rule.emissiveMultiplier.value_or(1.0), rule.baseColorScale.value_or(1.0),
                     trackedReferences.ReferenceCount(), trackedReferences.PropertyCount(), referencesAwaiting3D.size());
         }
     }

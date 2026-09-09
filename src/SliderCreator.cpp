@@ -5,6 +5,7 @@
 #include <SliderStorageFiles.h>
 #include <PresetCatalog.h>
 #include <FileIO.h>
+#include <JsonFormatting.h>
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <format>
+#include <limits>
 #include <memory>
 #include <ranges>
 #include <system_error>
@@ -71,6 +73,16 @@ namespace MPL::SliderCreator
             if (!yyjson_is_num(value)) return std::nullopt;
             const auto number = yyjson_get_num(value);
             return std::isfinite(number) ? std::optional<double>{ number } : std::nullopt;
+        }
+
+        std::optional<int> IntegerMember(yyjson_val* a_object, const std::string_view a_key)
+        {
+            auto* value = yyjson_is_obj(a_object) ? yyjson_obj_getn(a_object, a_key.data(), a_key.size()) : nullptr;
+            if (!yyjson_is_int(value) && !yyjson_is_uint(value)) return std::nullopt;
+            const auto number = yyjson_get_sint(value);
+            return number >= (std::numeric_limits<int>::min)() && number <= (std::numeric_limits<int>::max)() ?
+                       std::optional<int>{ static_cast<int>(number) } :
+                       std::nullopt;
         }
 
         bool BooleanMember(yyjson_val* a_object, const std::string_view a_key, const bool a_fallback = false)
@@ -179,6 +191,7 @@ namespace MPL::SliderCreator
             Definition result;
             result.id = StringMember(a_control, "id").value_or("");
             result.label = StringMember(a_control, "label").value_or("");
+            result.priority = IntegerMember(a_control, "priority").value_or(0);
             result.customLinks = ReadCustomLinks(a_control);
             result.hueScales = ReadHueScales(a_control);
             result.ignoreProfileFilters = BooleanMember(a_control, "ignoreProfileFilters");
@@ -434,6 +447,8 @@ namespace MPL::SliderCreator
                 !AddString(a_document, control, "id", a_definition.id) ||
                 !AddString(a_document, control, "label", a_definition.label))
                 return nullptr;
+            if (a_definition.priority != 0 &&
+                !yyjson_mut_obj_add_sint(a_document, control, "priority", a_definition.priority)) return nullptr;
             if (!a_definition.filtered && a_definition.settings.size() == 1)
             {
                 if (!AddString(a_document, control, "setting", a_definition.settings.front().setting)) return nullptr;
@@ -672,6 +687,11 @@ namespace MPL::SliderCreator
             if (!ValidID(a_definition.id))
             {
                 a_error = "The slider name could not be converted to a valid ID.";
+                return false;
+            }
+            if (a_definition.priority < 0 || a_definition.priority > 99)
+            {
+                a_error = "Slider priority must be between 0 and 99.";
                 return false;
             }
             if (a_definition.settings.empty() || std::ranges::any_of(a_definition.settings, [](const auto& a_target)
@@ -950,7 +970,7 @@ namespace MPL::SliderCreator
         bool KnownSliderKey(const std::string_view a_key)
         {
             static constexpr std::array keys{
-                "type", "id", "label", "customLinks", "hueScales", "hueFilter", "setting", "settings",
+                "type", "id", "label", "priority", "customLinks", "hueScales", "hueFilter", "setting", "settings",
                 "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "baseObjectFilter", "xemiFilter", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
@@ -998,7 +1018,7 @@ namespace MPL::SliderCreator
                 output = *draft;
             }
 
-            return FileIO::WriteAtomically(a_path, output + '\n', a_error);
+            return FileIO::WriteAtomically(a_path, JsonFormatting::Pretty(output) + '\n', a_error);
         }
 
         bool ReplaceRootStringMember(

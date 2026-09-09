@@ -83,6 +83,7 @@ namespace MPL::SliderCreator
     {
         std::string id;
         std::string label;
+        int priority = 0;
         std::vector<Target> settings;
         std::optional<CustomLinks> customLinks;
         std::optional<HueScales> hueScales;

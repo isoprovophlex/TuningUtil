@@ -27,20 +27,15 @@ namespace MPL::TuningUtil
         bool operator==(const PluginFilter&) const = default;
     };
 
-    struct LocationTypeFilter
+    struct ExclusiveControl
     {
-        std::vector<std::string> locationTypes;
-        std::vector<std::string> multiLocationExceptions;
+        bool weather = false;
+        bool exteriorImageSpace = false;
+        bool lightingTemplates = false;
+        bool cellLighting = false;
+        bool lightingImageSpace = false;
 
-        bool operator==(const LocationTypeFilter&) const = default;
-    };
-
-    struct LightingTemplateFilter
-    {
-        LocationTypeFilter include;
-        LocationTypeFilter exclude;
-
-        bool operator==(const LightingTemplateFilter&) const = default;
+        bool operator==(const ExclusiveControl&) const = default;
     };
 
     struct Settings
@@ -48,6 +43,7 @@ namespace MPL::TuningUtil
         int profilePriority = 0;
         bool EnableProfile = false;
         bool ShowAdvanced = false;
+        ExclusiveControl exclusiveControl;
         Links links;
         std::map<std::string, double> sliderValues;
 
@@ -80,7 +76,6 @@ namespace MPL::TuningUtil
         PluginFilter lightingTemplatePluginOwnership;
         PluginFilter lightingTemplatePluginInclusions;
         PluginFilter lightingTemplatePluginExclusions;
-        LightingTemplateFilter lightingTemplateFilter;
         std::map<std::string, double> filteredLightingTemplateAdjustments;
         std::vector<std::string> enableTemplateInherit;
         std::vector<std::string> cellExclusions;

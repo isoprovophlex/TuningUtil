@@ -11,6 +11,7 @@
 #include <limits>
 #include <mutex>
 #include <ranges>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -257,26 +258,38 @@ namespace MPL::ImageSpacePatcher
         struct ImageSpaceOwner
         {
             std::string profile;
-            TuningUtil::PluginFilter weather;
-            TuningUtil::PluginFilter lighting;
+            TuningUtil::PluginFilter plugins;
         };
-        std::vector<ImageSpaceOwner> owners;
+        const auto lightingController = TuningUtil::GetExclusiveController(
+            TuningUtil::ControlDomain::lightingImageSpace);
+        const auto exteriorController = TuningUtil::GetExclusiveController(
+            TuningUtil::ControlDomain::exteriorImageSpace);
+        const auto controlledBy = [](const std::optional<std::string>& a_controller, const std::string_view a_profile)
+        {
+            return !a_controller || Config::IEquals(*a_controller, a_profile);
+        };
+        std::vector<ImageSpaceOwner> lightingOwners;
+        std::vector<ImageSpaceOwner> exteriorOwners;
         for (const auto& profile : TuningUtil::GetProfiles())
         {
             auto name = profile.name;
             const auto& settings = TuningUtil::GetSettings(name);
-            if (settings.EnableProfile && (!PluginFilterEmpty(settings.weatherPluginOwnership) ||
-                !PluginFilterEmpty(settings.lightingTemplatePluginOwnership)))
-                owners.push_back({ name, settings.weatherPluginOwnership, settings.lightingTemplatePluginOwnership });
+            if (!settings.EnableProfile) continue;
+            if (controlledBy(lightingController, name) &&
+                !PluginFilterEmpty(settings.lightingTemplatePluginOwnership))
+                lightingOwners.push_back({ name, settings.lightingTemplatePluginOwnership });
+            if (controlledBy(exteriorController, name) &&
+                !PluginFilterEmpty(settings.weatherPluginOwnership))
+                exteriorOwners.push_back({ name, settings.weatherPluginOwnership });
         }
-        const auto findOwner = [&](const RE::TESImageSpace* imageSpace) -> const ImageSpaceOwner*
+        const auto findOwner = [&](const RE::TESImageSpace* imageSpace,
+                                   const std::span<const ImageSpaceOwner> a_owners) -> const ImageSpaceOwner*
         {
             const auto* origin = imageSpace ? imageSpace->GetFile(0) : nullptr;
             if (!origin) return nullptr;
             const ImageSpaceOwner* owner = nullptr;
-            for (const auto& candidate : owners)
-                if (PluginNameMatches(origin->GetFilename(), candidate.weather) ||
-                    PluginNameMatches(origin->GetFilename(), candidate.lighting)) owner = &candidate;
+            for (const auto& candidate : a_owners)
+                if (PluginNameMatches(origin->GetFilename(), candidate.plugins)) owner = &candidate;
             return owner;
         };
         static constexpr std::array lightingRoots{ std::string_view{ "lightImageSpace" } };
@@ -284,7 +297,7 @@ namespace MPL::ImageSpacePatcher
         for (auto profileName : TuningUtil::GetProfilesWithSettings(lightingRoots))
         {
             const auto& profileSettings = TuningUtil::GetSettings(profileName);
-            if (profileSettings.EnableProfile)
+            if (profileSettings.EnableProfile && controlledBy(lightingController, profileName))
             {
                 activeLightingProfiles.push_back(std::move(profileName));
             }
@@ -294,7 +307,7 @@ namespace MPL::ImageSpacePatcher
             std::unordered_map<std::string, WeatherPatcher::ImageSpaceSettings> stacks;
             for (auto* imageSpace : lightImageSpaces)
             {
-                const auto* owner = findOwner(imageSpace);
+                const auto* owner = findOwner(imageSpace, lightingOwners);
                 std::vector<std::string> matching;
                 std::string signature;
                 for (const auto& profile : activeLightingProfiles)
@@ -326,14 +339,15 @@ namespace MPL::ImageSpacePatcher
         for (auto& profileName : TuningUtil::GetProfilesWithSettings(exteriorRoots))
         {
             const auto& settings = TuningUtil::GetSettings(profileName);
+            const auto controlsExterior = controlledBy(exteriorController, profileName);
             if (auto* api = HeliosphanClient::Get())
             {
                 const auto force = settings.exteriorImageSpace.ForceCSTonemapping;
                 api->SetAutoCSTonemappingSuppressed(
                     profileName.c_str(),
-                    settings.EnableProfile && force.has_value() && !*force);
+                    settings.EnableProfile && controlsExterior && force.has_value() && !*force);
             }
-            if (!settings.EnableProfile)
+            if (!settings.EnableProfile || !controlsExterior)
             {
                 continue;
             }
@@ -352,7 +366,7 @@ namespace MPL::ImageSpacePatcher
             {
                 continue;
             }
-            const auto* owner = findOwner(imageSpace);
+            const auto* owner = findOwner(imageSpace, exteriorOwners);
             std::vector<std::string> matchingProfiles;
             std::string signature;
             for (const auto& profile : activeWeatherProfiles)

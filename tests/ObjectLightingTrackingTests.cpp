@@ -1,9 +1,11 @@
 #include <ObjectLightingTracking.h>
 #include <RecordFilterLogic.h>
+#include <RulePriority.h>
 
 #include <array>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
 
 namespace
@@ -175,6 +177,41 @@ int main()
         "references of the same base object can select different rules by XEMI region");
     passed &= Expect(baseRules == RuleKeys{ "a", "b", "c" },
         "per-reference matching must not modify the cached Base Object matches");
+
+    struct PriorityRule
+    {
+        std::string key;
+        std::string profile;
+        int priority = 0;
+        std::optional<double> emissiveMultiplier;
+        std::optional<double> baseColorScale;
+    };
+    std::vector<PriorityRule> priorityRules{
+        { "broad", "Lighting", 10, 2.0, std::nullopt },
+        { "specific", "Lighting", 20, 3.0, std::nullopt },
+        { "color", "Lighting", 30, std::nullopt, 4.0 },
+        { "other", "ATLM", 5, 0.5, std::nullopt },
+    };
+    auto matchedPriorityRules = RuleKeys{ "broad", "specific", "color", "other" };
+    const auto resolvePriority = [&](const bool a_baseColor)
+    {
+        return MPL::RulePriority::ResolveMultiplier(1.0, priorityRules,
+            [&](const auto& a_rule) { return matchedPriorityRules.contains(a_rule.key); },
+            [&](const auto& a_rule)
+            { return a_baseColor ? a_rule.baseColorScale : a_rule.emissiveMultiplier; });
+    };
+    passed &= Expect(resolvePriority(false) == 1.5,
+        "higher Object Effect Lighting priority wins within a profile while another profile stacks");
+    passed &= Expect(resolvePriority(true) == 4.0,
+        "a priority for one Object Effect Lighting property does not suppress another property");
+    matchedPriorityRules.erase("specific");
+    passed &= Expect(resolvePriority(false) == 1.0,
+        "a broader lower-priority rule remains active when the specific rule does not match the reference");
+    priorityRules.insert(priorityRules.begin() + 2,
+        { "specificEqual", "Lighting", 20, 0.5, std::nullopt });
+    matchedPriorityRules.insert("specific");
+    matchedPriorityRules.insert("specificEqual");
+    passed &= Expect(resolvePriority(false) == 0.75, "equal highest Object Effect Lighting priorities stack");
     tracker.Update(7, { shared }, matchesRegion(200));
     tracker.Flush(apply);
     passed &= Expect(shared->value == 15.0 && unrelated->value == 15.0,

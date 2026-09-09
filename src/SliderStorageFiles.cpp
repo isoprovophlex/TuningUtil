@@ -1,6 +1,7 @@
 #include <SliderStorageFiles.h>
 #include <SliderStorage.h>
 #include <FileIO.h>
+#include <JsonFormatting.h>
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -37,7 +38,7 @@ namespace MPL::SliderStorage
         const auto text = Read(a_path);
         const auto draft = text ? DraftLayout(*text, a_error) : std::nullopt;
         if (!draft) return false;
-        return FileIO::WriteAtomically(a_path, *draft, a_error);
+        return FileIO::WriteAtomically(a_path, JsonFormatting::Pretty(*draft), a_error);
     }
 
     bool CommitLayout(const std::filesystem::path& a_path, const std::string_view a_layout,
@@ -62,7 +63,8 @@ namespace MPL::SliderStorage
             const auto updated = text ? (presets ? RemapPresets(*text, oldBindings, newBindings, a_error) :
                 Remap(*text, oldBindings, newBindings, a_error)) : std::nullopt;
             if (!updated) return false;
-            if (*updated != *text) changes.push_back({ path, *text, *updated, {} });
+            const auto formatted = JsonFormatting::Pretty(*updated);
+            if (formatted != *text) changes.push_back({ path, *text, formatted, {} });
             return true;
         };
         if (!add(a_path.parent_path() / "profileSettings.json", false) ||
@@ -71,7 +73,7 @@ namespace MPL::SliderStorage
             if (a_error.empty()) a_error = "Slider values or presets could not be prepared. No files were changed.";
             return false;
         }
-        changes.push_back({ a_path, *original, *canonical, {} });
+        changes.push_back({ a_path, *original, JsonFormatting::Pretty(*canonical), {} });
         if (a_draft)
         {
             const auto draftOriginal = Read(a_draft->path);
@@ -81,7 +83,7 @@ namespace MPL::SliderStorage
                 if (a_error.empty()) a_error = "The working layout could not be prepared. No files were changed.";
                 return false;
             }
-            changes.push_back({ a_draft->path, *draftOriginal, *draft, {} });
+            changes.push_back({ a_draft->path, *draftOriginal, JsonFormatting::Pretty(*draft), {} });
         }
         std::error_code error;
         const auto cleanup = [&]()

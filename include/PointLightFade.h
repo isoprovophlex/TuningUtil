@@ -1,6 +1,6 @@
 #pragma once
 
-#include <algorithm>
+#include <RulePriority.h>
 #include <cstdint>
 
 namespace MPL::PointLightFade
@@ -10,11 +10,12 @@ namespace MPL::PointLightFade
         const double a_baseMultiplier, const std::uint32_t a_baseID,
         const Rules& a_rules, const MatchesSource& a_matchesSource, const Multiplier& a_multiplier)
     {
-        auto multiplier = std::max(0.0, a_baseMultiplier);
-        for (const auto& rule : a_rules)
-            if (rule.baseLights.contains(a_baseID) && a_matchesSource(rule.xemiFilter))
-                multiplier *= std::max(0.0, a_multiplier(rule));
-        return multiplier;
+        return RulePriority::ResolveMultiplier(a_baseMultiplier, a_rules,
+            [&](const auto& a_rule)
+            {
+                return a_rule.baseLights.contains(a_baseID) &&
+                       (!a_rule.useXemiFilter || a_matchesSource(a_rule.xemiFilter));
+            }, a_multiplier);
     }
 
     template <class Rules, class MatchesSource>

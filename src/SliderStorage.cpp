@@ -93,7 +93,7 @@ namespace MPL::SliderStorage
         std::optional<std::string> Write(yyjson_mut_doc* a_doc, std::string& a_error)
         {
             std::size_t length = 0;
-            auto* text = yyjson_mut_write(a_doc, YYJSON_WRITE_PRETTY, &length);
+            auto* text = yyjson_mut_write(a_doc, YYJSON_WRITE_PRETTY_TWO_SPACES, &length);
             if (!text) { a_error = "Slider values could not be serialized."; return std::nullopt; }
             std::string result(text, length);
             std::free(text);

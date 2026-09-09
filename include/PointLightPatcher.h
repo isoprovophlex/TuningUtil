@@ -2,6 +2,8 @@
 
 #include <Config/Lighting.h>
 #include <RecordFilter.h>
+#include <optional>
+#include <string>
 #include <unordered_map>
 
 namespace MPL::PointLightPatcher
@@ -10,10 +12,13 @@ namespace MPL::PointLightPatcher
 
     struct ReferenceRule
     {
+        std::string profile;
+        int priority = 0;
+        bool useXemiFilter = false;
         std::unordered_set<RE::FormID> baseLights;
         RecordFilter::Resolved xemiFilter;
-        double fadeMultiplier = 1.0;
-        double radiusMultiplier = 1.0;
+        std::optional<double> fadeMultiplier;
+        std::optional<double> radiusMultiplier;
 
         bool operator==(const ReferenceRule&) const = default;
     };

@@ -3021,7 +3021,13 @@ namespace MPL::WeatherPatcher
         std::size_t weathersApplied = 0;
         std::vector<ActiveWeatherProfile> profiles;
         std::vector<ActiveFilteredWeatherProfile> filteredProfiles;
-        const auto weatherOwners = ResolveWeatherOwners(weatherSets);
+        const auto exclusiveController = TuningUtil::GetExclusiveController(
+            TuningUtil::ControlDomain::weather);
+        const auto controlsWeather = [&](const std::string_view a_profile)
+        {
+            return !exclusiveController || Config::IEquals(*exclusiveController, a_profile);
+        };
+        const auto weatherOwners = exclusiveController ? WeatherOwnerMap{} : ResolveWeatherOwners(weatherSets);
 
         for (auto& profileName : GetOrderedSettingsProfiles())
         {
@@ -3033,6 +3039,14 @@ namespace MPL::WeatherPatcher
             if (!settings->EnableProfile)
             {
                 DetailedLogging::Info("[Weather] {} | status=disabled", profileName);
+                continue;
+            }
+            if (!controlsWeather(profileName))
+            {
+                DetailedLogging::Info(
+                    "[Weather] {} | status=overridden | profile={}",
+                    profileName,
+                    *exclusiveController);
                 continue;
             }
 
@@ -3047,7 +3061,7 @@ namespace MPL::WeatherPatcher
             }
             auto profileName = profile.name;
             auto settings = LoadSettings(profileName);
-            if (!settings || !settings->EnableProfile)
+            if (!settings || !settings->EnableProfile || !controlsWeather(profileName))
             {
                 continue;
             }

@@ -76,6 +76,20 @@ namespace MPL::TuningMenu
                 ImGuiMCP::ImVec2(width, std::numeric_limits<float>::max()));
         }
 
+        bool BeginPromptModal(const char* a_name)
+        {
+            PreparePromptModal();
+            ImGuiMCP::PushStyleVar(
+                ImGuiMCP::ImGuiStyleVar_WindowPadding,
+                ImGuiMCP::ImVec2(8.0f, 8.0f));
+            const auto visible = ImGuiMCP::BeginPopupModal(
+                a_name,
+                nullptr,
+                ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize);
+            ImGuiMCP::PopStyleVar();
+            return visible;
+        }
+
         struct MenuEffectOverride
         {
             bool freezeTimeEnabled = true;
@@ -473,6 +487,12 @@ namespace MPL::TuningMenu
             lighting,
         };
 
+        struct TextListEditorState
+        {
+            std::array<char, 96> input{};
+            int selection = -1;
+        };
+
         struct SliderCreatorState
         {
             std::string profile;
@@ -487,9 +507,14 @@ namespace MPL::TuningMenu
             std::array<char, 96> excludeContainsInput{};
             int includeContainsSelection = -1;
             int excludeContainsSelection = -1;
+            TextListEditorState includeLocationTypes;
+            TextListEditorState includeMultiLocationExceptions;
+            TextListEditorState excludeLocationTypes;
+            TextListEditorState excludeMultiLocationExceptions;
             std::vector<SliderCreator::Target> settings;
             SliderCreator::Filter include;
             SliderCreator::Filter exclude;
+            int priority = 0;
             bool useXemiFilter = false;
             SliderCreator::Filter xemiInclude;
             SliderCreator::Filter xemiExclude;
@@ -522,12 +547,6 @@ namespace MPL::TuningMenu
             float functionalPreviewValue = std::numeric_limits<float>::quiet_NaN();
             std::string functionalPreviewKey;
             bool initialized = false;
-        };
-
-        struct TextListEditorState
-        {
-            std::array<char, 96> input{};
-            int selection = -1;
         };
 
         struct PluginFilterEditorState
@@ -573,10 +592,6 @@ namespace MPL::TuningMenu
             std::array<char, 96> excludeContainsInput{};
             int includeContainsSelection = -1;
             int excludeContainsSelection = -1;
-            TextListEditorState includeLocationTypes;
-            TextListEditorState includeMultiLocationExceptions;
-            TextListEditorState excludeLocationTypes;
-            TextListEditorState excludeMultiLocationExceptions;
             RE::TESForm* selectedRecord = nullptr;
             std::array<char, 96> searchInput{};
             PluginFilterEditorState plugins;
@@ -1382,6 +1397,7 @@ namespace MPL::TuningMenu
             static constexpr std::array errors{
                 std::pair{ "Enter a slider name.", "sliderCreatorEnterSliderName" },
                 std::pair{ "The slider ID must contain only letters, numbers, underscores, or hyphens.", "sliderCreatorInvalidSliderID" },
+                std::pair{ "Slider priority must be between 0 and 99.", "sliderCreatorInvalidPriority" },
                 std::pair{ "Add at least one valid setting to the slider.", "sliderCreatorNoValidSettings" },
                 std::pair{ "The slider contains a setting path that TuningUtil does not support.", "sliderCreatorUnsupportedSettingPath" },
                 std::pair{ "Filtered sliders support only weather brightness, saturation, and hue-shift settings.", "sliderCreatorFilteredUnsupportedSetting" },
@@ -1472,8 +1488,7 @@ namespace MPL::TuningMenu
             const std::string& a_message,
             const std::string& a_confirmLabel)
         {
-            PreparePromptModal();
-            if (!ImGuiMCP::BeginPopupModal(a_popup.c_str(), nullptr, ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize))
+            if (!BeginPromptModal(a_popup.c_str()))
                 return false;
             ImGuiMCP::TextWrapped("%s", a_message.c_str());
             const auto confirmed = ActionButton(a_confirmLabel.c_str(), SKSEMenuSettings::ButtonKind::destructive);
@@ -4813,7 +4828,6 @@ namespace MPL::TuningMenu
             std::vector<std::string>* a_excludedContains,
             TuningUtil::PluginFilter& a_pluginInclusions,
             TuningUtil::PluginFilter& a_pluginExclusions,
-            TuningUtil::LightingTemplateFilter* a_locationFilter,
             const std::span<const RecordMenuEntry> a_entries,
             const RecordFilterKind a_kind,
             const std::string_view a_selectorLabel,
@@ -4828,9 +4842,6 @@ namespace MPL::TuningMenu
                 a_excludedContains ? *a_excludedContains : std::vector<std::string>{};
             const auto originalPluginInclusions = a_pluginInclusions;
             const auto originalPluginExclusions = a_pluginExclusions;
-            const auto originalLocationFilter = a_locationFilter ?
-                                                    std::optional{ *a_locationFilter } :
-                                                    std::nullopt;
             const auto id = std::string(a_id);
             auto& state = recordFilterEditorStates[id];
             const auto selected = std::ranges::find(a_entries, state.selectedRecord, &RecordMenuEntry::form);
@@ -4897,17 +4908,6 @@ namespace MPL::TuningMenu
                         state.includeContainsSelection,
                         "RecordFilterInclude" + id);
                 }
-                if (a_locationFilter)
-                {
-                    DrawCreatorLocationTypeList(
-                        a_locationFilter->include.locationTypes,
-                        state.includeLocationTypes,
-                        "RecordFilterIncludeLocationTypes" + id);
-                    DrawCreatorMultiLocationExceptionList(
-                        a_locationFilter->include.multiLocationExceptions,
-                        state.includeMultiLocationExceptions,
-                        "RecordFilterIncludeMultiLocationExceptions" + id);
-                }
             }
 
             if (sections.Start(
@@ -4925,17 +4925,6 @@ namespace MPL::TuningMenu
                         state.excludeContainsInput,
                         state.excludeContainsSelection,
                         "RecordFilterExclude" + id);
-                }
-                if (a_locationFilter)
-                {
-                    DrawCreatorLocationTypeList(
-                        a_locationFilter->exclude.locationTypes,
-                        state.excludeLocationTypes,
-                        "RecordFilterExcludeLocationTypes" + id);
-                    DrawCreatorMultiLocationExceptionList(
-                        a_locationFilter->exclude.multiLocationExceptions,
-                        state.excludeMultiLocationExceptions,
-                        "RecordFilterExcludeMultiLocationExceptions" + id);
                 }
             }
 
@@ -4977,8 +4966,6 @@ namespace MPL::TuningMenu
                     originalIncludedContains != *a_includedContains) ||
                    (a_excludedContains &&
                     originalExcludedContains != *a_excludedContains) ||
-                   (a_locationFilter &&
-                    *originalLocationFilter != *a_locationFilter) ||
                    originalPluginInclusions != a_pluginInclusions ||
                    originalPluginExclusions != a_pluginExclusions;
         }
@@ -5000,7 +4987,6 @@ namespace MPL::TuningMenu
                 std::addressof(a_exclusions.contains),
                 a_pluginInclusions,
                 a_pluginExclusions,
-                nullptr,
                 a_entries,
                 a_kind,
                 a_selectorLabel,
@@ -5025,33 +5011,6 @@ namespace MPL::TuningMenu
                 nullptr,
                 a_pluginInclusions,
                 a_pluginExclusions,
-                nullptr,
-                a_entries,
-                a_kind,
-                a_selectorLabel,
-                a_id,
-                true);
-        }
-
-        bool DrawRecordFilterEditor(
-            std::vector<std::string>& a_inclusions,
-            std::vector<std::string>& a_exclusions,
-            TuningUtil::PluginFilter& a_pluginInclusions,
-            TuningUtil::PluginFilter& a_pluginExclusions,
-            TuningUtil::LightingTemplateFilter& a_locationFilter,
-            const std::span<const RecordMenuEntry> a_entries,
-            const RecordFilterKind a_kind,
-            const std::string_view a_selectorLabel,
-            const std::string_view a_id)
-        {
-            return DrawRecordFilterEditor(
-                a_inclusions,
-                a_exclusions,
-                nullptr,
-                nullptr,
-                a_pluginInclusions,
-                a_pluginExclusions,
-                std::addressof(a_locationFilter),
                 a_entries,
                 a_kind,
                 a_selectorLabel,
@@ -5228,6 +5187,26 @@ namespace MPL::TuningMenu
             if (a_weather)
             {
                 changed |= drawBox(
+                    "ExclusiveControl",
+                    SKSEMenuSettings::Label("exclusiveControl", "Exclusive Control"),
+                    [&]
+                    {
+                        auto sectionChanged = false;
+                        const auto weatherLabel =
+                            SKSEMenuSettings::Label("exclusiveWeatherControl", "Weather Records") +
+                            "##" + moduleID + "ExclusiveWeather";
+                        sectionChanged |= ImGuiMCP::Checkbox(
+                            weatherLabel.c_str(),
+                            &settings.exclusiveControl.weather);
+                        const auto imageSpaceLabel =
+                            SKSEMenuSettings::Label("exclusiveExteriorImageSpaceControl", "Weather Image Spaces") +
+                            "##" + moduleID + "ExclusiveExteriorImageSpace";
+                        sectionChanged |= ImGuiMCP::Checkbox(
+                            imageSpaceLabel.c_str(),
+                            &settings.exclusiveControl.exteriorImageSpace);
+                        return sectionChanged;
+                    });
+                changed |= drawBox(
                     "WeatherLinks",
                     SKSEMenuSettings::Label("weatherLinks", "Links"),
                     [&]
@@ -5267,7 +5246,7 @@ namespace MPL::TuningMenu
                     { return DrawGlobalWeatherFilters(a_menu, settings, moduleID + "WeatherFilter"); });
                 const auto pluginOwnershipChanged = drawBox(
                     "PluginOwnership",
-                    SKSEMenuSettings::Label("weatherOwnership", "Weather Ownership"),
+                    SKSEMenuSettings::Label("weatherOwnership", "Ownership"),
                     [&]
                     {
                         return DrawPluginOwnership(
@@ -5297,6 +5276,32 @@ namespace MPL::TuningMenu
             else
             {
                 changed |= drawBox(
+                    "ExclusiveControl",
+                    SKSEMenuSettings::Label("exclusiveControl", "Exclusive Control"),
+                    [&]
+                    {
+                        auto sectionChanged = false;
+                        const auto templatesLabel =
+                            SKSEMenuSettings::Label("exclusiveLightingTemplateControl", "Lighting Templates") +
+                            "##" + moduleID + "ExclusiveLightingTemplates";
+                        sectionChanged |= ImGuiMCP::Checkbox(
+                            templatesLabel.c_str(),
+                            &settings.exclusiveControl.lightingTemplates);
+                        const auto cellsLabel =
+                            SKSEMenuSettings::Label("exclusiveCellLightingControl", "Cell Lighting") +
+                            "##" + moduleID + "ExclusiveCellLighting";
+                        sectionChanged |= ImGuiMCP::Checkbox(
+                            cellsLabel.c_str(),
+                            &settings.exclusiveControl.cellLighting);
+                        const auto imageSpaceLabel =
+                            SKSEMenuSettings::Label("exclusiveLightingImageSpaceControl", "Lighting Image Spaces") +
+                            "##" + moduleID + "ExclusiveLightingImageSpace";
+                        sectionChanged |= ImGuiMCP::Checkbox(
+                            imageSpaceLabel.c_str(),
+                            &settings.exclusiveControl.lightingImageSpace);
+                        return sectionChanged;
+                    });
+                changed |= drawBox(
                     "LightingAmbientLinks",
                     SKSEMenuSettings::Label("lightingAmbientLinks", "Ambient Links"),
                     [&]
@@ -5322,7 +5327,7 @@ namespace MPL::TuningMenu
                     "LightingHueRanges",
                     SKSEMenuSettings::Label(
                         "lightingHueRanges",
-                        "Ambient & Bulb Hue Ranges"),
+                        "Hue Ranges"),
                     [&]
                     {
                         return DrawHueRanges(
@@ -5349,7 +5354,6 @@ namespace MPL::TuningMenu
                             settings.lightingTemplateExclusions,
                             settings.lightingTemplatePluginInclusions,
                             settings.lightingTemplatePluginExclusions,
-                            settings.lightingTemplateFilter,
                             GetLightingTemplateMenuEntries(),
                             RecordFilterKind::lightingTemplate,
                             SKSEMenuSettings::Label("lightingTemplate", "Lighting Template"),
@@ -6658,6 +6662,7 @@ namespace MPL::TuningMenu
             a_state.customLinks = definition.customLinks;
             a_state.include = definition.include;
             a_state.exclude = definition.exclude;
+            a_state.priority = definition.priority;
             a_state.useXemiFilter = definition.useXemiFilter;
             a_state.xemiInclude = definition.xemiInclude;
             a_state.xemiExclude = definition.xemiExclude;
@@ -7345,6 +7350,7 @@ namespace MPL::TuningMenu
             const auto baseLightFilter = CreatorUsesBaseLightFilter(a_state);
             const auto baseObjectFilter = CreatorUsesBaseObjectFilter(a_state);
             result.settings = a_state.settings;
+            result.priority = a_state.priority;
             if (CreatorCustomLinkDomain(a_state) != SliderCreatorLinkDomain::none)
                 result.customLinks = a_state.customLinks;
             result.filtered = filtered;
@@ -7648,6 +7654,8 @@ namespace MPL::TuningMenu
             }
         }
 
+        void DrawSliderCreatorPriority(SliderCreatorState&, const std::string&);
+
         void DrawSliderCreatorAdvancedSettings(
             StackedSectionBoxes& a_sections,
             SliderCreatorState& a_state,
@@ -7671,6 +7679,7 @@ namespace MPL::TuningMenu
             {
                 const auto invertLabel = SKSEMenuSettings::Label("sliderCreatorInvert", "Invert Slider");
                 ImGuiMCP::Checkbox((invertLabel + "##" + a_id).c_str(), &a_state.invert);
+                DrawSliderCreatorPriority(a_state, a_id);
                 if (a_operation && !CreatorUsesBaseLightFilter(a_state) &&
                     !CreatorUsesBaseObjectFilter(a_state))
                 {
@@ -7730,15 +7739,6 @@ namespace MPL::TuningMenu
 
             if (sections.StartBox("SliderAppearanceSection##" + a_id))
             {
-                const auto customWidthLabel = SKSEMenuSettings::Label("sliderCreatorCustomWidth", "Custom Width");
-                ImGuiMCP::Checkbox((customWidthLabel + "##" + a_id).c_str(), &a_state.useWidth);
-                if (a_state.useWidth)
-                {
-                    const auto widthLabel = SKSEMenuSettings::Label("sliderCreatorWidth", "Width");
-                    ImGuiMCP::SetNextItemWidth(SliderCreatorScaleInputWidth(widthLabel));
-                    ImGuiMCP::InputFloat((widthLabel + "##" + a_id).c_str(), &a_state.width, 10.0f, 50.0f, "%.1f");
-                }
-
                 const auto automaticFormat = SliderCreatorAutomaticFormat(a_state);
                 const auto automaticLabel = std::format(
                     "{} ({})",
@@ -7769,6 +7769,18 @@ namespace MPL::TuningMenu
                     ImGuiMCP::EndCombo();
                 }
             }
+        }
+
+        void DrawSliderCreatorPriority(SliderCreatorState& a_state, const std::string& a_stateKey)
+        {
+            a_state.priority = std::clamp(a_state.priority, 0, 99);
+            const auto* style = ImGuiMCP::GetStyle();
+            const auto horizontalPadding = style ? style->FramePadding.x * 2.0f : 8.0f;
+            ImGuiMCP::SetNextItemWidth(ImGuiMCP::CalcTextSize("999").x + horizontalPadding);
+            const auto priorityLabel = SKSEMenuSettings::Label("sliderCreatorPriority", "Priority") +
+                                       "##SliderCreatorPriority" + a_stateKey;
+            if (ImGuiMCP::InputInt(priorityLabel.c_str(), std::addressof(a_state.priority), 0, 0))
+                a_state.priority = std::clamp(a_state.priority, 0, 99);
         }
 
         void DrawSliderCreator(
@@ -8264,6 +8276,14 @@ namespace MPL::TuningMenu
                             state.includeContainsInput,
                             state.includeContainsSelection,
                             "LightingTemplateInclude" + stateKey);
+                        DrawCreatorLocationTypeList(
+                            state.include.locationTypes,
+                            state.includeLocationTypes,
+                            "SliderCreatorLightingTemplateIncludeLocationTypes" + stateKey);
+                        DrawCreatorMultiLocationExceptionList(
+                            state.include.multiLocationExceptions,
+                            state.includeMultiLocationExceptions,
+                            "SliderCreatorLightingTemplateIncludeMultiLocationExceptions" + stateKey);
                     }
                     if (filterSections.Start(
                             SKSEMenuSettings::Label("excludedRecords", "Excluded Records"),
@@ -8278,6 +8298,14 @@ namespace MPL::TuningMenu
                             state.excludeContainsInput,
                             state.excludeContainsSelection,
                             "LightingTemplateExclude" + stateKey);
+                        DrawCreatorLocationTypeList(
+                            state.exclude.locationTypes,
+                            state.excludeLocationTypes,
+                            "SliderCreatorLightingTemplateExcludeLocationTypes" + stateKey);
+                        DrawCreatorMultiLocationExceptionList(
+                            state.exclude.multiLocationExceptions,
+                            state.excludeMultiLocationExceptions,
+                            "SliderCreatorLightingTemplateExcludeMultiLocationExceptions" + stateKey);
                     }
                 }
             }
@@ -8303,7 +8331,6 @@ namespace MPL::TuningMenu
                         std::addressof(state.xemiExclude.contains),
                         noPluginInclusions,
                         noPluginExclusions,
-                        nullptr,
                         GetRegionMenuEntries(),
                         RecordFilterKind::region,
                         SKSEMenuSettings::Label("xemiRegion", "XEMI Region"),
@@ -8579,6 +8606,89 @@ namespace MPL::TuningMenu
             statusMessage = saved ?
                                 StatusText("savePageSuccess") :
                                 StatusText("savePageFailure");
+        }
+
+        void DrawSaveSettingsAsDefaultAction(
+            const MenuDefinition& a_menu,
+            const std::span<const MenuControl> a_controls,
+            const bool a_allSettings,
+            const std::string_view a_id)
+        {
+            const auto scopes = a_allSettings ? std::vector<std::string>{} : PageResetScopes(a_menu, a_controls);
+            const auto layoutSession = layoutEditSessions.find(a_menu.profile);
+            const auto disabled = (!a_allSettings && scopes.empty()) ||
+                                  (layoutSession != layoutEditSessions.end() && layoutSession->second.dirty) ||
+                                  HasPendingPresetChanges(a_menu.profile);
+            const auto popupTitle = SKSEMenuSettings::Label(
+                                        a_allSettings ?
+                                            "saveAllPageSettingsAsDefaultTitle" :
+                                            "savePageSettingsAsDefaultTitle",
+                                        a_allSettings ?
+                                            "Save All Page Settings as Default?" :
+                                            "Save Page Settings as Default?") +
+                                    "##" + a_menu.profile + std::string(a_id);
+
+            ImGuiMCP::BeginDisabled(disabled);
+            {
+                const ButtonColorStyle color(
+                    SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
+                const auto label = SKSEMenuSettings::Label(
+                                       a_allSettings ?
+                                           "saveAllPageSettingsAsDefault" :
+                                           "savePageSettingsAsDefault",
+                                       a_allSettings ?
+                                           "Save All Page Settings as Default" :
+                                           "Save Page Settings as Default") +
+                                   "##" + a_menu.profile + std::string(a_id);
+                if (ImGuiMCP::Button(label.c_str())) ImGuiMCP::OpenPopup(popupTitle.c_str());
+            }
+            ImGuiMCP::EndDisabled();
+
+            if (!BeginPromptModal(popupTitle.c_str()))
+                return;
+
+            const auto page = std::ranges::find_if(a_menu.pages, [&](const auto& a_page)
+                { return a_page.modules.data() == a_controls.data(); });
+            const auto& pageTitle = page != a_menu.pages.end() ? page->title : a_menu.profilePage.title;
+            ImGuiMCP::TextWrapped(
+                "%s",
+                DisplayText(
+                    a_allSettings ?
+                        "saveAllPageSettingsAsDefaultConfirmation" :
+                        "savePageSettingsAsDefaultConfirmation",
+                    { { "profile", a_menu.title }, { "page", pageTitle } })
+                    .c_str());
+            const auto confirmLabel = SKSEMenuSettings::Label(
+                                          "confirmSaveSettingsAsDefault",
+                                          "Save as Default") +
+                                      "##" + a_menu.profile + std::string(a_id);
+            if (ActionButton(confirmLabel.c_str(), SKSEMenuSettings::ButtonKind::destructive))
+            {
+                auto profile = a_menu.profile;
+                std::string error;
+                const auto saved = TuningUtil::SaveSettingsAsProfileDefaults(profile, scopes, error);
+                if (saved)
+                {
+                    profilePriorityInputs[profile] = TuningUtil::GetSettings(profile).profilePriority;
+                    RefreshProfileMenuState(a_menu, scopes);
+                }
+                statusMessage = saved ?
+                                    StatusText(
+                                        a_allSettings ?
+                                            "allSettingsDefaultsSaved" :
+                                            "pageSettingsDefaultsSaved",
+                                        { { "profile", a_menu.title }, { "page", pageTitle } }) :
+                                    StatusText(
+                                        "settingsDefaultsSaveFailure",
+                                        { { "reason", error } });
+                ImGuiMCP::CloseCurrentPopup();
+            }
+            SameActionLine();
+            const auto cancelLabel = SKSEMenuSettings::Label("cancelAction", "Cancel") +
+                                     "##" + a_menu.profile + std::string(a_id);
+            if (ActionButton(cancelLabel.c_str(), SKSEMenuSettings::ButtonKind::ordinary))
+                ImGuiMCP::CloseCurrentPopup();
+            ImGuiMCP::EndPopup();
         }
 
         void RestoreProfilePage(const MenuDefinition& a_menu, const std::span<const MenuControl> a_controls)
@@ -9972,6 +10082,12 @@ namespace MPL::TuningMenu
                 }
             }
             ImGuiMCP::EndDisabled();
+            SameActionLine();
+            DrawSaveSettingsAsDefaultAction(
+                a_menu.definition,
+                a_menu.definition.profilePage.modules,
+                true,
+                "ProfileEditSaveAllPageSettingsAsDefault");
         }
 
         void DrawPageLayoutEditActions(
@@ -10074,6 +10190,15 @@ namespace MPL::TuningMenu
                 }
             }
             ImGuiMCP::EndDisabled();
+            if (validPage && a_pageIndex < a_menu.definition.pages.size())
+            {
+                SameActionLine();
+                DrawSaveSettingsAsDefaultAction(
+                    a_menu.definition,
+                    a_menu.definition.pages[a_pageIndex].modules,
+                    false,
+                    std::format("PageEditSavePageSettingsAsDefault{}", a_pageIndex));
+            }
         }
 
         void DrawAllLayoutEditActions()
@@ -10846,11 +10971,7 @@ namespace MPL::TuningMenu
                     else disableDevMode();
                 }
             }
-            PreparePromptModal();
-            if (ImGuiMCP::BeginPopupModal(
-                    disableDevModePopup.c_str(),
-                    nullptr,
-                    ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize))
+            if (BeginPromptModal(disableDevModePopup.c_str()))
             {
                 DrawDisplayText("disableDevModeConfirmation");
                 const auto discardLabel =
@@ -10881,11 +11002,7 @@ namespace MPL::TuningMenu
                     ImGuiMCP::OpenPopup(deleteUserSettingsPopup);
                 }
             }
-            PreparePromptModal();
-            if (ImGuiMCP::BeginPopupModal(
-                    deleteUserSettingsPopup,
-                    nullptr,
-                    ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize))
+            if (BeginPromptModal(deleteUserSettingsPopup))
             {
                 const auto confirmation = DisplayText("deleteUserSettingsConfirmation");
                 ImGuiMCP::TextWrapped("%s", confirmation.c_str());

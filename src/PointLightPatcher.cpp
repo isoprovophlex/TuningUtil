@@ -311,7 +311,7 @@ namespace MPL::PointLightPatcher
             const auto* light = GetBaseLight(a_reference);
             return light && std::ranges::any_of(a_state.referenceRules, [&](const auto& rule)
                 {
-                    return rule.baseLights.contains(light->GetFormID()) &&
+                    return rule.useXemiFilter && rule.baseLights.contains(light->GetFormID()) &&
                         RecordFilter::Matches(ExternalEmittanceSource(a_reference), rule.xemiFilter);
                 });
         }
@@ -325,7 +325,7 @@ namespace MPL::PointLightPatcher
         {
             const auto* light = GetBaseLight(a_reference);
             return PointLightFade::Resolve(
-                BrightnessFadeMultiplier(SettingsForBaseLight(light, a_state)),
+                BrightnessFadeMultiplier(a_state.settings),
                 light ? light->GetFormID() : 0, a_state.referenceRules,
                 [&](const auto& filter)
                 { return RecordFilter::Matches(ExternalEmittanceSource(a_reference), filter); });
@@ -359,7 +359,7 @@ namespace MPL::PointLightPatcher
             const auto* light = GetBaseLight(a_reference);
             if (!light || !a_reference->Is3DLoaded()) return;
             const auto multiplier = PointLightFade::ResolveRadius(
-                SettingsForBaseLight(light, a_state).radiusMultiplier,
+                a_state.settings.radiusMultiplier,
                 light->GetFormID(), a_state.referenceRules, [&](const auto& filter)
                 { return RecordFilter::Matches(ExternalEmittanceSource(a_reference), filter); });
             const auto* extraRadius = a_reference->extraList.GetByType<RE::ExtraRadius>();
@@ -718,14 +718,14 @@ namespace MPL::PointLightPatcher
                                                std::string{};
             const auto emittanceID = a_state.referenceRules.empty() ? 0 : ResolveEmittance(emittance);
             const auto radius = PointLightFade::ResolveRadius(
-                settings.radiusMultiplier, baseLight ? baseLight->GetFormID() : 0,
+                a_state.settings.radiusMultiplier, baseLight ? baseLight->GetFormID() : 0,
                 a_state.referenceRules, [&](const auto& filter)
                 {
                     return !emittance.empty() && RecordFilterLogic::MatchesRecord(
                         emittanceID, filter, [&] { return emittance; });
                 });
             const double fade = PointLightFade::Resolve(
-                BrightnessFadeMultiplier(settings), baseLight ? baseLight->GetFormID() : 0,
+                BrightnessFadeMultiplier(a_state.settings), baseLight ? baseLight->GetFormID() : 0,
                 a_state.referenceRules, [&](const auto& filter)
                 {
                     return !emittance.empty() && RecordFilterLogic::MatchesRecord(

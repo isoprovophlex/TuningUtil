@@ -1,5 +1,6 @@
 #include <PresetCatalog.h>
 #include <FileIO.h>
+#include <JsonFormatting.h>
 
 #include <algorithm>
 #include <cctype>
@@ -269,7 +270,7 @@ namespace MPL::PresetCatalog
             return false;
         }
 
-        return FileIO::WriteAtomically(a_path, *text + '\n', a_error);
+        return FileIO::WriteAtomically(a_path, JsonFormatting::Pretty(*text) + '\n', a_error);
     }
 
     Category* FindCategory(Catalog& a_catalog, const std::string_view a_name)

@@ -103,6 +103,25 @@ int main()
     passed &= Expect(Near(gains[directional], 2.0) && Near(gains[fogFar], 3.0),
         "filtered and standard custom-link multipliers stack without leaking into each other's links");
 
+    const Topology atlmLinks{ Link{ ambientColors, 1.0 }, std::nullopt,
+        std::nullopt, Link{ ambientColors, 1.0 }, Link{ ambientColors, 1.0 } };
+    filteredValues = neutral;
+    filteredValues[directional] = 3.0;
+    filteredActive = {};
+    filteredActive[directional] = true;
+    const auto atlmDirectional = Math::ResolveContribution(filteredValues, filteredActive, atlmLinks);
+    passed &= Expect(Near(atlmDirectional[directional], 3.0) && Near(atlmDirectional[ambientColors], 1.0),
+        "a filtered directional slider uses its profile link topology");
+    filteredValues = neutral;
+    filteredValues[ambientColors] = 2.0;
+    filteredActive = {};
+    filteredActive[ambientColors] = true;
+    const auto atlmAmbient = Math::ResolveContribution(filteredValues, filteredActive, atlmLinks);
+    passed &= Expect(Near(atlmAmbient[ambient], 2.0) && Near(atlmAmbient[directional], 1.0) &&
+                         Near(atlmAmbient[ambientColors], 2.0) && Near(atlmAmbient[fogFar], 2.0) &&
+                         Near(atlmAmbient[fogNear], 2.0),
+        "a filtered ambient slider follows its profile links without changing independent directional lighting");
+
     profile = neutral;
     profile[directional] = 0.5;
     Overrides directionalOverride;

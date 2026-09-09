@@ -20,6 +20,8 @@ namespace MPL::ProfileSetup
         "weatherPluginOwnership",
         "weatherPluginInclusions",
         "weatherPluginExclusions",
+        "exclusiveControl.weather",
+        "exclusiveControl.exteriorImageSpace",
     };
 
     inline const std::vector<std::string> kLightingSettingPaths{
@@ -32,7 +34,9 @@ namespace MPL::ProfileSetup
         "lightingTemplatePluginOwnership",
         "lightingTemplatePluginInclusions",
         "lightingTemplatePluginExclusions",
-        "lightingTemplateFilter",
+        "exclusiveControl.lightingTemplates",
+        "exclusiveControl.cellLighting",
+        "exclusiveControl.lightingImageSpace",
     };
 
     inline const std::vector<std::string> kSettingPaths = []
