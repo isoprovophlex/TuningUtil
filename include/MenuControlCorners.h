@@ -11,6 +11,9 @@ namespace MPL::MenuControlCorners
         ~Scope();
         Scope(const Scope&) = delete;
         Scope& operator=(const Scope&) = delete;
+
+    private:
+        int styleVariableCount = 0;
     };
 
     bool SliderFloat(const char* a_label, float* a_value, float a_minimum, float a_maximum,

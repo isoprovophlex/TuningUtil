@@ -270,6 +270,16 @@ namespace MPL::SliderCreator
                     result.xemiExclude = ReadFilter(yyjson_obj_get(xemiFilter, "exclude"));
                 }
             }
+            if (result.filterDomain == FilterDomain::baseObject)
+            {
+                if (auto* cellFilter = yyjson_obj_get(a_control, "cellFilter"); yyjson_is_obj(cellFilter))
+                {
+                    result.interiorOnly = BooleanMember(cellFilter, "interior");
+                    result.notInterior = BooleanMember(cellFilter, "notInterior");
+                    result.cellInclude = ReadFilter(yyjson_obj_get(cellFilter, "include"));
+                    result.cellExclude = ReadFilter(yyjson_obj_get(cellFilter, "exclude"));
+                }
+            }
             result.filtered = structured || result.ignoreProfileFilters || result.useTimes ||
                               result.hueScales ||
                               result.filterDomain == FilterDomain::lightingTemplate ||
@@ -372,12 +382,14 @@ namespace MPL::SliderCreator
             yyjson_mut_val* a_module,
             const std::string_view a_header,
             const std::string_view a_text,
-            const bool a_defaultOpen)
+            const bool a_defaultOpen,
+            const bool a_boxed)
         {
             return AddString(a_document, a_module, "type", "description") &&
                    (a_header.empty() || AddString(a_document, a_module, "header", a_header)) &&
                    AddString(a_document, a_module, "text", a_text) &&
-                   (!a_defaultOpen || yyjson_mut_obj_add_bool(a_document, a_module, "defaultOpen", true));
+                   (!a_defaultOpen || yyjson_mut_obj_add_bool(a_document, a_module, "defaultOpen", true)) &&
+                   (!a_boxed || yyjson_mut_obj_add_bool(a_document, a_module, "boxed", true));
         }
 
         yyjson_mut_val* StringList(yyjson_mut_doc* a_document, const std::vector<std::string>& a_values)
@@ -534,6 +546,23 @@ namespace MPL::SliderCreator
                 if (!filter || !AddFilter(a_document, filter, "include", a_definition.xemiInclude) ||
                     !AddFilter(a_document, filter, "exclude", a_definition.xemiExclude) ||
                     !yyjson_mut_obj_add_val(a_document, control, "xemiFilter", filter))
+                    return nullptr;
+            }
+
+            const auto hasCellFilter = a_definition.interiorOnly || a_definition.notInterior ||
+                                       !a_definition.cellInclude.formIDs.empty() ||
+                                       !a_definition.cellInclude.contains.empty() ||
+                                       !a_definition.cellExclude.formIDs.empty() ||
+                                       !a_definition.cellExclude.contains.empty();
+            if (hasCellFilter)
+            {
+                auto* filter = yyjson_mut_obj(a_document);
+                if (!filter ||
+                    (a_definition.interiorOnly && !yyjson_mut_obj_add_bool(a_document, filter, "interior", true)) ||
+                    (a_definition.notInterior && !yyjson_mut_obj_add_bool(a_document, filter, "notInterior", true)) ||
+                    !AddFilter(a_document, filter, "include", a_definition.cellInclude) ||
+                    !AddFilter(a_document, filter, "exclude", a_definition.cellExclude) ||
+                    !yyjson_mut_obj_add_val(a_document, control, "cellFilter", filter))
                     return nullptr;
             }
 
@@ -743,6 +772,23 @@ namespace MPL::SliderCreator
                     return a_entry->path == "objectEffectLighting.emissiveMultiplier" ||
                            a_entry->path == "objectEffectLighting.baseColorScale";
                 });
+            const auto hasCellFilter = a_definition.interiorOnly || a_definition.notInterior ||
+                                       !a_definition.cellInclude.formIDs.empty() ||
+                                       !a_definition.cellInclude.contains.empty() ||
+                                       !a_definition.cellExclude.formIDs.empty() ||
+                                       !a_definition.cellExclude.contains.empty();
+            if (hasCellFilter &&
+                (!a_definition.filtered || !objectEffectLighting ||
+                    a_definition.filterDomain != FilterDomain::baseObject))
+            {
+                a_error = "Cell filters apply only to Object Effect Lighting sliders with a Base Object filter.";
+                return false;
+            }
+            if (a_definition.interiorOnly && a_definition.notInterior)
+            {
+                a_error = "Interior and Not Interior cell filters cannot both be enabled.";
+                return false;
+            }
             if ((a_definition.useXemiFilter || !a_definition.xemiInclude.formIDs.empty() || !a_definition.xemiInclude.contains.empty() ||
                     !a_definition.xemiExclude.formIDs.empty() || !a_definition.xemiExclude.contains.empty()) &&
                 (!a_definition.filtered ||
@@ -971,7 +1017,7 @@ namespace MPL::SliderCreator
         {
             static constexpr std::array keys{
                 "type", "id", "label", "priority", "customLinks", "hueScales", "hueFilter", "setting", "settings",
-                "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "baseObjectFilter", "xemiFilter", "min", "max", "step", "width", "format",
+                "ignoreProfileFilters", "invert", "times", "weatherFilter", "lightingTemplateFilter", "baseLightFilter", "baseObjectFilter", "xemiFilter", "cellFilter", "min", "max", "step", "width", "format",
             };
             return std::ranges::any_of(keys, [&](const auto a_known) { return IEquals(a_key, a_known); });
         }
@@ -1538,6 +1584,137 @@ namespace MPL::SliderCreator
         return pageIndex;
     }
 
+    bool RenamePresetCategoryModules(
+        const std::filesystem::path& a_source,
+        const std::string& a_previous,
+        const std::string& a_name,
+        std::string& a_error)
+    {
+        a_error.clear();
+        struct Update
+        {
+            std::filesystem::path path;
+            std::string original;
+            std::string updated;
+        };
+        std::vector<Update> updates;
+        std::vector paths{ a_source };
+        const auto active = ActiveLayoutPath(a_source);
+        if (active != a_source) paths.push_back(active);
+        for (const auto& path : paths)
+        {
+            std::error_code error;
+            const auto exists = std::filesystem::exists(path, error);
+            if (error) { a_error = error.message(); return false; }
+            if (!exists) continue;
+            const auto text = ReadText(path);
+            Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+            auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+            MutableDocument document(yyjson_mut_doc_new(nullptr));
+            auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+            if (!root) { a_error = "The menu layout could not be read."; return false; }
+            bool changed = false;
+            const auto renamePage = [&](yyjson_mut_val* a_page)
+            {
+                auto* modules = yyjson_mut_is_obj(a_page) ? yyjson_mut_obj_get(a_page, "modules") : nullptr;
+                for (std::size_t index = 0; index < yyjson_mut_arr_size(modules); ++index)
+                {
+                    auto* module = yyjson_mut_arr_get(modules, index);
+                    const auto* type = yyjson_mut_get_str(yyjson_mut_obj_get(module, "type"));
+                    const auto* category = yyjson_mut_get_str(yyjson_mut_obj_get(module, "setting"));
+                    if (!type || std::string_view(type) != "presets" || !category || !IEquals(category, a_previous)) continue;
+                    yyjson_mut_obj_remove_key(module, "setting");
+                    AddString(document.get(), module, "setting", a_name);
+                    changed = true;
+                }
+            };
+            renamePage(yyjson_mut_obj_get(root, "profilePage"));
+            auto* pages = yyjson_mut_obj_get(root, "pages");
+            for (std::size_t index = 0; index < yyjson_mut_arr_size(pages); ++index)
+                renamePage(yyjson_mut_arr_get(pages, index));
+            if (!changed) continue;
+            yyjson_mut_doc_set_root(document.get(), root);
+            std::size_t length = 0;
+            auto* serialized = yyjson_mut_write(document.get(), YYJSON_WRITE_PRETTY, &length);
+            if (!serialized) { a_error = "The menu layout could not be serialized."; return false; }
+            std::string updated(serialized, length);
+            std::free(serialized);
+            updates.push_back({ path, *text, JsonFormatting::Pretty(updated) + '\n' });
+        }
+        for (std::size_t index = 0; index < updates.size(); ++index)
+        {
+            if (FileIO::WriteAtomically(updates[index].path, updates[index].updated, a_error)) continue;
+            for (std::size_t previous = 0; previous < index; ++previous)
+            {
+                std::string rollbackError;
+                if (!FileIO::WriteAtomically(updates[previous].path, updates[previous].original, rollbackError))
+                    a_error += " | " + rollbackError;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    bool SplitPresetCategories(
+        const std::filesystem::path& a_path,
+        const std::size_t a_pageIndex,
+        const std::vector<std::string>& a_categories,
+        std::string& a_error)
+    {
+        a_error.clear();
+        const auto text = ReadText(a_path);
+        Document source(text ? yyjson_read(const_cast<char*>(text->data()), text->size(), YYJSON_READ_NOFLAG) : nullptr);
+        auto* sourceRoot = source ? yyjson_doc_get_root(source.get()) : nullptr;
+        MutableDocument document(yyjson_mut_doc_new(nullptr));
+        auto* root = document && yyjson_is_obj(sourceRoot) ? yyjson_val_mut_copy(document.get(), sourceRoot) : nullptr;
+        auto* pages = root ? yyjson_mut_obj_get(root, "pages") : nullptr;
+        auto* page = yyjson_mut_is_arr(pages) ? yyjson_mut_arr_get(pages, a_pageIndex) : nullptr;
+        auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
+        if (!yyjson_mut_is_arr(modules))
+        {
+            a_error = "The menu layout could not be read.";
+            return false;
+        }
+        if (a_categories.empty()) return true;
+        const auto hasCategorySlot = [&](const std::string& a_category)
+        {
+            for (std::size_t index = 0; index < yyjson_mut_arr_size(modules); ++index)
+            {
+                auto* module = yyjson_mut_arr_get(modules, index);
+                const auto* type = yyjson_mut_get_str(yyjson_mut_obj_get(module, "type"));
+                const auto* setting = yyjson_mut_get_str(yyjson_mut_obj_get(module, "setting"));
+                if (type && std::string_view(type) == "presets" && setting && IEquals(setting, a_category)) return true;
+            }
+            return false;
+        };
+        auto* replacement = yyjson_mut_arr(document.get());
+        bool changed = false;
+        for (std::size_t index = 0; index < yyjson_mut_arr_size(modules); ++index)
+        {
+            auto* module = yyjson_mut_arr_get(modules, index);
+            const auto* type = yyjson_mut_get_str(yyjson_mut_obj_get(module, "type"));
+            const auto* setting = yyjson_mut_get_str(yyjson_mut_obj_get(module, "setting"));
+            if (type && std::string_view(type) == "presets" && (!setting || !*setting))
+            {
+                for (const auto& category : a_categories)
+                {
+                    if (hasCategorySlot(category)) continue;
+                    auto* control = yyjson_mut_val_mut_copy(document.get(), module);
+                    yyjson_mut_obj_remove_key(control, "setting");
+                    AddString(document.get(), control, "setting", category);
+                    yyjson_mut_arr_append(replacement, control);
+                }
+                changed = true;
+            }
+            else yyjson_mut_arr_append(replacement, yyjson_mut_val_mut_copy(document.get(), module));
+        }
+        if (!changed) return true;
+        yyjson_mut_obj_remove_key(page, "modules");
+        yyjson_mut_obj_add_val(document.get(), page, "modules", replacement);
+        yyjson_mut_doc_set_root(document.get(), root);
+        return WriteDocument(a_path, document.get(), a_error);
+    }
+
     bool AddModule(
         const std::filesystem::path& a_path,
         const std::size_t a_pageIndex,
@@ -1592,6 +1769,7 @@ namespace MPL::SliderCreator
         const std::string& a_header,
         const std::string& a_text,
         const bool a_defaultOpen,
+        const bool a_boxed,
         std::string& a_error)
     {
         a_error.clear();
@@ -1619,7 +1797,7 @@ namespace MPL::SliderCreator
         auto* modules = yyjson_mut_is_obj(page) ? yyjson_mut_obj_get(page, "modules") : nullptr;
         auto* module = yyjson_mut_obj(document.get());
         if (!yyjson_mut_is_arr(modules) || !module ||
-            !AddDescriptionFields(document.get(), module, header, description, a_defaultOpen) ||
+            !AddDescriptionFields(document.get(), module, header, description, a_defaultOpen, a_boxed) ||
             !yyjson_mut_arr_append(modules, module))
         {
             a_error = "The description could not be added to this page.";
@@ -1806,10 +1984,13 @@ namespace MPL::SliderCreator
             yyjson_mut_obj_remove_key(module, "header");
             yyjson_mut_obj_remove_key(module, "text");
             yyjson_mut_obj_remove_key(module, "defaultOpen");
+            yyjson_mut_obj_remove_key(module, "boxed");
             if ((!name.empty() && !AddString(document.get(), module, "header", name)) ||
                 !AddString(document.get(), module, "text", description) ||
                 (a_update.defaultOpen.value_or(false) &&
-                    !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", true)))
+                    !yyjson_mut_obj_add_bool(document.get(), module, "defaultOpen", true)) ||
+                (a_update.boxed.value_or(false) &&
+                    !yyjson_mut_obj_add_bool(document.get(), module, "boxed", true)))
             {
                 a_error = "The description could not be updated.";
                 return false;

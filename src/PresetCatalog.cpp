@@ -95,6 +95,19 @@ namespace MPL::PresetCatalog
         }
     }  // namespace
 
+    std::vector<std::string> CategoriesForPage(
+        const std::span<const std::string> a_categories,
+        const std::span<const std::string> a_slots)
+    {
+        std::vector<std::string> result;
+        for (const auto& slot : a_slots)
+        {
+            const auto category = std::ranges::find_if(a_categories, [&](const auto& a_name) { return IEquals(a_name, slot); });
+            if (category != a_categories.end() && !std::ranges::contains(result, *category)) result.push_back(*category);
+        }
+        return result;
+    }
+
     std::optional<Catalog> Parse(const std::string_view a_json, std::string& a_error)
     {
         a_error.clear();

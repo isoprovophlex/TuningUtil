@@ -4,8 +4,10 @@
 #include <LightingPatcher.h>
 #include <MenuBoxGeometry.h>
 #include <MenuControlCorners.h>
+#include <MenuControlGeometry.h>
 #include <MenuStatusMessage.h>
 #include <ObjectShaderCatalog.h>
+#include <PresetCatalog.h>
 #include <RecordFilter.h>
 #include <RE/M/Main.h>
 #include <RE/U/UIBlurManager.h>
@@ -212,26 +214,72 @@ namespace MPL::TuningMenu
             explicit SelectedTabHoverStyle(const bool a_selected)
             {
                 const auto* style = ImGuiMCP::GetStyle();
-                if (!style || !UsesAlphaDrivenTabFeedback(*style)) return;
-                ImGuiMCP::PushStyleColor(
-                    ImGuiMCP::ImGuiCol_TabHovered,
-                    a_selected ?
-                        style->Colors[ImGuiMCP::ImGuiCol_TabActive] :
-                        AlphaDrivenTabHoverColor(*style));
-                applied = true;
+                if (!style) return;
+                const auto alphaDrivenFeedback = UsesAlphaDrivenTabFeedback(*style);
+                const auto inactiveHover = alphaDrivenFeedback ? AlphaDrivenTabHoverColor(*style) :
+                                                                  style->Colors[ImGuiMCP::ImGuiCol_TabHovered];
+                if (!a_selected)
+                {
+                    const auto buttonBackground = style->Colors[ImGuiMCP::ImGuiCol_ChildBg];
+                    ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Tab, buttonBackground);
+                    ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_TabUnfocused, buttonBackground);
+                    colorCount += 2;
+                }
+                if (alphaDrivenFeedback)
+                {
+                    ImGuiMCP::PushStyleColor(
+                        ImGuiMCP::ImGuiCol_TabHovered,
+                        a_selected ? style->Colors[ImGuiMCP::ImGuiCol_TabActive] : inactiveHover);
+                    ++colorCount;
+                }
             }
 
             ~SelectedTabHoverStyle()
             {
-                if (applied) ImGuiMCP::PopStyleColor();
+                if (colorCount > 0) ImGuiMCP::PopStyleColor(colorCount);
             }
 
             SelectedTabHoverStyle(const SelectedTabHoverStyle&) = delete;
             SelectedTabHoverStyle& operator=(const SelectedTabHoverStyle&) = delete;
 
         private:
-            bool applied = false;
+            int colorCount = 0;
         };
+
+        struct ProfileTabGeometry
+        {
+            float selectorLeft = 0.0f;
+            float separatorRight = 0.0f;
+        };
+
+        std::optional<ProfileTabGeometry> profileTabGeometry;
+
+        void DrawProfileTabSeparator()
+        {
+            auto* tabBar = ImGuiMCP::GetCurrentTabBar();
+            const auto* style = ImGuiMCP::GetStyle();
+            if (!tabBar || !style || !profileTabGeometry) return;
+
+            const auto separatorTop = tabBar->BarRect.Max.y - style->TabBarBorderSize;
+            const auto eraseLeft = std::min(profileTabGeometry->selectorLeft, tabBar->SeparatorMinX);
+            const auto eraseRight = std::max(profileTabGeometry->separatorRight, tabBar->SeparatorMaxX);
+            ImGuiMCP::ImDrawListManager::AddRectFilled(
+                ImGuiMCP::GetWindowDrawList(),
+                ImGuiMCP::ImVec2(eraseLeft, separatorTop),
+                ImGuiMCP::ImVec2(eraseRight, tabBar->BarRect.Max.y),
+                ImGuiMCP::GetColorU32(ImGuiMCP::ImGuiCol_WindowBg),
+                0.0f,
+                0);
+            ImGuiMCP::ImDrawListManager::AddRectFilled(
+                ImGuiMCP::GetWindowDrawList(),
+                ImGuiMCP::ImVec2(profileTabGeometry->selectorLeft, separatorTop),
+                ImGuiMCP::ImVec2(profileTabGeometry->separatorRight, tabBar->BarRect.Max.y),
+                ImGuiMCP::GetColorU32(ImGuiMCP::ImGuiCol_Border),
+                0.0f,
+                0);
+            tabBar->SeparatorMinX = profileTabGeometry->selectorLeft;
+            tabBar->SeparatorMaxX = profileTabGeometry->separatorRight;
+        }
 
         bool BeginProfileTabItem(
             const char* a_label,
@@ -290,12 +338,70 @@ namespace MPL::TuningMenu
             bool applied = false;
         };
 
+        bool StyledButton(const char* a_label, const bool a_small = false)
+        {
+            const auto* style = ImGuiMCP::GetStyle();
+            const auto padding = style ? style->FramePadding : ImGuiMCP::ImVec2(4.0f, 3.0f);
+            const MenuControlGeometry::HorizonButton geometry(
+                a_small ? ImGuiMCP::GetFontSize() : ImGuiMCP::GetFrameHeight(), padding.x);
+            ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_FramePadding,
+                ImGuiMCP::ImVec2(geometry.framePaddingX, padding.y));
+            ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_FrameBorderSize, 0.0f);
+            const ImGuiMCP::ImVec4 transparent(0.0f, 0.0f, 0.0f, 0.0f);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, transparent);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Button, transparent);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_ButtonHovered, transparent);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_ButtonActive, transparent);
+            const auto pressed = a_small ? ImGuiMCP::SmallButton(a_label) : ImGuiMCP::Button(a_label);
+            const auto hovered = ImGuiMCP::IsItemHovered();
+            const auto active = ImGuiMCP::IsItemActive();
+            const auto minimum = ImGuiMCP::GetItemRectMin();
+            const auto maximum = ImGuiMCP::GetItemRectMax();
+            ImGuiMCP::PopStyleColor(4);
+            ImGuiMCP::PopStyleVar(2);
+
+            const auto actionColor = ImGuiMCP::GetColorU32(active ? ImGuiMCP::ImGuiCol_ButtonActive :
+                                                          hovered ? ImGuiMCP::ImGuiCol_ButtonHovered : ImGuiMCP::ImGuiCol_Button);
+            const auto background = ImGuiMCP::GetColorU32(ImGuiMCP::ImGuiCol_ChildBg);
+
+            const auto height = maximum.y - minimum.y;
+            auto* drawList = ImGuiMCP::GetWindowDrawList();
+            ImGuiMCP::ImDrawListManager::AddRectFilled(
+                drawList, minimum, maximum, background, 0.0f, 0);
+            ImGuiMCP::ImDrawListManager::AddRectFilled(
+                drawList,
+                ImGuiMCP::ImVec2(minimum.x + 1.0f, minimum.y + 1.0f),
+                ImGuiMCP::ImVec2(minimum.x + geometry.stripWidth, maximum.y - 1.0f),
+                actionColor, 0.0f, 0);
+            ImGuiMCP::PushStyleVar(
+                ImGuiMCP::ImGuiStyleVar_FrameBorderSize,
+                std::max(1.0f, style ? style->FrameBorderSize : 0.0f));
+            ImGuiMCP::RenderFrameBorder(minimum, maximum, 0.0f);
+            ImGuiMCP::PopStyleVar();
+
+            const std::string_view label(a_label);
+            const auto separator = label.find("##");
+            const auto visible = label.substr(0, separator);
+            const std::string text(visible);
+            const auto textSize = ImGuiMCP::CalcTextSize(text.c_str());
+            ImGuiMCP::ImDrawListManager::AddText(
+                drawList,
+                ImGuiMCP::GetFont(),
+                ImGuiMCP::GetFontSize(),
+                ImGuiMCP::ImVec2(
+                    minimum.x + geometry.TextOffset(maximum.x - minimum.x, textSize.x),
+                    minimum.y + (height - textSize.y) * 0.5f),
+                ImGuiMCP::GetColorU32(ImGuiMCP::ImGuiCol_Text),
+                text.c_str());
+            return pressed;
+        }
+
         bool ActionButton(
             const char* a_label,
             const SKSEMenuSettings::ButtonKind a_kind)
         {
             const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(a_kind));
-            return ImGuiMCP::Button(a_label);
+            return StyledButton(a_label);
         }
 
         bool SmallActionButton(
@@ -303,7 +409,7 @@ namespace MPL::TuningMenu
             const SKSEMenuSettings::ButtonKind a_kind)
         {
             const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(a_kind));
-            return ImGuiMCP::SmallButton(a_label);
+            return StyledButton(a_label, true);
         }
 
         using TimedMessage = MenuStatus::TimedMessage;
@@ -334,6 +440,7 @@ namespace MPL::TuningMenu
             std::string format;
             bool invert = false;
             bool defaultOpen = false;
+            bool boxed = false;
             bool showControls = true;
         };
 
@@ -422,12 +529,12 @@ namespace MPL::TuningMenu
         struct PresetSaveInput
         {
             std::array<char, 96> category{};
+            std::string createCategory;
+            std::optional<std::size_t> pageIndex;
             std::array<char, 128> name{};
             std::string removalCategory;
             std::string removalPreset;
-            std::array<char, 96> categoryRename{};
             std::array<char, 128> presetRename{};
-            std::string categoryRenameSource;
             std::string presetRenameSource;
             std::string settingsSelection;
             std::vector<JsonOverlay::ValueEntry> settings;
@@ -458,6 +565,7 @@ namespace MPL::TuningMenu
                 std::array<char, 4096> descriptionText{};
                 std::string source;
                 bool descriptionDefaultOpen = false;
+                bool descriptionBoxed = false;
             };
 
             std::array<char, 128> newPageName{};
@@ -471,6 +579,7 @@ namespace MPL::TuningMenu
             int elementChoice = 0;
             int moduleChoice = 0;
             bool descriptionDefaultOpen = false;
+            bool descriptionBoxed = false;
         };
 
         struct LayoutEditSession
@@ -518,6 +627,10 @@ namespace MPL::TuningMenu
             bool useXemiFilter = false;
             SliderCreator::Filter xemiInclude;
             SliderCreator::Filter xemiExclude;
+            bool interiorOnly = false;
+            bool notInterior = false;
+            SliderCreator::Filter cellInclude;
+            SliderCreator::Filter cellExclude;
             HueFilter::Selection hueFilter;
             RE::TESWeather* selectedWeather = nullptr;
             RE::BGSLightingTemplate* selectedLightingTemplate = nullptr;
@@ -1225,9 +1338,8 @@ namespace MPL::TuningMenu
                         const std::array accent{
                             ImGuiMCP::ImVec2(accentLeft, accentTop - kBoxBorderSize),
                             ImGuiMCP::ImVec2(accentRight, accentTop - kBoxBorderSize),
-                            point(bevel.Turn(kBoxBorderSize + a_leftAccent->width)),
-                            point(bevel.End(kBoxBorderSize + a_leftAccent->width, kBoxBorderSize)),
-                            point(bevel.End(kBoxBorderSize, kBoxBorderSize)),
+                            ImGuiMCP::ImVec2(accentRight, bevel.Turn(kBoxBorderSize).y +
+                                (accentRight - accentLeft) / MenuBoxGeometry::SlopeRunPerRise),
                             point(bevel.Turn(kBoxBorderSize)),
                         };
                         ImGuiMCP::ImDrawListManager::PushClipRect(
@@ -1270,22 +1382,17 @@ namespace MPL::TuningMenu
             const ImGuiMCP::ImU32 a_color,
             const float a_cornerDrop = 0.0f)
         {
-            constexpr float leftTopWidthInBarHeights = 5.7f;
-            constexpr float rightTopWidthInBarHeights = 1.2f;
-            constexpr float rightEndHeightRatio = 0.6f;
+            const auto rightEdge = a_position.x + a_width;
+            const auto bottom = a_position.y + a_height;
+
+            constexpr float leftTopWidthInBarHeights = MenuBoxGeometry::HeaderTitleWidthInBarHeights;
             constexpr float middleBarHeightRatio = MenuBoxGeometry::MiddleBarHeightRatio;
             constexpr float horizontalRunPerVerticalRise = MenuBoxGeometry::SlopeRunPerRise;
 
-            const auto rightEdge = a_position.x + a_width;
-            const auto bottom = a_position.y + a_height;
             const auto middleBarTop = bottom - a_height * middleBarHeightRatio;
-            const auto rightTop = bottom - a_height * rightEndHeightRatio;
             const auto leftTop = a_position.x + a_height * leftTopWidthInBarHeights;
             const auto leftBottom =
                 leftTop + (middleBarTop - a_position.y) * horizontalRunPerVerticalRise;
-            const auto rightTopStart = rightEdge - a_height * rightTopWidthInBarHeights;
-            const auto rightBottomStart =
-                rightTopStart - (middleBarTop - rightTop) * horizontalRunPerVerticalRise;
             const auto cornerEnd = ImGuiMCP::ImVec2(a_position.x + a_cornerDrop * horizontalRunPerVerticalRise, bottom);
             const auto cornerTurn = ImGuiMCP::ImVec2(a_position.x, bottom - a_cornerDrop);
             const auto duplicateCornerPoint = a_cornerDrop > 0.0f ? 0 : 1;
@@ -1295,32 +1402,11 @@ namespace MPL::TuningMenu
                 a_position,
                 ImGuiMCP::ImVec2(rightEdge, bottom),
                 true);
-            if (rightBottomStart <= leftBottom)
-            {
-                const std::array compressedOutline{
-                    a_position,
-                    ImGuiMCP::ImVec2(leftTop, a_position.y),
-                    ImGuiMCP::ImVec2(leftBottom, middleBarTop),
-                    ImGuiMCP::ImVec2(rightEdge, middleBarTop),
-                    ImGuiMCP::ImVec2(rightEdge, bottom),
-                    cornerEnd,
-                    cornerTurn,
-                };
-                ImGuiMCP::ImDrawListManager::AddConcavePolyFilled(
-                    a_drawList,
-                    compressedOutline.data(),
-                    static_cast<int>(compressedOutline.size()) - duplicateCornerPoint,
-                    a_color);
-                ImGuiMCP::ImDrawListManager::PopClipRect(a_drawList);
-                return;
-            }
             std::array outline{
                 a_position,
                 ImGuiMCP::ImVec2(leftTop, a_position.y),
                 ImGuiMCP::ImVec2(leftBottom, middleBarTop),
-                ImGuiMCP::ImVec2(rightBottomStart, middleBarTop),
-                ImGuiMCP::ImVec2(rightTopStart, rightTop),
-                ImGuiMCP::ImVec2(rightEdge, rightTop),
+                ImGuiMCP::ImVec2(rightEdge, middleBarTop),
                 ImGuiMCP::ImVec2(rightEdge, bottom),
                 cornerEnd,
                 cornerTurn,
@@ -2069,10 +2155,16 @@ namespace MPL::TuningMenu
 
         constexpr auto kSliderValueInputWidth = 80.0f;
 
+        float SliderValueInputWidth()
+        {
+            return MenuControlGeometry::SquaredSliderValueWidth(
+                kSliderValueInputWidth,
+                ImGuiMCP::GetFrameHeight());
+        }
+
         float ContractedControlWidth(const float a_preferredWidth, const float a_reservedWidth = 0.0f)
         {
-            const auto availableWidth = std::max(1.0f, ImGuiMCP::GetContentRegionAvail().x - a_reservedWidth);
-            return std::min(a_preferredWidth, availableWidth);
+            return MenuControlGeometry::ContractedWidth(a_preferredWidth, ImGuiMCP::GetContentRegionAvail().x, a_reservedWidth);
         }
 
         float SliderBarWidth(const float a_preferredWidth = kPreferredControlWidth)
@@ -2081,7 +2173,7 @@ namespace MPL::TuningMenu
             const auto itemSpacing = style ? style->ItemSpacing.x : 8.0f;
             return ContractedControlWidth(
                 a_preferredWidth,
-                itemSpacing + kSliderValueInputWidth);
+                itemSpacing + SliderValueInputWidth());
         }
 
         float SliderLineWidth()
@@ -2089,7 +2181,7 @@ namespace MPL::TuningMenu
             const auto* style = ImGuiMCP::GetStyle();
             const auto itemSpacing = style ? style->ItemSpacing.x : 8.0f;
             return ContractedControlWidth(
-                kPreferredControlWidth + itemSpacing + kSliderValueInputWidth);
+                kPreferredControlWidth + itemSpacing + SliderValueInputWidth());
         }
 
         float SliderCreatorScaleInputWidth(const std::string_view a_label)
@@ -2098,7 +2190,7 @@ namespace MPL::TuningMenu
             const auto itemSpacing = style ? style->ItemSpacing.x : 8.0f;
             const auto innerSpacing = style ? style->ItemInnerSpacing.x : 4.0f;
             const auto preferredWidth =
-                kSliderValueInputWidth + ImGuiMCP::GetFrameHeight() * 2.0f + innerSpacing * 2.0f;
+                SliderValueInputWidth() + ImGuiMCP::GetFrameHeight() * 2.0f + innerSpacing * 2.0f;
             const auto labelWidth = ImGuiMCP::CalcTextSize(std::string(a_label).c_str()).x;
             return ContractedControlWidth(preferredWidth, itemSpacing + labelWidth);
         }
@@ -2163,7 +2255,7 @@ namespace MPL::TuningMenu
             }
 
             ImGuiMCP::SameLine();
-            ImGuiMCP::SetNextItemWidth(kSliderValueInputWidth);
+            ImGuiMCP::SetNextItemWidth(SliderValueInputWidth());
             auto inputValue = a_value;
             const auto inputMinimum =
                 a_inputRange == SliderInputRange::hue ? 0.0f : a_minimum < 0.0f ? std::min(-99.0f, a_minimum) :
@@ -3180,6 +3272,11 @@ namespace MPL::TuningMenu
                        MenuBoxGeometry::PlainBoxContentInset(indent) : indent;
         }
 
+        float ProfilePageHorizontalInset()
+        {
+            return 0.0f;
+        }
+
         void AddSectionVerticalPadding()
         {
             const auto padding = SKSEMenuSettings::GetBoxPadding()[1];
@@ -3317,26 +3414,80 @@ namespace MPL::TuningMenu
 
         bool BeginProfileTabBar(const char* a_id)
         {
-            if (!ImGuiMCP::BeginTabBar(a_id, ImGuiMCP::ImGuiTabBarFlags_FittingPolicyScroll)) return false;
+            const auto* style = ImGuiMCP::GetStyle();
+            const auto tabBarBorderSize = std::max(1.0f, style ? style->TabBarBorderSize - 1.0f : 1.0f);
+            const auto tabBorderSize = std::max(1.0f, style ? style->TabBorderSize : 1.0f);
+            ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_TabBarBorderSize, tabBarBorderSize);
+            ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_TabBorderSize, tabBorderSize);
+            if (!ImGuiMCP::BeginTabBar(a_id, ImGuiMCP::ImGuiTabBarFlags_FittingPolicyScroll))
+            {
+                ImGuiMCP::PopStyleVar(2);
+                return false;
+            }
             auto* tabBar = ImGuiMCP::GetCurrentTabBar();
             if (!tabBar->WantLayout) return true;
 
             const auto cursor = ImGuiMCP::GetCursorScreenPos();
-            const auto padding = ImGuiMCP::GetStyle()->FramePadding.y;
-            const auto height = ImGuiMCP::GetFrameHeight();
-            const auto position = ImGuiMCP::ImVec2(tabBar->BarRect.Min.x - padding, tabBar->BarRect.Min.y);
-            tabBar->BarRect.Min.x += ImGuiMCP::GetFontSize() + padding;
+            const auto horizontalInset = ProfilePageHorizontalInset();
+            const auto position = ImGuiMCP::ImVec2(
+                tabBar->BarRect.Min.x + horizontalInset + 1.0f,
+                tabBar->BarRect.Min.y);
+            const auto tabHeight = std::max(1.0f, tabBar->BarRect.Max.y - tabBar->BarRect.Min.y);
+            const ImGuiMCP::ImRect selectorRect{
+                position,
+                ImGuiMCP::ImVec2(position.x + tabHeight, tabBar->BarRect.Max.y),
+            };
+            const auto tabSpacing = style ? style->ItemInnerSpacing.x : 0.0f;
+            tabBar->BarRect.Min.x = selectorRect.Max.x + tabSpacing;
+            tabBar->SeparatorMinX = selectorRect.Min.x;
+            profileTabGeometry = ProfileTabGeometry{
+                selectorRect.Min.x,
+                tabBar->BarRect.Max.x,
+            };
             ImGuiMCP::SetCursorScreenPos(position);
             auto* drawList = ImGuiMCP::GetWindowDrawList();
+            const auto buttonBackground = style ? style->Colors[ImGuiMCP::ImGuiCol_ChildBg] :
+                                                  ImGuiMCP::ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
             ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Button, ImGuiMCP::ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_FrameBg, buttonBackground);
+            ImGuiMCP::PushStyleColor(
+                ImGuiMCP::ImGuiCol_FrameBgHovered,
+                style ? style->Colors[ImGuiMCP::ImGuiCol_TabHovered] : buttonBackground);
+            ImGuiMCP::PushStyleColor(
+                ImGuiMCP::ImGuiCol_FrameBgActive,
+                style ? style->Colors[ImGuiMCP::ImGuiCol_TabActive] : buttonBackground);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Button, buttonBackground);
+            ImGuiMCP::PushStyleColor(
+                ImGuiMCP::ImGuiCol_ButtonHovered,
+                style ? style->Colors[ImGuiMCP::ImGuiCol_TabHovered] : buttonBackground);
+            ImGuiMCP::PushStyleColor(
+                ImGuiMCP::ImGuiCol_ButtonActive,
+                style ? style->Colors[ImGuiMCP::ImGuiCol_TabActive] : buttonBackground);
+            ImGuiMCP::PushStyleVar(
+                ImGuiMCP::ImGuiStyleVar_FrameBorderSize,
+                0.0f);
             const auto open = ImGuiMCP::BeginCombo(
                 "##v", nullptr, ImGuiMCP::ImGuiComboFlags_NoPreview | ImGuiMCP::ImGuiComboFlags_HeightLargest);
-            ImGuiMCP::PopStyleColor(2);
+            const auto hovered = ImGuiMCP::IsItemHovered();
+            const auto active = ImGuiMCP::IsItemActive();
+            ImGuiMCP::PopStyleVar();
+            ImGuiMCP::PopStyleColor(7);
+            const auto selectorBackground = style ?
+                                                style->Colors[active ? ImGuiMCP::ImGuiCol_TabActive :
+                                                                  hovered ? ImGuiMCP::ImGuiCol_TabHovered :
+                                                                            ImGuiMCP::ImGuiCol_ChildBg] :
+                                                buttonBackground;
+            ImGuiMCP::TabItemBackground(
+                drawList,
+                selectorRect,
+                ImGuiMCP::ImGuiTabItemFlags_None,
+                ImGuiMCP::GetColorU32(selectorBackground));
             DrawLumaDropdownArrow(
                 drawList,
-                ImGuiMCP::ImVec2(position.x + height * 0.5f, position.y + height * 0.5f),
-                std::max(8.0f, height * 0.46f),
+                ImGuiMCP::ImVec2(
+                    (selectorRect.Min.x + selectorRect.Max.x) * 0.5f,
+                    (selectorRect.Min.y + selectorRect.Max.y) * 0.5f),
+                std::max(8.0f, tabHeight * 0.46f),
                 true);
             if (open)
             {
@@ -3352,6 +3503,49 @@ namespace MPL::TuningMenu
             }
             ImGuiMCP::SetCursorScreenPos(cursor);
             return true;
+        }
+
+        void EndProfileTabBar()
+        {
+            DrawProfileTabSeparator();
+            ImGuiMCP::EndTabBar();
+            ImGuiMCP::PopStyleVar(2);
+            profileTabGeometry.reset();
+        }
+
+        struct DisclosureLayout
+        {
+            float spacing;
+            float arrowWidth;
+            float collapsedCornerDrop;
+            ImGuiMCP::ImVec2 arrowCenter;
+        };
+
+        DisclosureLayout SectionDisclosureLayout(
+            const ImGuiMCP::ImVec2 a_position,
+            const float a_height,
+            const bool a_open,
+            const ImGuiMCP::ImGuiStyle* a_style,
+            const float a_windowWidth)
+        {
+            const auto spacing = std::max(3.0f, a_style ? a_style->FramePadding.x : 4.0f);
+            const auto arrowWidth = std::max(8.0f, a_height * 0.46f);
+            const auto disclosureCornerDrop = MenuBoxGeometry::CollapsedHeaderDrop(a_height, a_windowWidth);
+            const auto collapsedCornerDrop = a_open ? 0.0f : disclosureCornerDrop;
+            const MenuBoxGeometry::Bevel disclosureCorner{
+                a_position.x,
+                std::floor(a_position.y + a_height),
+                disclosureCornerDrop,
+            };
+            const auto cornerEnd = disclosureCorner.End(kBoxBorderSize * 0.5f, kBoxBorderSize * 0.5f);
+            return {
+                spacing,
+                arrowWidth,
+                collapsedCornerDrop,
+                ImGuiMCP::ImVec2(
+                    MenuBoxGeometry::DropdownArrowCenterX(cornerEnd.x, arrowWidth),
+                    a_position.y + a_height * 0.5f),
+            };
         }
 
         bool DrawSectionDropdownHeader(
@@ -3410,17 +3604,17 @@ namespace MPL::TuningMenu
 
             auto* drawList = ImGuiMCP::GetWindowDrawList();
             const auto packedBackground = ImGuiMCP::GetColorU32(background);
-            const auto headerClipBottom = std::floor(position.y + height);
-            const auto disclosureCornerDrop = MenuBoxGeometry::CollapsedHeaderDrop(height, windowSize.x);
-            const auto collapsedCornerDrop = open ? 0.0f : disclosureCornerDrop;
-            const auto backgroundHeight = open ? height : MenuBoxGeometry::CollapsedHeaderFillHeight(
-                position.y, height, windowPosition.y + windowSize.y);
+            const auto backgroundHeight = std::max(0.0f, height - border);
+            const auto headerClipBottom = std::floor(position.y + backgroundHeight);
+            const auto disclosure = SectionDisclosureLayout(
+                position, height, open, style, windowSize.x);
             if (a_leftAccent)
                 *a_leftAccent = {
                     ImGuiMCP::GetColorU32(borderBackground),
                     headerClipBottom,
                     open ? MenuBoxGeometry::CornerDrop(height, windowSize.x) : 0.0f,
-                    collapsedCornerDrop,
+                    disclosure.collapsedCornerDrop,
+                    MenuBoxGeometry::RailThickness(height),
                 };
             DrawNotchedHeaderBackground(
                 drawList,
@@ -3428,22 +3622,15 @@ namespace MPL::TuningMenu
                 backgroundWidth,
                 backgroundHeight,
                 packedBackground,
-                MenuBoxGeometry::InsetBevelDrop(collapsedCornerDrop, border));
+                MenuBoxGeometry::InsetBevelDrop(disclosure.collapsedCornerDrop, border));
             const auto textColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImGuiCol_Text);
-            const auto disclosureSpacing = std::max(3.0f, style ? style->FramePadding.x : 4.0f);
-            const auto arrowWidth = std::max(8.0f, height * 0.46f);
-            const MenuBoxGeometry::Bevel disclosureCorner{ windowPosition.x, headerClipBottom, disclosureCornerDrop };
-            const auto cornerEnd = disclosureCorner.End(kBoxBorderSize * 0.5f, kBoxBorderSize * 0.5f);
-            const auto arrowCenter = ImGuiMCP::ImVec2(
-                MenuBoxGeometry::DropdownArrowCenterX(cornerEnd.x, arrowWidth),
-                position.y + height * 0.5f);
-            DrawLumaDropdownArrow(drawList, arrowCenter, arrowWidth, open);
+            DrawLumaDropdownArrow(drawList, disclosure.arrowCenter, disclosure.arrowWidth, open);
             ImGuiMCP::ImDrawListManager::AddText(
                 drawList,
                 ImGuiMCP::GetFont(),
                 ImGuiMCP::GetFontSize(),
                 ImGuiMCP::ImVec2(
-                    arrowCenter.x + arrowWidth * 0.5f + disclosureSpacing,
+                    disclosure.arrowCenter.x + disclosure.arrowWidth * 0.5f + disclosure.spacing,
                     position.y + (height - textSize.y) * 0.5f),
                 textColor,
                 text.c_str());
@@ -3454,13 +3641,28 @@ namespace MPL::TuningMenu
         bool DrawDescriptionDropdown(
             const std::string_view a_text,
             const std::string& a_id,
-            const bool a_defaultOpen)
+            const bool a_defaultOpen,
+            DropBoxAccent* a_leftAccent = nullptr)
         {
+            constexpr auto fontReduction = 2.0f;
+            const auto baseFontSize = ImGuiMCP::GetFontSize();
+            const auto headerFontSize = baseFontSize * SKSEMenuSettings::GetHeaderFontScale();
+            const auto descriptionFontSize = std::max(1.0f, headerFontSize - fontReduction);
             const std::string text(a_text);
+            auto* font = ImGuiMCP::GetFont();
+            ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_ChildBorderSize, kBoxBorderSize);
             const auto* style = ImGuiMCP::GetStyle();
-            const auto position = ImGuiMCP::GetCursorScreenPos();
-            const auto textSize = ImGuiMCP::CalcTextSize(text.c_str());
-            const auto height = std::max(ImGuiMCP::GetFrameHeight(), textSize.y);
+            auto position = ImGuiMCP::GetCursorScreenPos();
+            position.x += kBoxBorderSize;
+            const auto textSize = ImGuiMCP::ImFontManger::CalcTextSizeA(
+                font,
+                descriptionFontSize,
+                std::numeric_limits<float>::max(),
+                0.0f,
+                text.c_str(),
+                nullptr,
+                nullptr);
+            const auto height = headerFontSize + SectionHeaderVerticalPadding() * 2.0f;
             const auto width = SliderLineWidth();
             const auto openState = dropdownOpenStates.try_emplace(std::string(a_id), a_defaultOpen).first;
             auto open = openState->second;
@@ -3470,24 +3672,32 @@ namespace MPL::TuningMenu
                 openState->second = open;
             }
 
+            const auto disclosure = SectionDisclosureLayout(
+                position, height, open, style, ImGuiMCP::GetWindowSize().x);
+            if (a_leftAccent)
+            {
+                *a_leftAccent = {
+                    .top = std::floor(position.y + height),
+                    .cornerDrop = open ?
+                                      MenuBoxGeometry::CornerDrop(height, ImGuiMCP::GetWindowSize().x) :
+                                      0.0f,
+                    .collapsedCornerDrop = disclosure.collapsedCornerDrop,
+                    .width = 0.0f,
+                };
+            }
             const auto textColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImGuiCol_Text);
-            const auto disclosurePadding = std::max(2.0f, style ? style->FramePadding.x * 0.5f : 2.0f);
-            const auto disclosureSpacing = std::max(3.0f, style ? style->FramePadding.x : 4.0f);
-            const auto arrowRadius = std::max(3.0f, textSize.y * 0.22f);
-            const auto arrowCenter = ImGuiMCP::ImVec2(
-                position.x + disclosurePadding + arrowRadius,
-                position.y + height * 0.5f);
             auto* drawList = ImGuiMCP::GetWindowDrawList();
-            DrawLumaDropdownArrow(drawList, arrowCenter, arrowRadius * 2.0f, open);
+            DrawLumaDropdownArrow(drawList, disclosure.arrowCenter, disclosure.arrowWidth, open);
             ImGuiMCP::ImDrawListManager::AddText(
                 drawList,
-                ImGuiMCP::GetFont(),
-                ImGuiMCP::GetFontSize(),
+                font,
+                descriptionFontSize,
                 ImGuiMCP::ImVec2(
-                    arrowCenter.x + arrowRadius + disclosureSpacing,
+                    disclosure.arrowCenter.x + disclosure.arrowWidth * 0.5f + disclosure.spacing,
                     position.y + (height - textSize.y) * 0.5f),
                 textColor,
                 text.c_str());
+            ImGuiMCP::PopStyleVar();
             return open;
         }
 
@@ -4074,7 +4284,7 @@ namespace MPL::TuningMenu
                 const auto scaleLabelWidth = ImGuiMCP::CalcTextSize(scaleLabel.c_str()).x;
                 const auto preferredScaleWidth = scaleStyle.width > 0.0f ? scaleStyle.width : kPreferredControlWidth;
                 const auto trailingWidth =
-                    itemSpacing + kSliderValueInputWidth + itemSpacing + scaleLabelWidth;
+                    itemSpacing + SliderValueInputWidth() + itemSpacing + scaleLabelWidth;
                 const auto alignedControlWidth = std::min(
                     SliderBarWidth(preferredScaleWidth),
                     ContractedControlWidth(preferredScaleWidth, trailingWidth));
@@ -4139,7 +4349,7 @@ namespace MPL::TuningMenu
                     scaleChanged = true;
                 }
                 ImGuiMCP::SameLine();
-                ImGuiMCP::SetNextItemWidth(kSliderValueInputWidth);
+                ImGuiMCP::SetNextItemWidth(SliderValueInputWidth());
                 auto inputScale = scale;
                 if (MenuControlCorners::SliderValueInput(
                         ("##ScaleValue" + a_idPrefix + std::string(field.key)).c_str(),
@@ -5849,7 +6059,7 @@ namespace MPL::TuningMenu
             if (visibleLabel == "Save Preset Settings") visibleLabel = "Save Preset Selection";
             const auto label = visibleLabel + "##" + a_id;
             const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
-            if (ImGuiMCP::Button(label.c_str()))
+            if (StyledButton(label.c_str()))
             {
                 std::string error;
                 const auto committed = WeatherPatcher::CommitPresetPreviews(profile, error);
@@ -5902,7 +6112,6 @@ namespace MPL::TuningMenu
                 auto& input = presetSaveInputs[profile];
                 input.removalCategory.clear();
                 input.removalPreset.clear();
-                input.categoryRenameSource.clear();
                 input.presetRenameSource.clear();
                 input.settingsSelection.clear();
                 RefreshAfterPresetChange(a_menu);
@@ -5924,7 +6133,6 @@ namespace MPL::TuningMenu
             auto& input = presetSaveInputs[profile];
             input.removalCategory.clear();
             input.removalPreset.clear();
-            input.categoryRenameSource.clear();
             input.presetRenameSource.clear();
             input.settingsSelection.clear();
             const auto restored = TuningUtil::RestoreSettings(profile);
@@ -6012,6 +6220,7 @@ namespace MPL::TuningMenu
             StackedSectionBoxes sections;
             for (const auto& category : WeatherPatcher::GetPresetCategories(profile))
             {
+                if (!a_control.setting.empty() && !Config::IEquals(a_control.setting, category)) continue;
                 if (pending.categories.contains(Lowercase(category))) continue;
                 auto presets = WeatherPatcher::GetPresets(profile, category);
                 std::erase_if(presets, [&](const std::string& a_preset)
@@ -6033,7 +6242,7 @@ namespace MPL::TuningMenu
                         {
                             const ButtonColorStyle color(
                                 SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::ordinary));
-                            selected = ImGuiMCP::Button(label.c_str());
+                            selected = StyledButton(label.c_str());
                         }
                         else
                         {
@@ -6053,7 +6262,7 @@ namespace MPL::TuningMenu
                             ImGuiMCP::PushStyleColor(
                                 ImGuiMCP::ImGuiCol_ButtonActive,
                                 presetColor(SKSEMenuSettings::InteractionState::pressed));
-                            selected = ImGuiMCP::Button(label.c_str());
+                            selected = StyledButton(label.c_str());
                             ImGuiMCP::PopStyleColor(3);
                         }
                         if (selected)
@@ -6107,7 +6316,7 @@ namespace MPL::TuningMenu
                                 ImGuiMCP::ImGuiCol_ButtonActive,
                                 presetColor(SKSEMenuSettings::InteractionState::pressed));
                         }
-                        const auto selected = ImGuiMCP::Button(label.c_str());
+                        const auto selected = StyledButton(label.c_str());
                         if (active)
                         {
                             ImGuiMCP::PopStyleColor(3);
@@ -6139,32 +6348,199 @@ namespace MPL::TuningMenu
             if (!drewCategory) DrawDisplayText("noPresets", true);
         }
 
-        void DrawPresetCreator(const MenuDefinition& a_menu, const MenuControl& a_control)
+        void DrawPresetCategoryEdit(
+            const MenuDefinition& a_menu,
+            const MenuControl& a_module,
+            LayoutEditorState::ModuleEditInput& a_edit)
         {
-            (void)a_control;
             auto profile = a_menu.profile;
             auto& input = presetSaveInputs[profile];
             auto& pending = PendingPresetRemovalState(profile);
+            if (a_edit.source != a_module.setting)
+            {
+                SetInputText(a_edit.elementText, a_module.setting);
+                a_edit.source = a_module.setting;
+            }
+            ImGuiMCP::SetNextItemWidth(280.0f);
+            const auto categoryNameLabel = SKSEMenuSettings::Label("presetCategoryName", "Category Name") +
+                                           "##" + profile + "PresetCategoryRename";
+            ImGuiMCP::InputText(
+                categoryNameLabel.c_str(),
+                a_edit.elementText.data(),
+                a_edit.elementText.size());
+            const auto renamedCategoryInput = Trim(std::string(a_edit.elementText.data()));
+            ImGuiMCP::BeginDisabled(
+                a_module.setting.empty() ||
+                renamedCategoryInput.empty() ||
+                renamedCategoryInput == a_module.setting);
+            const auto renameCategoryLabel = SKSEMenuSettings::Label("renamePresetCategory", "Rename Category") +
+                                             "##" + profile;
+            if (ActionButton(renameCategoryLabel.c_str(), SKSEMenuSettings::ButtonKind::save))
+            {
+                const auto previousCategory = a_module.setting;
+                std::string error;
+                if (WeatherPatcher::RenamePresetCategory(
+                        profile,
+                        previousCategory,
+                        renamedCategoryInput,
+                        error))
+                {
+                    const auto renamedCategories = WeatherPatcher::GetPresetCategories(profile);
+                    const auto renamed = std::ranges::find_if(renamedCategories, [&](const auto& a_category)
+                        { return Config::IEquals(a_category, renamedCategoryInput); });
+                    const auto renamedCategory = renamed != renamedCategories.end() ?
+                                                     *renamed :
+                                                     renamedCategoryInput;
+                    decltype(pending.presets) renamedPendingPresets;
+                    for (auto& [key, pendingPreset] : pending.presets)
+                    {
+                        (void)key;
+                        if (Config::IEquals(pendingPreset.category, previousCategory))
+                            pendingPreset.category = renamedCategory;
+                        renamedPendingPresets.insert_or_assign(
+                            PresetVisualKey(pendingPreset.category, pendingPreset.name),
+                            std::move(pendingPreset));
+                    }
+                    pending.presets = std::move(renamedPendingPresets);
+                    pending.categories.erase(Lowercase(previousCategory));
+                    if (Config::IEquals(input.removalCategory, previousCategory)) input.removalCategory = renamedCategory;
+                    if (Config::IEquals(input.createCategory, previousCategory)) input.createCategory = renamedCategory;
+                    input.presetRenameSource.clear();
+                    input.settingsSelection.clear();
+                    RefreshAfterPresetChange(a_menu);
+                    statusMessage = StatusText(
+                        "presetCategoryRenamed",
+                        {
+                            { "category", previousCategory },
+                            { "newCategory", renamedCategory },
+                        });
+                    QueueLayoutReload(statusMessage.value);
+                }
+                else
+                {
+                    if (!error.empty()) logger::warn("[Tuning Menu] preset category rename failed | profile={} | category={} | {}", profile, previousCategory, error);
+                    statusMessage = StatusText("presetCategoryRenameFailure");
+                }
+            }
+            ImGuiMCP::EndDisabled();
+        }
+
+        void DrawPresetCreator(
+            const MenuDefinition& a_menu,
+            LayoutEditSession& a_session,
+            const std::size_t a_pageIndex,
+            const MenuPage& a_page)
+        {
+            auto profile = a_menu.profile;
+            auto& input = presetSaveInputs[profile];
+            auto& pending = PendingPresetRemovalState(profile);
+            if (input.pageIndex != a_pageIndex)
+            {
+                input.pageIndex = a_pageIndex;
+                input.createCategory.clear();
+                input.removalCategory.clear();
+                input.removalPreset.clear();
+                input.presetRenameSource.clear();
+                input.settingsSelection.clear();
+            }
+            const auto allCategories = WeatherPatcher::GetPresetCategories(profile);
+            std::vector<std::string> categorySlots;
+            for (const auto& module : a_page.modules)
+            {
+                if (module.type != "presets" || module.setting.empty()) continue;
+                categorySlots.push_back(module.setting);
+            }
+            auto pageCategories = PresetCatalog::CategoriesForPage(allCategories, categorySlots);
+            std::erase_if(pageCategories, [&](const auto& a_category)
+                { return pending.categories.contains(Lowercase(a_category)); });
+            const auto addCategoryToPage = [&](const std::string& a_category)
+            {
+                std::string error;
+                if (!SliderCreator::AddModule(a_session.workingPath, a_pageIndex, "presets", "", a_category, error))
+                {
+                    statusMessage.SetWarning(SliderCreatorErrorText(error));
+                    return false;
+                }
+                QueueLayoutEditReload(a_session, StatusText("layoutModuleAdded"));
+                return true;
+            };
+            const auto drawCategoryCombo = [&](std::string& a_selection, const std::string& a_id)
+            {
+                const auto& categories = pageCategories;
+                if (!std::ranges::contains(categories, a_selection))
+                    a_selection = categories.empty() ? std::string{} : categories.front();
+                ImGuiMCP::SetNextItemWidth(280.0f);
+                const auto label = SKSEMenuSettings::Label("presetCategory", "Category") + "##" + profile + a_id;
+                if (ImGuiMCP::BeginCombo(label.c_str(), a_selection.c_str()))
+                {
+                    for (const auto& category : categories)
+                    {
+                        const auto selected = category == a_selection;
+                        if (ImGuiMCP::Selectable(category.c_str(), selected)) a_selection = category;
+                        if (selected) ImGuiMCP::SetItemDefaultFocus();
+                    }
+                    ImGuiMCP::EndCombo();
+                }
+            };
             StackedSectionBoxes sections;
-            if (sections.StartBox("CreatePresetSection##" + profile))
+            if (sections.StartBox("CreatePresetCategorySection##" + profile))
             {
                 ImGuiMCP::SetNextItemWidth(280.0f);
-                ImGuiMCP::InputText(
-                    ("Category##" + profile + "PresetCategoryInput").c_str(),
-                    input.category.data(),
-                    input.category.size());
+                const auto nameLabel = SKSEMenuSettings::Label("presetCategoryName", "Category Name") +
+                                       "##" + profile + "CreateCategoryName";
+                ImGuiMCP::InputText(nameLabel.c_str(), input.category.data(), input.category.size());
+                const auto createLabel = SKSEMenuSettings::Label("createPresetCategory", "Create Category") +
+                                         "##" + profile;
+                ImGuiMCP::BeginDisabled(Trim(std::string(input.category.data())).empty());
+                if (ActionButton(createLabel.c_str(), SKSEMenuSettings::ButtonKind::save))
+                {
+                    std::string error;
+                    const auto category = Trim(std::string(input.category.data()));
+                    const auto existing = std::ranges::find_if(allCategories, [&](const auto& a_category)
+                        { return Config::IEquals(a_category, category); });
+                    const auto categoryIsPlaced = std::ranges::any_of(a_menu.pages, [&](const auto& a_otherPage)
+                    {
+                        return std::ranges::any_of(a_otherPage.modules, [&](const auto& a_module)
+                            { return a_module.type == "presets" &&
+                                     (a_module.setting.empty() || Config::IEquals(a_module.setting, category)); });
+                    });
+                    if (existing != allCategories.end() && !categoryIsPlaced)
+                    {
+                        if (addCategoryToPage(*existing))
+                        {
+                            input.createCategory = *existing;
+                            input.category.fill('\0');
+                            statusMessage = StatusText("presetCategoryAttached", { { "category", *existing } });
+                        }
+                    }
+                    else if (WeatherPatcher::StagePresetCategory(profile, category, error))
+                    {
+                        pending.catalogDirty = true;
+                        input.createCategory = category;
+                        input.category.fill('\0');
+                        if (addCategoryToPage(category))
+                            statusMessage = StatusText("presetCategoryStaged", { { "category", category } });
+                    }
+                    else statusMessage.SetWarning(SliderCreatorErrorText(error));
+                }
+                ImGuiMCP::EndDisabled();
+            }
+            if (sections.StartBox("CreatePresetSection##" + profile))
+            {
+                drawCategoryCombo(input.createCategory, "PresetCategoryInput");
                 ImGuiMCP::SetNextItemWidth(280.0f);
                 ImGuiMCP::InputText(
                     ("Preset Name##" + profile + "PresetNameInput").c_str(),
                     input.name.data(),
                     input.name.size());
                 const auto saveLabel = SKSEMenuSettings::Label("createPreset", "Create Preset");
+                ImGuiMCP::BeginDisabled(input.createCategory.empty() || Trim(std::string(input.name.data())).empty());
                 if (ActionButton(
                         (saveLabel + "##" + profile + "PresetSaveButton").c_str(),
                         SKSEMenuSettings::ButtonKind::save))
                 {
                     std::string error;
-                    const std::string category(input.category.data());
+                    const auto category = input.createCategory;
                     const std::string presetName(input.name.data());
                     if (WeatherPatcher::StagePreset(profile, category, presetName, error))
                     {
@@ -6187,8 +6563,8 @@ namespace MPL::TuningMenu
                         statusMessage = StatusText("presetStageFailure");
                     }
                 }
+                ImGuiMCP::EndDisabled();
             }
-
             if (sections.Start(
                     SKSEMenuSettings::Label("editPresetHeader", "Edit Preset"),
                     "EditPresetHeader##" + profile))
@@ -6196,14 +6572,11 @@ namespace MPL::TuningMenu
                 StackedSectionBoxes editSections;
                 if (editSections.StartBox("PresetSelectionSection##" + profile))
                 {
-                    auto categories = WeatherPatcher::GetPresetCategories(profile);
-                    std::erase_if(categories, [&](const std::string& a_category)
-                        { return pending.categories.contains(Lowercase(a_category)); });
+                    const auto& categories = pageCategories;
                     if (!std::ranges::contains(categories, input.removalCategory))
                     {
                         input.removalCategory.clear();
                         input.removalPreset.clear();
-                        input.categoryRenameSource.clear();
                         input.presetRenameSource.clear();
                         input.settingsSelection.clear();
                     }
@@ -6220,7 +6593,6 @@ namespace MPL::TuningMenu
                             {
                                 input.removalCategory = category;
                                 input.removalPreset.clear();
-                                input.categoryRenameSource.clear();
                                 input.presetRenameSource.clear();
                                 input.settingsSelection.clear();
                             }
@@ -6236,85 +6608,81 @@ namespace MPL::TuningMenu
                             { return pending.presets.contains(PresetVisualKey(input.removalCategory, a_preset)); });
                     }
                     if (!std::ranges::contains(presets, input.removalPreset)) input.removalPreset.clear();
-                    const auto presetPreview = input.removalPreset.empty() ? DisplayText("selectPreset") : input.removalPreset;
-                    ImGuiMCP::BeginDisabled(input.removalCategory.empty());
-                    const auto presetSelectionLabel = SKSEMenuSettings::Label("preset", "Preset") +
-                                                      "##" + profile + "PresetEditName";
-                    if (ImGuiMCP::BeginCombo(presetSelectionLabel.c_str(), presetPreview.c_str()))
+                    auto presetWidth = ImGuiMCP::CalcTextSize(SKSEMenuSettings::Label("preset", "Preset").c_str()).x;
+                    for (const auto& preset : presets)
+                        presetWidth = std::max(presetWidth, ImGuiMCP::CalcTextSize(preset.c_str()).x);
+                    constexpr auto rowFlags = ImGuiMCP::ImGuiTableFlags_SizingFixedFit |
+                                              ImGuiMCP::ImGuiTableFlags_NoSavedSettings |
+                                              ImGuiMCP::ImGuiTableFlags_NoPadOuterX;
+                    for (std::size_t index = 0; index < presets.size(); ++index)
                     {
-                        for (const auto& preset : presets)
+                        const auto& preset = presets[index];
+                        const auto rowID = profile + input.removalCategory + preset;
+                        if (!ImGuiMCP::BeginTable(("PresetContentRow##" + rowID).c_str(), 5, rowFlags)) continue;
+                        ImGuiMCP::TableSetupColumn("Preset", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed, presetWidth);
+                        ImGuiMCP::TableSetupColumn("Up", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                        ImGuiMCP::TableSetupColumn("Down", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                        ImGuiMCP::TableSetupColumn("Remove", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                        ImGuiMCP::TableSetupColumn("Edit", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+                        ImGuiMCP::TableNextRow();
+                        ImGuiMCP::TableSetColumnIndex(0);
+                        ImGuiMCP::TextUnformatted(preset.c_str());
+                        for (const auto direction : { -1, 1 })
                         {
-                            if (ImGuiMCP::Selectable(preset.c_str(), Config::IEquals(preset, input.removalPreset)))
+                            ImGuiMCP::TableSetColumnIndex(direction < 0 ? 1 : 2);
+                            ImGuiMCP::BeginDisabled(direction < 0 ? index == 0 : index + 1 >= presets.size());
+                            const auto label = SKSEMenuSettings::Label(
+                                direction < 0 ? "moveUp" : "moveDown", direction < 0 ? "Up" : "Down") + "##" + rowID;
+                            if (StyledButton(label.c_str(), true))
                             {
-                                input.removalPreset = preset;
+                                std::string error;
+                                const auto neighbor = presets[static_cast<std::size_t>(
+                                    static_cast<std::ptrdiff_t>(index) + direction)];
+                                auto ordered = WeatherPatcher::GetPresets(profile, input.removalCategory);
+                                const auto current = std::ranges::find(ordered, preset);
+                                const auto target = std::ranges::find(ordered, neighbor);
+                                auto distance = std::abs(std::distance(current, target));
+                                bool moved = true;
+                                while (distance-- > 0 && moved)
+                                    moved = WeatherPatcher::MovePreset(profile, input.removalCategory, preset, direction, error);
+                                if (moved)
+                                {
+                                    RefreshAfterPresetChange(a_menu);
+                                    statusMessage = StatusText("presetMoved");
+                                }
+                                else statusMessage.SetWarning(error);
+                            }
+                            ImGuiMCP::EndDisabled();
+                        }
+                        ImGuiMCP::TableSetColumnIndex(3);
+                        const auto removeLabel = SKSEMenuSettings::Label("removeModule", "Remove") + "##" + rowID;
+                        if (SmallActionButton(removeLabel.c_str(), SKSEMenuSettings::ButtonKind::destructive))
+                        {
+                            pending.presets.insert_or_assign(PresetVisualKey(input.removalCategory, preset),
+                                WeatherPatcher::ActivePreset{ input.removalCategory, preset });
+                            if (Config::IEquals(input.removalPreset, preset))
+                            {
+                                input.removalPreset.clear();
                                 input.presetRenameSource.clear();
                                 input.settingsSelection.clear();
                             }
-                        }
-                        ImGuiMCP::EndCombo();
-                    }
-                    ImGuiMCP::EndDisabled();
-
-                    const auto selectedPreset = std::ranges::find_if(presets, [&](const auto& a_preset)
-                        { return Config::IEquals(a_preset, input.removalPreset); });
-                    const auto selectedPresetIndex = selectedPreset == presets.end() ?
-                                                         presets.size() :
-                                                         static_cast<std::size_t>(std::distance(presets.begin(), selectedPreset));
-                    ImGuiMCP::BeginDisabled(selectedPresetIndex == 0 || selectedPresetIndex >= presets.size());
-                    const auto movePresetUpLabel = SKSEMenuSettings::Label("movePresetUp", "Move Up") +
-                                                   "##" + profile;
-                    if (ImGuiMCP::Button(movePresetUpLabel.c_str()))
-                    {
-                        std::string error;
-                        if (WeatherPatcher::MovePreset(
-                                profile,
-                                input.removalCategory,
-                                input.removalPreset,
-                                -1,
-                                error))
-                        {
                             RefreshAfterPresetChange(a_menu);
-                            statusMessage = StatusText("presetMoved");
+                            statusMessage = StatusText("presetRemovalStaged",
+                                { { "preset", preset }, { "category", input.removalCategory } });
                         }
-                        else
+                        ImGuiMCP::TableSetColumnIndex(4);
+                        const auto editLabel = SKSEMenuSettings::Label("editModule", "Edit") + "##" + rowID;
+                        if (SmallActionButton(editLabel.c_str(), SKSEMenuSettings::ButtonKind::save))
                         {
-                            if (!error.empty()) logger::warn("[Tuning Menu] preset move failed | profile={} | category={} | preset={} | direction=up | {}", profile, input.removalCategory, input.removalPreset, error);
-                            statusMessage = StatusText("presetMoveFailure");
+                            input.removalPreset = input.removalPreset == preset ? std::string{} : preset;
+                            input.presetRenameSource.clear();
+                            input.settingsSelection.clear();
                         }
+                        ImGuiMCP::EndTable();
                     }
-                    ImGuiMCP::EndDisabled();
-                    SameActionLine();
-                    ImGuiMCP::BeginDisabled(
-                        selectedPresetIndex >= presets.size() || selectedPresetIndex + 1 >= presets.size());
-                    const auto movePresetDownLabel = SKSEMenuSettings::Label("movePresetDown", "Move Down") +
-                                                     "##" + profile;
-                    if (ImGuiMCP::Button(movePresetDownLabel.c_str()))
-                    {
-                        std::string error;
-                        if (WeatherPatcher::MovePreset(
-                                profile,
-                                input.removalCategory,
-                                input.removalPreset,
-                                1,
-                                error))
-                        {
-                            RefreshAfterPresetChange(a_menu);
-                            statusMessage = StatusText("presetMoved");
-                        }
-                        else
-                        {
-                            if (!error.empty()) logger::warn("[Tuning Menu] preset move failed | profile={} | category={} | preset={} | direction=down | {}", profile, input.removalCategory, input.removalPreset, error);
-                            statusMessage = StatusText("presetMoveFailure");
-                        }
-                    }
-                    ImGuiMCP::EndDisabled();
+                    if (!input.removalCategory.empty() && presets.empty()) DrawDisplayText("noPresets", true);
                 }
 
-                if (input.categoryRenameSource != input.removalCategory)
-                {
-                    SetInputText(input.categoryRename, input.removalCategory);
-                    input.categoryRenameSource = input.removalCategory;
-                }
                 const auto presetRenameSource = input.removalPreset.empty() ?
                                                     std::string{} :
                                                     PresetVisualKey(input.removalCategory, input.removalPreset);
@@ -6324,94 +6692,7 @@ namespace MPL::TuningMenu
                     input.presetRenameSource = presetRenameSource;
                 }
 
-                if (editSections.StartBox("PresetCategorySection##" + profile))
-                {
-                    ImGuiMCP::SetNextItemWidth(280.0f);
-                    const auto categoryNameLabel = SKSEMenuSettings::Label("presetCategoryName", "Category Name") +
-                                                   "##" + profile + "PresetCategoryRename";
-                    ImGuiMCP::InputText(
-                        categoryNameLabel.c_str(),
-                        input.categoryRename.data(),
-                        input.categoryRename.size());
-                    const auto renamedCategoryInput = Trim(std::string(input.categoryRename.data()));
-                    ImGuiMCP::BeginDisabled(
-                        input.removalCategory.empty() ||
-                        renamedCategoryInput.empty() ||
-                        renamedCategoryInput == input.removalCategory);
-                    const auto renameCategoryLabel = SKSEMenuSettings::Label("renamePresetCategory", "Rename Category") +
-                                                     "##" + profile;
-                    if (ActionButton(renameCategoryLabel.c_str(), SKSEMenuSettings::ButtonKind::save))
-                    {
-                        const auto previousCategory = input.removalCategory;
-                        std::string error;
-                        if (WeatherPatcher::RenamePresetCategory(
-                                profile,
-                                previousCategory,
-                                renamedCategoryInput,
-                                error))
-                        {
-                            const auto renamedCategories = WeatherPatcher::GetPresetCategories(profile);
-                            const auto renamed = std::ranges::find_if(renamedCategories, [&](const auto& a_category)
-                                { return Config::IEquals(a_category, renamedCategoryInput); });
-                            const auto renamedCategory = renamed != renamedCategories.end() ?
-                                                             *renamed :
-                                                             renamedCategoryInput;
-                            decltype(pending.presets) renamedPendingPresets;
-                            for (auto& [key, pendingPreset] : pending.presets)
-                            {
-                                (void)key;
-                                if (Config::IEquals(pendingPreset.category, previousCategory))
-                                    pendingPreset.category = renamedCategory;
-                                renamedPendingPresets.insert_or_assign(
-                                    PresetVisualKey(pendingPreset.category, pendingPreset.name),
-                                    std::move(pendingPreset));
-                            }
-                            pending.presets = std::move(renamedPendingPresets);
-                            pending.categories.erase(Lowercase(previousCategory));
-                            input.removalCategory = renamedCategory;
-                            input.categoryRenameSource.clear();
-                            input.presetRenameSource.clear();
-                            input.settingsSelection.clear();
-                            RefreshAfterPresetChange(a_menu);
-                            statusMessage = StatusText(
-                                "presetCategoryRenamed",
-                                {
-                                    { "category", previousCategory },
-                                    { "newCategory", renamedCategory },
-                                });
-                        }
-                        else
-                        {
-                            if (!error.empty()) logger::warn("[Tuning Menu] preset category rename failed | profile={} | category={} | {}", profile, previousCategory, error);
-                            statusMessage = StatusText("presetCategoryRenameFailure");
-                        }
-                    }
-                    ImGuiMCP::EndDisabled();
-                    SameActionLine();
-                    ImGuiMCP::BeginDisabled(input.removalCategory.empty());
-                    {
-                        const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
-                        const auto removeCategoryLabel = SKSEMenuSettings::Label("removePresetCategory", "Remove Category") +
-                                                         "##" + profile;
-                        if (ImGuiMCP::Button(removeCategoryLabel.c_str()))
-                        {
-                            const auto category = input.removalCategory;
-                            pending.categories.insert_or_assign(Lowercase(category), category);
-                            std::erase_if(pending.presets, [&](const auto& a_entry)
-                                { return Config::IEquals(a_entry.second.category, category); });
-                            input.removalCategory.clear();
-                            input.removalPreset.clear();
-                            input.categoryRenameSource.clear();
-                            input.presetRenameSource.clear();
-                            input.settingsSelection.clear();
-                            RefreshAfterPresetChange(a_menu);
-                            statusMessage = StatusText("presetCategoryRemovalStaged", { { "category", category } });
-                        }
-                    }
-                    ImGuiMCP::EndDisabled();
-                }
-
-                if (editSections.StartBox("PresetNameSection##" + profile))
+                if (!input.removalPreset.empty() && editSections.StartBox("PresetNameSection##" + profile))
                 {
                     ImGuiMCP::SetNextItemWidth(280.0f);
                     const auto presetNameLabel = SKSEMenuSettings::Label("presetName", "Preset Name") +
@@ -6464,30 +6745,11 @@ namespace MPL::TuningMenu
                         }
                     }
                     ImGuiMCP::EndDisabled();
-                    SameActionLine();
-                    ImGuiMCP::BeginDisabled(input.removalCategory.empty() || input.removalPreset.empty());
-                    {
-                        const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
-                        const auto removePresetLabel = SKSEMenuSettings::Label("removePreset", "Remove Preset") +
-                                                       "##" + profile;
-                        if (ImGuiMCP::Button(removePresetLabel.c_str()))
-                        {
-                            const auto category = input.removalCategory;
-                            const auto preset = input.removalPreset;
-                            pending.presets.insert_or_assign(PresetVisualKey(category, preset), WeatherPatcher::ActivePreset{ category, preset });
-                            input.removalPreset.clear();
-                            input.presetRenameSource.clear();
-                            input.settingsSelection.clear();
-                            RefreshAfterPresetChange(a_menu);
-                            statusMessage = StatusText("presetRemovalStaged", { { "preset", preset }, { "category", category } });
-                        }
-                    }
-                    ImGuiMCP::EndDisabled();
                 }
                 editSections.Close();
 
                 StackedSectionBoxes presetSettingsSection;
-                if (presetSettingsSection.Start(
+                if (!input.removalPreset.empty() && presetSettingsSection.Start(
                         SKSEMenuSettings::Label("presetSettings", "Preset Settings"),
                         "PresetSettingsHeader##" + profile))
                 {
@@ -6496,7 +6758,7 @@ namespace MPL::TuningMenu
                     const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                     const auto updatePresetLabel = SKSEMenuSettings::Label("updatePreset", "Update Preset with Current Settings") +
                                                    "##" + profile;
-                    if (ImGuiMCP::Button(updatePresetLabel.c_str()))
+                    if (StyledButton(updatePresetLabel.c_str()))
                     {
                         std::string error;
                         if (WeatherPatcher::UpdatePreset(
@@ -6666,6 +6928,10 @@ namespace MPL::TuningMenu
             a_state.useXemiFilter = definition.useXemiFilter;
             a_state.xemiInclude = definition.xemiInclude;
             a_state.xemiExclude = definition.xemiExclude;
+            a_state.interiorOnly = definition.interiorOnly;
+            a_state.notInterior = definition.notInterior;
+            a_state.cellInclude = definition.cellInclude;
+            a_state.cellExclude = definition.cellExclude;
             a_state.hueFilter = definition.hueFilter;
             a_state.useHueScales = definition.hueScales.has_value();
             if (definition.hueScales)
@@ -7386,6 +7652,13 @@ namespace MPL::TuningMenu
                 result.useXemiFilter = baseLightFilter;
                 result.xemiInclude = a_state.xemiInclude;
                 result.xemiExclude = a_state.xemiExclude;
+            }
+            if (baseObjectFilter)
+            {
+                result.interiorOnly = a_state.interiorOnly;
+                result.notInterior = a_state.notInterior;
+                result.cellInclude = a_state.cellInclude;
+                result.cellExclude = a_state.cellExclude;
             }
             if (a_state.useRange)
             {
@@ -8310,6 +8583,37 @@ namespace MPL::TuningMenu
                 }
             }
 
+            if (filteredFeatures && CreatorUsesBaseObjectFilter(state))
+            {
+                if (sections.StartDropdownBox(
+                        SKSEMenuSettings::Label("cellFilter", "Cell Filter"),
+                        "SliderCreatorCellFilter##" + stateKey))
+                {
+                    const auto interiorLabel = SKSEMenuSettings::Label("interior", "Interior") +
+                                               "##SliderCreatorCellInterior" + stateKey;
+                    if (ImGuiMCP::Checkbox(interiorLabel.c_str(), &state.interiorOnly) && state.interiorOnly)
+                        state.notInterior = false;
+                    const auto notInteriorLabel = SKSEMenuSettings::Label("notInterior", "Not Interior") +
+                                                  "##SliderCreatorCellNotInterior" + stateKey;
+                    if (ImGuiMCP::Checkbox(notInteriorLabel.c_str(), &state.notInterior) && state.notInterior)
+                        state.interiorOnly = false;
+                    TuningUtil::PluginFilter noPluginInclusions;
+                    TuningUtil::PluginFilter noPluginExclusions;
+                    DrawRecordFilterEditor(
+                        state.cellInclude.formIDs,
+                        state.cellExclude.formIDs,
+                        std::addressof(state.cellInclude.contains),
+                        std::addressof(state.cellExclude.contains),
+                        noPluginInclusions,
+                        noPluginExclusions,
+                        GetCellMenuEntries(),
+                        RecordFilterKind::cell,
+                        SKSEMenuSettings::Label("cell", "Cell"),
+                        "SliderCreatorCell" + stateKey,
+                        false);
+                }
+            }
+
             if (filteredFeatures && (CreatorUsesBaseObjectFilter(state) || CreatorUsesPointLightXemi(state)))
             {
                 if (sections.StartDropdownBox(
@@ -8355,7 +8659,7 @@ namespace MPL::TuningMenu
             const auto saveLabel = SKSEMenuSettings::Label(
                 editing ? "updateSlider" : "addSlider",
                 editing ? "Update Slider" : "Add Slider");
-            if (ImGuiMCP::Button((saveLabel + "##" + stateKey).c_str()))
+            if (StyledButton((saveLabel + "##" + stateKey).c_str()))
             {
                 auto definition = CreatorDefinition(state);
                 if (editing && !state.loadedSliderID.empty())
@@ -8432,7 +8736,7 @@ namespace MPL::TuningMenu
                     SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
                 const auto deleteLabel = SKSEMenuSettings::Label("deleteSlider", "Delete Slider") +
                                          "##" + stateKey;
-                if (ImGuiMCP::Button(deleteLabel.c_str()))
+                if (StyledButton(deleteLabel.c_str()))
                 {
                     const auto deletedSlider = state.loadedSliderID;
                     const auto deletedPage = pages[*state.loadedPageIndex].title;
@@ -8640,7 +8944,7 @@ namespace MPL::TuningMenu
                                            "Save All Page Settings as Default" :
                                            "Save Page Settings as Default") +
                                    "##" + a_menu.profile + std::string(a_id);
-                if (ImGuiMCP::Button(label.c_str())) ImGuiMCP::OpenPopup(popupTitle.c_str());
+                if (StyledButton(label.c_str())) ImGuiMCP::OpenPopup(popupTitle.c_str());
             }
             ImGuiMCP::EndDisabled();
 
@@ -8712,7 +9016,7 @@ namespace MPL::TuningMenu
         {
             const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
             const auto label = ControlLabel(a_control, "saveAll", "Save All Pages") + "##" + a_id;
-            if (ImGuiMCP::Button(label.c_str()))
+            if (StyledButton(label.c_str()))
             {
                 SaveAllSettings(a_menu);
             }
@@ -8725,7 +9029,7 @@ namespace MPL::TuningMenu
         {
             const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::restore));
             const auto label = ControlLabel(a_control, "restoreAll", "Restore All Pages") + "##" + a_id;
-            if (ImGuiMCP::Button(label.c_str()))
+            if (StyledButton(label.c_str()))
             {
                 auto profile = a_menu.profile;
                 const auto restored = TuningUtil::RestoreSettings(profile);
@@ -8800,7 +9104,7 @@ namespace MPL::TuningMenu
             auto& settings = TuningUtil::GetSettings(profile);
             const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
             const auto label = ControlLabel(a_control, "applyProfilePriority", "Apply Profile Priority") + "##" + a_id;
-            if (ImGuiMCP::Button(label.c_str()))
+            if (StyledButton(label.c_str()))
             {
                 settings.profilePriority = ProfilePriorityInput(profile);
                 TuningUtil::ApplySettings(std::format("profile-priority | profile={} | priority={}", profile, settings.profilePriority));
@@ -8907,7 +9211,7 @@ namespace MPL::TuningMenu
                     SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                 const auto label = SKSEMenuSettings::Label("savePluginGating", "Save Plugin Gating") +
                                    "##" + std::string(a_id);
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     std::string error;
                     if (SliderCreator::SaveProfilePluginGating(settingsPath, state.working, error))
@@ -8929,7 +9233,7 @@ namespace MPL::TuningMenu
                     SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::restore));
                 const auto label = SKSEMenuSettings::Label("restorePluginGating", "Restore Plugin Gating") +
                                    "##" + std::string(a_id);
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     state.working = state.saved;
                     state.dependencies = {};
@@ -8985,7 +9289,7 @@ namespace MPL::TuningMenu
                                        weather ? "saveWeatherSetup" : "saveLightingSetup",
                                        weather ? "Save Weather Setup" : "Save Lighting Setup") +
                                    "##" + std::string(a_id);
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     auto profile = a_menu.profile;
                     std::string error;
@@ -9018,7 +9322,7 @@ namespace MPL::TuningMenu
                                        weather ? "restoreWeatherSetup" : "restoreLightingSetup",
                                        weather ? "Restore Weather Setup" : "Restore Lighting Setup") +
                                    "##" + std::string(a_id);
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     auto profile = a_menu.profile;
                     std::string error;
@@ -9103,17 +9407,17 @@ namespace MPL::TuningMenu
             const std::string_view a_id)
         {
             {
-                const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                 const auto label = SKSEMenuSettings::Label("savePage", "Save Page") +
                                    "##" + a_menu.profile + std::string(a_id);
-                if (ImGuiMCP::Button(label.c_str())) SaveProfilePage(a_menu, a_modules);
+                if (ActionButton(label.c_str(), SKSEMenuSettings::ButtonKind::save))
+                    SaveProfilePage(a_menu, a_modules);
             }
             SameActionLine();
             {
-                const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::restore));
                 const auto label = SKSEMenuSettings::Label("restorePage", "Restore Page") +
                                    "##" + a_menu.profile + std::string(a_id);
-                if (ImGuiMCP::Button(label.c_str())) RestoreProfilePage(a_menu, a_modules);
+                if (ActionButton(label.c_str(), SKSEMenuSettings::ButtonKind::restore))
+                    RestoreProfilePage(a_menu, a_modules);
             }
             SameActionLine();
             {
@@ -9173,11 +9477,16 @@ namespace MPL::TuningMenu
                 const auto sectionID = "DescriptionSection##" + a_menu.profile + std::to_string(a_index);
                 if (header.empty())
                 {
-                    if (!a_module.text.empty()) ImGuiMCP::TextWrapped("%s", a_module.text.c_str());
+                    if (!a_module.text.empty())
+                    {
+                        const ScopedSubElementIndent contentIndent;
+                        ImGuiMCP::TextWrapped("%s", a_module.text.c_str());
+                    }
                 }
                 else if (DrawDescriptionDropdown(header, sectionID, a_module.defaultOpen) &&
                          !a_module.text.empty())
                 {
+                    const ScopedSubElementIndent contentIndent;
                     ImGuiMCP::TextWrapped("%s", a_module.text.c_str());
                 }
                 return;
@@ -9394,8 +9703,9 @@ namespace MPL::TuningMenu
                 std::string_view{ "presets" },
             };
             const auto structural = std::ranges::contains(
-                structuralTypes,
-                std::string_view(a_module.type));
+                                        structuralTypes,
+                                        std::string_view(a_module.type)) ||
+                                    a_module.type == "description";
 
             ImGuiMCP::BeginGroup();
             if (!structural)
@@ -9442,6 +9752,7 @@ namespace MPL::TuningMenu
                 box,
                 dropdownBox,
                 header,
+                description,
             };
 
             struct OpenSection
@@ -9545,12 +9856,18 @@ namespace MPL::TuningMenu
                     else if (!a_title.empty())
                     {
                         DropBoxAccent accent;
-                        visible = DrawSectionDropdownHeader(
-                            a_title,
-                            a_id,
-                            a_defaultOpen,
-                            a_scale,
-                            &accent);
+                        visible = a_kind == SectionKind::description ?
+                                      DrawDescriptionDropdown(
+                                          a_title,
+                                          a_id,
+                                          a_defaultOpen,
+                                          &accent) :
+                                      DrawSectionDropdownHeader(
+                                          a_title,
+                                          a_id,
+                                          a_defaultOpen,
+                                          a_scale,
+                                          &accent);
                         leftAccent = accent;
                     }
                 }
@@ -9570,7 +9887,9 @@ namespace MPL::TuningMenu
             };
             const auto closeImplicitHeader = [&]()
             {
-                if (!openSections.empty() && openSections.back().kind == SectionKind::header)
+                if (!openSections.empty() &&
+                    (openSections.back().kind == SectionKind::header ||
+                        openSections.back().kind == SectionKind::description))
                 {
                     previousVisibleElementWasBox = openSections.back().began;
                     closeSection();
@@ -9591,6 +9910,36 @@ namespace MPL::TuningMenu
             for (std::size_t index = 0; index < a_modules.size(); ++index)
             {
                 const auto& module = a_modules[index];
+                if (module.type == "description" && module.boxed)
+                {
+                    closeImplicitHeader();
+                    if (!contentVisible())
+                    {
+                        openSections.push_back({ .kind = SectionKind::description });
+                        continue;
+                    }
+                    if (previousVisibleElementWasBox) JoinNextBoxBorder();
+                    else if (hasVisibleContent) addSpacing();
+                    const auto title = ControlDisplayName(
+                        module,
+                        module.header.empty() ?
+                            SKSEMenuSettings::Label("descriptionDefaultTitle", "Description") :
+                            module.header);
+                    beginSection(
+                        SectionKind::description,
+                        "DescriptionSection##" + a_menu.profile + std::string(a_pageID) + std::to_string(index),
+                        title,
+                        1.0f,
+                        module.defaultOpen);
+                    if (contentVisible() && !module.text.empty())
+                    {
+                        const ScopedSubElementIndent contentIndent;
+                        ImGuiMCP::TextWrapped("%s", module.text.c_str());
+                    }
+                    hasVisibleContent = true;
+                    previousVisibleElementWasBox = false;
+                    continue;
+                }
                 if (module.type == "separatorText")
                 {
                     closeImplicitHeader();
@@ -9683,6 +10032,24 @@ namespace MPL::TuningMenu
             }
             while (!openSections.empty()) closeSection();
         }
+
+        bool PageStartsWithBox(const std::span<const MenuControl> a_modules)
+        {
+            if (a_modules.empty()) return false;
+            if (a_modules.front().type == "description") return a_modules.front().boxed;
+            static constexpr std::array types{
+                std::string_view{ "pageActions" },
+                std::string_view{ "profileActions" },
+                std::string_view{ "profilePluginGating" },
+                std::string_view{ "presetSave" },
+                std::string_view{ "presets" },
+                std::string_view{ "separatorText" },
+                std::string_view{ "boxStart" },
+                std::string_view{ "dropBoxStart" },
+            };
+            return std::ranges::contains(types, std::string_view(a_modules.front().type));
+        }
+
         void BeginProfilePage(const std::string& a_profile, const std::string& a_page)
         {
             auto [active, inserted] = activeProfilePages.try_emplace(a_profile, a_page);
@@ -9706,7 +10073,6 @@ namespace MPL::TuningMenu
         constexpr std::array kLayoutModuleChoices{
             LayoutModuleChoice{ "Page Save", "pageActions", "", "" },
             LayoutModuleChoice{ "Preset Save", "presetSave", "", "" },
-            LayoutModuleChoice{ "Presets", "presets", "", "" },
             LayoutModuleChoice{ "Time of Day", "timeOfDay", "", "" },
             LayoutModuleChoice{ "Weather Selector", "weatherSelector", "", "" },
             LayoutModuleChoice{ "Weather Quick Select", "weatherQuickSelect", "", "" },
@@ -9784,6 +10150,9 @@ namespace MPL::TuningMenu
                                                   "Open by default") +
                                               "##" + std::string(a_id);
                 ImGuiMCP::Checkbox(defaultOpenLabel.c_str(), &a_state.descriptionDefaultOpen);
+                const auto boxedLabel = SKSEMenuSettings::Label("boxed", "Boxed") +
+                                        "##" + std::string(a_id);
+                ImGuiMCP::Checkbox(boxedLabel.c_str(), &a_state.descriptionBoxed);
                 return;
             }
 
@@ -9821,6 +10190,8 @@ namespace MPL::TuningMenu
 
         std::string LayoutModuleDisplayName(const MenuControl& a_module)
         {
+            if (a_module.type == "presets" && !a_module.setting.empty())
+                return a_module.setting + " (" + SKSEMenuSettings::Label("presetCategory", "Category") + ")";
             if (a_module.type == "boxStart") return "Box Start";
             static constexpr std::array profileModules{
                 std::pair{ std::string_view("profileActions"), std::string_view("Save / Restore / Reset") },
@@ -9952,6 +10323,7 @@ namespace MPL::TuningMenu
 
         bool LayoutModuleCanEdit(const MenuControl& a_module)
         {
+            if (a_module.type == "presets" && !a_module.setting.empty()) return true;
             if (const auto* element = LayoutElementChoice(a_module);
                 element && (element->type == "description" || LayoutElementUsesText(*element)))
             {
@@ -9968,20 +10340,28 @@ namespace MPL::TuningMenu
             const std::size_t a_pageIndex,
             const std::size_t a_moduleIndex)
         {
+            if (a_module.type == "presets" && !a_module.setting.empty())
+            {
+                DrawPresetCategoryEdit(a_menu, a_module,
+                    a_state.moduleEdits[LayoutModuleEditKey(a_menu, a_module, a_pageIndex, a_moduleIndex)]);
+                return;
+            }
             const auto stateKey = LayoutModuleEditKey(a_menu, a_module, a_pageIndex, a_moduleIndex);
             auto& input = a_state.moduleEdits[stateKey];
             const auto currentName = LayoutModuleEditableName(a_module).value_or(a_module.label);
             const auto source = std::format(
-                "{}\x1F{}\x1F{}",
+                "{}\x1F{}\x1F{}\x1F{}",
                 currentName,
                 a_module.text,
-                a_module.defaultOpen);
+                a_module.defaultOpen,
+                a_module.boxed);
             if (input.source != source)
             {
                 SetInputText(input.elementText, currentName);
                 SetInputText(input.descriptionHeader, currentName);
                 SetInputText(input.descriptionText, a_module.text);
                 input.descriptionDefaultOpen = a_module.defaultOpen;
+                input.descriptionBoxed = a_module.boxed;
                 input.source = source;
             }
 
@@ -10000,7 +10380,7 @@ namespace MPL::TuningMenu
             const ButtonColorStyle saveColor(
                 SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
             const auto saveLabel = SKSEMenuSettings::Label("saveModuleChanges", "Save") + "##" + stateKey;
-            if (!ImGuiMCP::Button(saveLabel.c_str())) return;
+            if (!StyledButton(saveLabel.c_str())) return;
 
             SliderCreator::ModuleUpdate update;
             if (element && element->type == "description")
@@ -10010,6 +10390,7 @@ namespace MPL::TuningMenu
                     update.name = SKSEMenuSettings::Label("descriptionDefaultTitle", "Description");
                 update.text = InputText(input.descriptionText);
                 update.defaultOpen = input.descriptionDefaultOpen;
+                update.boxed = input.descriptionBoxed;
             }
             else
             {
@@ -10048,7 +10429,7 @@ namespace MPL::TuningMenu
                 const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                 const auto label = SKSEMenuSettings::Label("saveAllPageEdits", "Save All Page Edits") +
                                    "##" + a_menu.definition.profile;
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     std::string error;
                     if (SliderCreator::ValidateLayoutSliderIDs(a_session.workingPath, std::nullopt, error) &&
@@ -10069,7 +10450,7 @@ namespace MPL::TuningMenu
                 const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::restore));
                 const auto label = SKSEMenuSettings::Label("restoreAllPageEdits", "Restore All Page Edits") +
                                    "##" + a_menu.definition.profile;
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     std::string error;
                     if (RestoreLayoutEditSession(a_session, error))
@@ -10102,7 +10483,7 @@ namespace MPL::TuningMenu
                 const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                 const auto label = SKSEMenuSettings::Label("savePageEdits", "Save Page Edits") +
                                    "##" + a_menu.definition.profile + std::to_string(a_pageIndex);
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     std::string error;
                     auto saved = SliderCreator::ValidateLayoutSliderIDs(a_session.workingPath, a_pageIndex, error);
@@ -10149,7 +10530,7 @@ namespace MPL::TuningMenu
                 const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::restore));
                 const auto label = SKSEMenuSettings::Label("restorePageEdits", "Restore Page Edits") +
                                    "##" + a_menu.definition.profile + std::to_string(a_pageIndex);
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     std::string error;
                     auto restored = true;
@@ -10210,7 +10591,7 @@ namespace MPL::TuningMenu
             {
                 const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                 const auto label = SKSEMenuSettings::Label("saveAllEdits", "Save All Edits") + "##TuningSettings";
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     std::string error;
                     auto success = true;
@@ -10251,7 +10632,7 @@ namespace MPL::TuningMenu
             {
                 const ButtonColorStyle color(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::restore));
                 const auto label = SKSEMenuSettings::Label("restoreAllEdits", "Restore All Edits") + "##TuningSettings";
-                if (ImGuiMCP::Button(label.c_str()))
+                if (StyledButton(label.c_str()))
                 {
                     std::string error;
                     auto success = true;
@@ -10340,6 +10721,16 @@ namespace MPL::TuningMenu
                 statusMessage = StatusText("layoutEditSessionFailure");
                 return;
             }
+            auto presetProfile = a_menu.definition.profile;
+            const auto presetCategories = WeatherPatcher::GetPresetCategories(presetProfile);
+            if (!presetCategories.empty() && std::ranges::any_of(a_page.modules, [](const auto& a_module)
+                    { return a_module.type == "presets" && a_module.setting.empty(); }))
+            {
+                if (SliderCreator::SplitPresetCategories(editSession->workingPath, a_pageIndex, presetCategories, error))
+                    QueueLayoutEditReload(*editSession, StatusText("layoutModuleUpdated"));
+                else statusMessage.SetWarning(SliderCreatorErrorText(error));
+                return;
+            }
             auto& state = layoutEditorStates[a_menu.definition.profile];
             ImGuiMCP::Spacing();
             StackedSectionBoxes editPageSection;
@@ -10360,7 +10751,7 @@ namespace MPL::TuningMenu
                 ImGuiMCP::BeginDisabled(a_pageIndex == 0);
                 const auto movePageUpLabel = SKSEMenuSettings::Label("movePageUp", "Move Page Up") +
                                              "##" + a_menu.definition.profile;
-                if (ImGuiMCP::Button(movePageUpLabel.c_str()))
+                if (StyledButton(movePageUpLabel.c_str()))
                 {
                     std::string error;
                     if (SliderCreator::MovePage(editSession->workingPath, a_pageIndex, -1, error))
@@ -10378,7 +10769,7 @@ namespace MPL::TuningMenu
                 ImGuiMCP::BeginDisabled(a_pageIndex + 1 >= a_menu.definition.pages.size());
                 const auto movePageDownLabel = SKSEMenuSettings::Label("movePageDown", "Move Page Down") +
                                                "##" + a_menu.definition.profile;
-                if (ImGuiMCP::Button(movePageDownLabel.c_str()))
+                if (StyledButton(movePageDownLabel.c_str()))
                 {
                     std::string error;
                     if (SliderCreator::MovePage(editSession->workingPath, a_pageIndex, 1, error))
@@ -10532,6 +10923,7 @@ namespace MPL::TuningMenu
                                            header,
                                            InputText(state.descriptionText),
                                            state.descriptionDefaultOpen,
+                                           state.descriptionBoxed,
                                            error) :
                                         SliderCreator::AddModule(
                                             editSession->workingPath,
@@ -10547,6 +10939,7 @@ namespace MPL::TuningMenu
                     state.descriptionHeader.fill('\0');
                     state.descriptionText.fill('\0');
                     state.descriptionDefaultOpen = false;
+                    state.descriptionBoxed = false;
                     QueueLayoutEditReload(*editSession, StatusText("layoutElementAdded"));
                 }
                 else statusMessage.SetWarning(SliderCreatorErrorText(error));
@@ -10615,7 +11008,7 @@ namespace MPL::TuningMenu
                     "PagePresetCreatorHeader##" + a_menu.definition.profile + std::to_string(a_pageIndex),
                     false))
             {
-                DrawPresetCreator(a_menu.definition, MenuControl{});
+                DrawPresetCreator(a_menu.definition, *editSession, a_pageIndex, a_page);
             }
 
             if (sections.StartDropdownBox(
@@ -10653,7 +11046,7 @@ namespace MPL::TuningMenu
                     ImGuiMCP::BeginDisabled(index == 0);
                     const auto moveUpLabel = SKSEMenuSettings::Label("moveUp", "Up") +
                                              "##" + a_menu.definition.profile + std::to_string(index);
-                    if (ImGuiMCP::SmallButton(moveUpLabel.c_str()))
+                    if (StyledButton(moveUpLabel.c_str(), true))
                     {
                         std::string error;
                         if (SliderCreator::MoveModule(editSession->workingPath, a_pageIndex, index, -1, error))
@@ -10669,7 +11062,7 @@ namespace MPL::TuningMenu
                     ImGuiMCP::BeginDisabled(index + 1 >= a_page.modules.size());
                     const auto moveDownLabel = SKSEMenuSettings::Label("moveDown", "Down") +
                                                "##" + a_menu.definition.profile + std::to_string(index);
-                    if (ImGuiMCP::SmallButton(moveDownLabel.c_str()))
+                    if (StyledButton(moveDownLabel.c_str(), true))
                     {
                         std::string error;
                         if (SliderCreator::MoveModule(editSession->workingPath, a_pageIndex, index, 1, error))
@@ -10687,7 +11080,7 @@ namespace MPL::TuningMenu
                             SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
                         const auto removeLabel = SKSEMenuSettings::Label("removeModule", "Remove") +
                                                  "##" + a_menu.definition.profile + std::to_string(index);
-                        if (ImGuiMCP::SmallButton(removeLabel.c_str()))
+                        if (StyledButton(removeLabel.c_str(), true))
                         {
                             std::string error;
                             if (SliderCreator::RemoveModule(editSession->workingPath, a_pageIndex, index, error))
@@ -10758,6 +11151,7 @@ namespace MPL::TuningMenu
                         statusMessage,
                         "LumaTopStatus##" + definition.profile + "Profile",
                         true);
+                    if (PageStartsWithBox(definition.profilePage.modules)) JoinNextBoxBorder();
                 }
                 const auto scrollId = "LumaProfileScroll##" + definition.profile + "Profile";
                 const auto scrollVisible = ImGuiMCP::BeginChild(
@@ -10767,6 +11161,8 @@ namespace MPL::TuningMenu
                 RestoreScrollState(scrollId);
                 if (scrollVisible)
                 {
+                    const auto horizontalInset = ProfilePageHorizontalInset();
+                    if (horizontalInset > 0.0f) ImGuiMCP::Indent(horizontalInset);
                     if (devModeEnabled)
                     {
                         if (DrawProfileDevTools(a_menu)) JoinNextBoxBorder();
@@ -10778,6 +11174,7 @@ namespace MPL::TuningMenu
                     {
                         DrawStatusMessage(statusMessage);
                     }
+                    if (horizontalInset > 0.0f) ImGuiMCP::Unindent(horizontalInset);
                 }
                 CaptureScrollState(scrollId);
                 ImGuiMCP::EndChild();
@@ -10820,6 +11217,7 @@ namespace MPL::TuningMenu
                         statusMessage,
                         "LumaTopStatus##" + definition.profile + pageId,
                         true);
+                    if (PageStartsWithBox(page.modules)) JoinNextBoxBorder();
                 }
                 const auto scrollId = "LumaProfileScroll##" + definition.profile + pageId;
                 const auto scrollVisible = ImGuiMCP::BeginChild(
@@ -10829,6 +11227,8 @@ namespace MPL::TuningMenu
                 RestoreScrollState(scrollId);
                 if (scrollVisible)
                 {
+                    const auto horizontalInset = ProfilePageHorizontalInset();
+                    if (horizontalInset > 0.0f) ImGuiMCP::Indent(horizontalInset);
                     if (devModeEnabled)
                     {
                         DrawLayoutEditor(a_menu, a_pageIndex, page);
@@ -10839,6 +11239,7 @@ namespace MPL::TuningMenu
                     {
                         DrawStatusMessage(statusMessage);
                     }
+                    if (horizontalInset > 0.0f) ImGuiMCP::Unindent(horizontalInset);
                 }
                 CaptureScrollState(scrollId);
                 ImGuiMCP::EndChild();
@@ -10848,11 +11249,10 @@ namespace MPL::TuningMenu
             for (std::size_t pageIndex = 0; pageIndex < definition.pages.size(); ++pageIndex)
                 drawCustomPage(pageIndex);
             drawProfilePage();
-            ImGuiMCP::EndTabBar();
+            EndProfileTabBar();
         }
         void RenderProfilePage(const std::size_t a_index)
         {
-            const MenuControlCorners::Scope controlCorners;
             sliderCreatorFunctionalPreviewDrawn = false;
             if (!menuFrameworkOpen.exchange(true, std::memory_order_acq_rel))
             {
@@ -10861,6 +11261,7 @@ namespace MPL::TuningMenu
             }
 
             SKSEMenuSettings::ReloadIfChanged();
+            const MenuControlCorners::Scope controlCorners;
             if (a_index < profileMenus.size()) ObserveMenuPage(profileMenus[a_index].definition.profile);
             const ButtonFeedbackStyle buttonFeedback;
             const TabFeedbackStyle tabFeedback;
@@ -10892,7 +11293,6 @@ namespace MPL::TuningMenu
 
         void __stdcall RenderSettingsPage()
         {
-            const MenuControlCorners::Scope controlCorners;
             if (!menuFrameworkOpen.exchange(true, std::memory_order_acq_rel))
             {
                 menuEffectOverride.openInitializationPending.store(false, std::memory_order_release);
@@ -10900,6 +11300,7 @@ namespace MPL::TuningMenu
             }
             ClearSliderCreatorFunctionalPreview("settings-page-rendered");
             SKSEMenuSettings::ReloadIfChanged();
+            const MenuControlCorners::Scope controlCorners;
             ObserveMenuPage("Settings");
             const ButtonFeedbackStyle buttonFeedback;
             const TabFeedbackStyle tabFeedback;
@@ -10943,6 +11344,7 @@ namespace MPL::TuningMenu
                     settingsStatusMessage = StatusText("detailedLoggingSaveFailure");
                 }
             }
+
 
             const auto disableDevModePopup =
                 SKSEMenuSettings::Label("disableDevModePrompt", "Turn Off Dev Mode?") + "##TuningSettings";
@@ -10997,7 +11399,7 @@ namespace MPL::TuningMenu
                     SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::destructive));
                 const auto deleteUserSettingsLabel =
                     SKSEMenuSettings::Label("deleteUserSettings", "Delete User Settings");
-                if (ImGuiMCP::Button((deleteUserSettingsLabel + "##TuningSettings").c_str()))
+                if (StyledButton((deleteUserSettingsLabel + "##TuningSettings").c_str()))
                 {
                     ImGuiMCP::OpenPopup(deleteUserSettingsPopup);
                 }
@@ -11012,7 +11414,7 @@ namespace MPL::TuningMenu
                     const auto confirmLabel =
                         SKSEMenuSettings::Label("confirmDeleteUserSettings", "Delete") +
                         "##ConfirmDeleteUserSettings";
-                    if (ImGuiMCP::Button(confirmLabel.c_str()))
+                    if (StyledButton(confirmLabel.c_str()))
                     {
                         settingsStatusMessage = StatusText(
                             DeleteGeneratedUserSettings() ?
@@ -11025,7 +11427,7 @@ namespace MPL::TuningMenu
                 const auto cancelLabel =
                     SKSEMenuSettings::Label("cancelDeleteUserSettings", "Cancel") +
                     "##CancelDeleteUserSettings";
-                if (ImGuiMCP::Button(cancelLabel.c_str())) ImGuiMCP::CloseCurrentPopup();
+                if (StyledButton(cancelLabel.c_str())) ImGuiMCP::CloseCurrentPopup();
                 ImGuiMCP::EndPopup();
             }
 
@@ -11143,7 +11545,7 @@ namespace MPL::TuningMenu
                 const ButtonColorStyle saveColor(SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::save));
                 const auto createProfileLabel = SKSEMenuSettings::Label("createProfile", "Create New Profile");
                 ImGuiMCP::BeginDisabled(!newProfileTemplate && profileCopySource.empty());
-                if (ImGuiMCP::Button((createProfileLabel + "##TuningSettings").c_str()))
+                if (StyledButton((createProfileLabel + "##TuningSettings").c_str()))
                 {
                     const auto profileName = InputText(newProfileName);
                     std::string error;

@@ -40,6 +40,7 @@ namespace MPL::SKSEMenuSettings
         pressed,
     };
 
+
     using Color = std::array<float, 4>;
 
     struct SliderDefaults
@@ -56,8 +57,6 @@ namespace MPL::SKSEMenuSettings
     void NormalizeJsonColor(Color& a_color);
     void Initialize();
     void ReloadIfChanged();
-    bool GetTuningMenuEnabled();
-    bool SetTuningMenuEnabled(bool);
 
     StatusLocation GetStatusLocation();
     std::chrono::duration<double> GetStatusDuration();

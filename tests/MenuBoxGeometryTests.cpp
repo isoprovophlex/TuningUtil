@@ -27,8 +27,13 @@ int main()
     const Controls::Rect value{ { 454.0f, 100.0f }, { 534.0f, 138.0f } };
     passed &= Expect(Controls::SliderCorners.left && !Controls::SliderCorners.right,
         "all sliders and compression gauges retain only the left corner cut");
-    passed &= Expect(!Controls::SliderValueCorners.left && Controls::SliderValueCorners.right,
-        "only an explicit slider value box receives the trailing corner");
+    for (const auto height : std::array{ 20.0f, 38.0f, 60.0f })
+    {
+        const Controls::Rect originalValue{ { 0.0f, 0.0f }, { 80.0f, height } };
+        const auto cornerStart = 80.0f - Controls::CornerDrop(originalValue, height) * Geometry::SlopeRunPerRise;
+        passed &= Expect(Near(Controls::SquaredSliderValueWidth(80.0f, height), cornerStart),
+            "square slider value boxes end where the former cut corner began");
+    }
     const auto area = [](const Controls::Polygon& a_polygon)
     {
         auto result = 0.0f;
@@ -369,5 +374,39 @@ int main()
     passed &= Expect(Near(Geometry::CornerDropAboveNestedBox(normalDrop, 26.0f, 16.0f,
         Geometry::CollapsedHeaderDrop(44.75f, 600.0f)), normalDrop),
         "collapsed nested corners also preserve the normal parent corner size");
+    for (const auto available : std::array{ 508.0f, 694.0f, 1100.0f, 1600.0f })
+    {
+        passed &= Expect(Near(Controls::ContractedWidth(420.0f, available, 88.0f), 420.0f),
+            "both styles keep the default slider track at 420 pixels when the window expands");
+        passed &= Expect(Near(Controls::ContractedWidth(508.0f, available), 508.0f),
+            "both styles keep the combined track, spacing, and value field width fixed");
+    }
+    for (const auto available : std::array{ 0.0f, 88.0f, 280.0f, 507.0f })
+    {
+        passed &= Expect(Near(Controls::ContractedWidth(420.0f, available, 88.0f), std::max(1.0f, available - 88.0f)),
+            "both styles contract slider tracks identically while reserving the value field");
+    }
+    passed &= Expect(Near(Controls::ContractedWidth(240.0f, 1100.0f, 88.0f), 240.0f) &&
+                         Near(Controls::ContractedWidth(600.0f, 1100.0f, 88.0f), 600.0f),
+        "explicit slider widths remain honored in both styles");
+    for (const auto height : std::array{ 12.0f, 24.0f, 44.75f, 72.0f })
+    {
+        for (const auto padding : std::array{ 0.0f, 4.0f, 12.0f })
+        {
+            const Controls::HorizonButton button(height, padding);
+            passed &= Expect(Near(button.stripWidth, std::max(4.5f, height * 0.27f)),
+                "shared button color strips are fifty percent wider than the original Horizon strips");
+            for (const auto textWidth : std::array{ 8.0f, 80.0f, 400.0f })
+            {
+                const auto width = textWidth + button.framePaddingX * 2.0f;
+                const auto textLeft = button.TextOffset(width, textWidth);
+                passed &= Expect(Near(width, textWidth + padding * 2.0f + button.stripWidth),
+                    "Horizon buttons reserve the full color strip width in their layout and hit area");
+                passed &= Expect(Near(textLeft - button.stripWidth, padding) &&
+                                     Near(width - textLeft - textWidth, padding),
+                    "normal and small Horizon button labels keep equal padding outside the color strip");
+            }
+        }
+    }
     return passed ? 0 : 1;
 }

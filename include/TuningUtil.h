@@ -156,6 +156,10 @@ namespace MPL::TuningUtil
         WeatherFilter exclude;
         WeatherFilter xemiInclude;
         WeatherFilter xemiExclude;
+        bool interiorOnly = false;
+        bool notInterior = false;
+        WeatherFilter cellInclude;
+        WeatherFilter cellExclude;
         double defaultValue = 1.0;
 
         bool operator==(const FilteredObjectLightingRule&) const = default;

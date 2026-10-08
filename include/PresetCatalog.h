@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -31,6 +32,7 @@ namespace MPL::PresetCatalog
     std::optional<std::string> Serialize(const Catalog&, std::string&);
     std::optional<Catalog> Read(const std::filesystem::path&, std::string&);
     bool Write(const std::filesystem::path&, const Catalog&, std::string&);
+    std::vector<std::string> CategoriesForPage(std::span<const std::string>, std::span<const std::string>);
 
     Category* FindCategory(Catalog&, std::string_view);
     const Category* FindCategory(const Catalog&, std::string_view);

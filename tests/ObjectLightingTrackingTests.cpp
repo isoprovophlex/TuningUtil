@@ -178,6 +178,40 @@ int main()
     passed &= Expect(baseRules == RuleKeys{ "a", "b", "c" },
         "per-reference matching must not modify the cached Base Object matches");
 
+    passed &= Expect(MPL::ObjectLightingTracking::MatchesCellContext(
+                         true, true, true, false, false, [] { return false; }),
+        "Interior-only rules accept references in interior cells without a cell record filter");
+    passed &= Expect(!MPL::ObjectLightingTracking::MatchesCellContext(
+                          true, false, true, false, false, [] { return true; }),
+        "Interior-only rules reject references in exterior cells");
+    passed &= Expect(!MPL::ObjectLightingTracking::MatchesCellContext(
+                          false, false, true, false, false, [] { return true; }),
+        "Interior-only rules reject references without a parent cell");
+    passed &= Expect(MPL::ObjectLightingTracking::MatchesCellContext(
+                         true, false, false, true, false, [] { return false; }),
+        "Not Interior rules accept references in exterior cells without a cell record filter");
+    passed &= Expect(!MPL::ObjectLightingTracking::MatchesCellContext(
+                          true, true, false, true, false, [] { return true; }),
+        "Not Interior rules reject references in interior cells");
+    passed &= Expect(!MPL::ObjectLightingTracking::MatchesCellContext(
+                          false, false, false, true, false, [] { return true; }),
+        "Not Interior rules reject references without a parent cell");
+    passed &= Expect(MPL::ObjectLightingTracking::MatchesCellContext(
+                         true, false, false, false, true, [] { return true; }),
+        "cell record filters can match exterior cells when Interior is disabled");
+    passed &= Expect(!MPL::ObjectLightingTracking::MatchesCellContext(
+                          true, true, false, false, true, [] { return false; }),
+        "a nonmatching cell record filter rejects the reference");
+    std::size_t cellFilterChecks = 0;
+    passed &= Expect(!MPL::ObjectLightingTracking::MatchesCellContext(
+                          false, false, false, false, true, [&]
+                          {
+                              ++cellFilterChecks;
+                              return true;
+                          }) &&
+                          cellFilterChecks == 0,
+        "references without parent cells do not invoke the cell record matcher");
+
     struct PriorityRule
     {
         std::string key;

@@ -48,6 +48,7 @@ namespace MPL::WeatherPatcher
     std::optional<std::string> GetActivePresetSettings(std::string&, std::string&);
     void DiscardPresetPreview(std::string&);
     void DiscardPresetCatalogChanges(std::string&);
+    bool StagePresetCategory(std::string&, const std::string&, std::string&);
     bool StagePreset(std::string&, const std::string&, const std::string&, std::string&);
     bool UpdatePreset(std::string&, const std::string&, const std::string&, std::string&);
     bool MovePreset(std::string&, const std::string&, const std::string&, int, std::string&);

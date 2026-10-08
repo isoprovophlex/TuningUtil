@@ -1,4 +1,6 @@
 #include <SKSEMenuSettings.h>
+#include <SKSEMenuDefaults.h>
+#include <JsonOverlay.h>
 #include <SliderStorage.h>
 
 #include <algorithm>
@@ -7,7 +9,6 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include <regex>
 #include <unordered_map>
 
 namespace MPL::SKSEMenuSettings
@@ -87,7 +88,6 @@ namespace MPL::SKSEMenuSettings
 
         struct Settings
         {
-            bool enableTuningMenu = true;
             StatusDisplay statusDisplay;
             ButtonFeedback buttonFeedback;
             ButtonColors buttonColors;
@@ -130,6 +130,8 @@ namespace MPL::SKSEMenuSettings
                 { "presetDefaultPreview", "Previewing the default settings for {category}." },
                 { "presetLoadFailure", "The preset could not be loaded. Check the TuningUtil log for details." },
                 { "presetStaged", "Created preset {preset} in category {category} for this session. Select Save Page Edits to keep it." },
+                { "presetCategoryStaged", "Created category {category} for this session. Select Save Page Edits to keep it." },
+                { "presetCategoryAttached", "Added existing category {category} to this page. Select Save Page Edits to keep it." },
                 { "presetStageFailure", "The preset could not be created. Check the TuningUtil log for details." },
                 { "presetRenamed", "Renamed preset {preset} to {newPreset} in category {category}." },
                 { "presetRenameFailure", "The preset could not be renamed. Check the TuningUtil log for details." },
@@ -370,6 +372,7 @@ namespace MPL::SKSEMenuSettings
                 { "enableProfile", "Enable Profile" },
                 { "advanced", "Show Advanced Pages" },
                 { "defaultOpen", "Open by default" },
+                { "boxed", "Boxed" },
                 { "profilePluginGating", "Plugin Gating" },
                 { "savePluginGating", "Save Plugin Gating" },
                 { "restorePluginGating", "Restore Plugin Gating" },
@@ -410,6 +413,9 @@ namespace MPL::SKSEMenuSettings
                 { "includedHues", "Included Hues" },
                 { "baseLight", "Base Light" },
                 { "baseObjectFilter", "Base Object Filter" },
+                { "cellFilter", "Cell Filter" },
+                { "interior", "Interior" },
+                { "notInterior", "Not Interior" },
                 { "xemiFilter", "XEMI Filter" },
                 { "enableXemiFilter", "Enable XEMI Filter" },
                 { "xemiRegion", "XEMI Region" },
@@ -589,60 +595,7 @@ namespace MPL::SKSEMenuSettings
             return text;
         }
 
-        bool WriteTuningMenuEnabled(const bool a_enabled)
-        {
-            auto text = ReadText(false);
-            if (!text)
-            {
-                logger::warn("[Tuning Menu] settings read failed | path={}", kSettingsPath.string());
-                return false;
-            }
 
-            static const std::regex pattern(
-                R"(("enableTuningMenu"\s*:\s*)(true|false))",
-                std::regex::icase);
-            std::smatch match;
-            if (std::regex_search(*text, match, pattern))
-            {
-                text->replace(
-                    static_cast<std::size_t>(match.position(2)),
-                    static_cast<std::size_t>(match.length(2)),
-                    a_enabled ? "true" : "false");
-            }
-            else
-            {
-                const auto object = text->find('{');
-                if (object == std::string::npos)
-                {
-                    logger::warn(
-                        "[Tuning Menu] setting save failed | {} is not a JSON object",
-                        kSettingsPath.string());
-                    return false;
-                }
-                const auto content = text->find_first_not_of(
-                    " \t\r\n",
-                    object + 1);
-                const bool empty =
-                    content != std::string::npos && (*text)[content] == '}';
-                std::string setting = "\n    \"enableTuningMenu\": ";
-                setting += a_enabled ? "true" : "false";
-                setting += empty ? "\n" : ",";
-                text->insert(object + 1, setting);
-            }
-
-            std::ofstream file(
-                kSettingsPath,
-                std::ios::binary | std::ios::trunc);
-            file << *text;
-            if (!file)
-            {
-                logger::warn(
-                    "[Tuning Menu] setting save failed | path={}",
-                    kSettingsPath.string());
-                return false;
-            }
-            return true;
-        }
 
         void Load(const bool a_initialLoad)
         {
@@ -656,17 +609,18 @@ namespace MPL::SKSEMenuSettings
                 return;
             }
 
-            Settings loaded;
+            std::string resolvedText(BuiltInDefaults);
             if (const auto text = exists ? ReadText() : std::nullopt)
             {
-                const auto parsed = rfl::json::read<Settings, rfl::DefaultIfMissing>(*text);
-                if (!parsed)
+                std::string mergeError;
+                const auto merged = JsonOverlay::Overlay(BuiltInDefaults, *text, mergeError);
+                if (!merged)
                 {
-                    logger::warn("[Tuning Menu] settings load failed | path={} | {}", kSettingsPath.string(), parsed.error().what());
+                    logger::warn("[Tuning Menu] settings load failed | path={} | {}", kSettingsPath.string(), mergeError);
                     loadedWriteTime = writeTime;
                     return;
                 }
-                loaded = parsed.value();
+                resolvedText = *merged;
             }
             else if (exists)
             {
@@ -674,6 +628,15 @@ namespace MPL::SKSEMenuSettings
                 loadedWriteTime = writeTime;
                 return;
             }
+
+            const auto parsed = rfl::json::read<Settings, rfl::DefaultIfMissing>(resolvedText);
+            if (!parsed)
+            {
+                logger::warn("[Tuning Menu] settings load failed | path={} | {}", kSettingsPath.string(), parsed.error().what());
+                loadedWriteTime = writeTime;
+                return;
+            }
+            Settings loaded = parsed.value();
 
             const auto location = Lowercase(loaded.statusDisplay.location);
             if (location != "top" && location != "bottom" && location != "hidden")
@@ -814,23 +777,7 @@ namespace MPL::SKSEMenuSettings
         Load(false);
     }
 
-    bool GetTuningMenuEnabled()
-    {
-        Initialize();
-        return settings.enableTuningMenu;
-    }
 
-    bool SetTuningMenuEnabled(const bool a_enabled)
-    {
-        Initialize();
-        if (!WriteTuningMenuEnabled(a_enabled))
-        {
-            return false;
-        }
-        settings.enableTuningMenu = a_enabled;
-        Load(true);
-        return true;
-    }
 
     StatusLocation GetStatusLocation()
     {

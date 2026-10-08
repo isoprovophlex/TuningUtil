@@ -30,6 +30,9 @@ namespace MPL::ObjectLightingPatcher
             int priority = 0;
             RecordFilter::Resolved filter;
             std::optional<RecordFilter::Resolved> xemiFilter;
+            bool interiorOnly = false;
+            bool notInterior = false;
+            std::optional<RecordFilter::Resolved> cellFilter;
             std::optional<double> emissiveMultiplier;
             std::optional<double> baseColorScale;
 
@@ -91,7 +94,7 @@ namespace MPL::ObjectLightingPatcher
                        a_rule.defaultValue;
         }
 
-        std::optional<RecordFilter::Resolved> ResolveXemiFilter(
+        std::optional<RecordFilter::Resolved> ResolveOptionalFilter(
             const TuningUtil::WeatherFilter& a_include, const TuningUtil::WeatherFilter& a_exclude)
         {
             if (a_include.formIDs.empty() && a_include.contains.empty() &&
@@ -136,7 +139,10 @@ namespace MPL::ObjectLightingPatcher
                         .profile = profile.name,
                         .priority = rule.priority,
                         .filter = RecordFilter::Resolve(rule.include, rule.exclude, noPlugins, noPlugins),
-                        .xemiFilter = ResolveXemiFilter(rule.xemiInclude, rule.xemiExclude),
+                        .xemiFilter = ResolveOptionalFilter(rule.xemiInclude, rule.xemiExclude),
+                        .interiorOnly = rule.interiorOnly,
+                        .notInterior = rule.notInterior,
+                        .cellFilter = ResolveOptionalFilter(rule.cellInclude, rule.cellExclude),
                         .emissiveMultiplier = emissiveMultiplier,
                         .baseColorScale = baseColorScale,
                     });
@@ -338,10 +344,18 @@ namespace MPL::ObjectLightingPatcher
             const auto* emittance = baseRules.empty() ? nullptr :
                 a_reference->extraList.GetByType<RE::ExtraEmittanceSource>();
             const auto* source = emittance ? emittance->source : nullptr;
+            const auto* cell = a_reference->GetParentCell();
             const auto rules = ObjectLightingTracking::FilterReferenceRules(baseRules, [&](const auto& key)
             {
                 const auto rule = std::ranges::find(activeRules, key, &ActiveRule::key);
                 return rule != activeRules.end() &&
+                    ObjectLightingTracking::MatchesCellContext(
+                        cell != nullptr,
+                        cell && cell->IsInteriorCell(),
+                        rule->interiorOnly,
+                        rule->notInterior,
+                        rule->cellFilter.has_value(),
+                        [&] { return RecordFilter::Matches(cell, *rule->cellFilter); }) &&
                     (!rule->xemiFilter || RecordFilter::Matches(source, *rule->xemiFilter));
             });
             auto* root = rules.empty() ? nullptr : a_reference->GetCurrent3D();
@@ -548,7 +562,10 @@ namespace MPL::ObjectLightingPatcher
         if (rules == activeRules) return;
         const auto filtersChanged = !std::ranges::equal(rules, activeRules, [](const auto& a_left, const auto& a_right)
             { return a_left.key == a_right.key && a_left.filter == a_right.filter &&
-                a_left.xemiFilter == a_right.xemiFilter; });
+                a_left.xemiFilter == a_right.xemiFilter &&
+                a_left.interiorOnly == a_right.interiorOnly &&
+                a_left.notInterior == a_right.notInterior &&
+                a_left.cellFilter == a_right.cellFilter; });
         activeRules = std::move(rules);
         hasActiveRules.store(!activeRules.empty(), std::memory_order_release);
         if (filtersChanged)

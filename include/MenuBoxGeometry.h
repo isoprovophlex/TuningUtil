@@ -9,6 +9,7 @@ namespace MPL::MenuBoxGeometry
     inline constexpr float BorderWidth = 1.0f;
     inline constexpr float AccentWidth = 10.0f;
     inline constexpr float MiddleBarHeightRatio = 0.3f;
+    inline constexpr float HeaderTitleWidthInBarHeights = 5.7f;
     inline constexpr float CollapsedCornerScale = 1.2f;
     inline constexpr float SlopeRunPerRise = 1.7320508f;
     inline constexpr float SlopeLengthPerRise = 2.0f;
@@ -77,6 +78,11 @@ namespace MPL::MenuBoxGeometry
     constexpr float ExposedTopBorderWidth(const float a_left, const float a_right, const float a_previousBorderStart)
     {
         return std::clamp(a_previousBorderStart - a_left, 0.0f, std::max(0.0f, a_right - a_left));
+    }
+
+    constexpr float RailThickness(const float a_headerHeight)
+    {
+        return a_headerHeight * 0.18f;
     }
 
     struct Point

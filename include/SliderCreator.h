@@ -98,6 +98,10 @@ namespace MPL::SliderCreator
         bool useXemiFilter = false;
         Filter xemiInclude;
         Filter xemiExclude;
+        bool interiorOnly = false;
+        bool notInterior = false;
+        Filter cellInclude;
+        Filter cellExclude;
         HueFilter::Selection hueFilter;
         std::optional<double> minimum;
         std::optional<double> maximum;
@@ -142,6 +146,16 @@ namespace MPL::SliderCreator
         const std::filesystem::path&,
         const std::string&,
         std::string&);
+    bool SplitPresetCategories(
+        const std::filesystem::path&,
+        std::size_t,
+        const std::vector<std::string>&,
+        std::string&);
+    bool RenamePresetCategoryModules(
+        const std::filesystem::path&,
+        const std::string&,
+        const std::string&,
+        std::string&);
     bool AddModule(
         const std::filesystem::path&,
         std::size_t,
@@ -155,6 +169,7 @@ namespace MPL::SliderCreator
         std::size_t,
         const std::string&,
         const std::string&,
+        bool,
         bool,
         std::string&);
     bool MoveModule(
@@ -179,6 +194,7 @@ namespace MPL::SliderCreator
         std::string name;
         std::optional<std::string> text;
         std::optional<bool> defaultOpen;
+        std::optional<bool> boxed;
     };
     bool UpdateModule(
         const std::filesystem::path&,

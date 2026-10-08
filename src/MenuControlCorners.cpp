@@ -30,6 +30,7 @@ namespace MPL::MenuControlCorners
         };
 
         std::vector<Frame> frames;
+
         struct Capture
         {
             explicit Capture(const Geometry::Corners a_corners, const float a_width = 0.0f)
@@ -232,11 +233,14 @@ namespace MPL::MenuControlCorners
             }
             ~TextPadding() { ImGuiMCP::PopStyleVar(); }
         };
+
     }
 
     Scope::Scope()
     {
         frames.clear();
+        ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_TabRounding, 0.0f);
+        styleVariableCount = 1;
     }
 
     Scope::~Scope()
@@ -255,6 +259,7 @@ namespace MPL::MenuControlCorners
             if (!ClipDrawList(drawList, targets)) continue;
             for (const auto* frame : targets) DrawCornerBorders(*frame);
         }
+        if (styleVariableCount > 0) ImGuiMCP::PopStyleVar(styleVariableCount);
     }
 
     bool SliderFloat(const char* a_label, float* a_value, const float a_minimum, const float a_maximum,
@@ -269,6 +274,14 @@ namespace MPL::MenuControlCorners
         const float a_darkLimit,
         const float a_brightLimit)
     {
+        const auto& sliderColor = *ImGuiMCP::GetStyleColorVec4(ImGuiMCP::ImGuiCol_SliderGrab);
+        constexpr float rangeBrightness = 0.7f;
+        const auto handColor = ImGuiMCP::GetColorU32(sliderColor);
+        const auto rangeColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImVec4(
+            sliderColor.x * rangeBrightness,
+            sliderColor.y * rangeBrightness,
+            sliderColor.z * rangeBrightness,
+            sliderColor.w));
         const auto width = a_width;
         const Capture capture(Geometry::SliderCorners, width);
         const float height = ImGuiMCP::GetFrameHeight();
@@ -286,21 +299,6 @@ namespace MPL::MenuControlCorners
         const ImGuiMCP::ImVec2 maximum(position.x + width, position.y + height);
         const float darkX = position.x + (width * a_darkLimit / 255.0f);
         const float brightX = position.x + (width * a_brightLimit / 255.0f);
-        const auto* normalRangeColor = ImGuiMCP::GetStyleColorVec4(ImGuiMCP::ImGuiCol_SliderGrab);
-        const auto sliderColor = normalRangeColor ?
-                                     *normalRangeColor :
-                                     ImGuiMCP::ImVec4(0.24f, 0.52f, 0.88f, 1.0f);
-        constexpr float rangeBrightness = 0.7f;
-        const auto handColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImVec4(
-            sliderColor.x,
-            sliderColor.y,
-            sliderColor.z,
-            sliderColor.w));
-        const auto rangeColor = ImGuiMCP::GetColorU32(ImGuiMCP::ImVec4(
-            sliderColor.x * rangeBrightness,
-            sliderColor.y * rangeBrightness,
-            sliderColor.z * rangeBrightness,
-            sliderColor.w));
         ImGuiMCP::ImDrawListManager::AddRectFilled(
             drawList,
             minimum,
@@ -345,7 +343,10 @@ namespace MPL::MenuControlCorners
     bool SliderValueInput(const char* a_label, float* a_value, const char* a_format)
     {
         const TextPadding padding;
-        const Capture capture(Geometry::SliderValueCorners);
-        return ImGuiMCP::InputFloat(a_label, a_value, 0.0f, 0.0f, a_format);
+        ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_FrameRounding, 0.0f);
+        const auto changed = ImGuiMCP::InputFloat(a_label, a_value, 0.0f, 0.0f, a_format);
+        ImGuiMCP::PopStyleVar();
+        return changed;
     }
+
 }

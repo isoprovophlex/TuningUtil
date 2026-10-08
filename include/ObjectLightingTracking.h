@@ -13,6 +13,20 @@ namespace MPL::ObjectLightingTracking
 {
     using RuleKeys = std::unordered_set<std::string>;
 
+    template <class MatchesCell>
+    bool MatchesCellContext(
+        const bool a_hasCell,
+        const bool a_isInterior,
+        const bool a_interiorOnly,
+        const bool a_notInterior,
+        const bool a_hasCellFilter,
+        const MatchesCell& a_matchesCell)
+    {
+        if (a_interiorOnly && (!a_hasCell || !a_isInterior)) return false;
+        if (a_notInterior && (!a_hasCell || a_isInterior)) return false;
+        return !a_hasCellFilter || (a_hasCell && a_matchesCell());
+    }
+
     template <class MatchesReference>
     RuleKeys FilterReferenceRules(const RuleKeys& a_baseRules, const MatchesReference& a_matchesReference)
     {

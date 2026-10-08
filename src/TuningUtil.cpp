@@ -918,6 +918,16 @@ namespace MPL::TuningUtil
             rule.exclude = JsonWeatherFilter(yyjson_obj_get(a_control, "baseObjectFilter"), "exclude");
             rule.xemiInclude = JsonWeatherFilter(yyjson_obj_get(a_control, "xemiFilter"), "include");
             rule.xemiExclude = JsonWeatherFilter(yyjson_obj_get(a_control, "xemiFilter"), "exclude");
+            auto* cellFilter = yyjson_obj_get(a_control, "cellFilter");
+            if (yyjson_is_obj(cellFilter))
+            {
+                if (auto* interior = yyjson_obj_get(cellFilter, "interior"); yyjson_is_bool(interior))
+                    rule.interiorOnly = yyjson_get_bool(interior);
+                if (auto* notInterior = yyjson_obj_get(cellFilter, "notInterior"); yyjson_is_bool(notInterior))
+                    rule.notInterior = yyjson_get_bool(notInterior);
+                rule.cellInclude = JsonWeatherFilter(cellFilter, "include");
+                rule.cellExclude = JsonWeatherFilter(cellFilter, "exclude");
+            }
             return rule;
         }
 
@@ -3136,6 +3146,10 @@ namespace MPL::TuningUtil
 
             rule.xemiInclude = filter(a_definition.xemiInclude);
             rule.xemiExclude = filter(a_definition.xemiExclude);
+            rule.interiorOnly = a_definition.interiorOnly;
+            rule.notInterior = a_definition.notInterior;
+            rule.cellInclude = filter(a_definition.cellInclude);
+            rule.cellExclude = filter(a_definition.cellExclude);
             const auto existing = std::ranges::find_if(profile->filteredObjectLightingRules, [&](const auto& a_rule)
                 { return Config::IEquals(a_rule.id, runtimeID); });
             const auto value = findValue(settings.filteredObjectLightingAdjustments);

@@ -5,6 +5,7 @@
 #include <HueMath.h>
 #include <JsonOverlay.h>
 #include <PresetCatalog.h>
+#include <SliderCreator.h>
 #include <TuningSettings.h>
 #include <SettingLinks.h>
 #include <WeatherPatcher.h>
@@ -3764,6 +3765,29 @@ namespace MPL::WeatherPatcher
         return true;
     }
 
+    bool StagePresetCategory(
+        std::string& a_profileName,
+        const std::string& a_categoryName,
+        std::string& a_error)
+    {
+        a_error.clear();
+        if (ProfileNameFromKey(a_profileName).empty())
+        {
+            a_error = "The profile is unavailable.";
+            return false;
+        }
+        const auto category = NormalizePresetPathComponent(a_categoryName, false, a_error);
+        auto* catalog = category ? ResolvePresetCatalog(a_profileName, a_error) : nullptr;
+        if (!catalog) return false;
+        if (PresetCatalog::FindCategory(*catalog, *category))
+        {
+            a_error = "A preset category with that name already exists.";
+            return false;
+        }
+        catalog->categories.push_back({ .name = *category });
+        return true;
+    }
+
     bool StagePreset(
         std::string& a_profileName,
         const std::string& a_categoryName,
@@ -3996,6 +4020,7 @@ namespace MPL::WeatherPatcher
         {
             return false;
         }
+        const auto originalSelections = selections;
         const auto selected = std::ranges::find_if(selections, [&](const auto& a_selection)
             { return Config::IEquals(a_selection.first, actualCategoryName); });
         actualCategory->name = *newName;
@@ -4014,6 +4039,15 @@ namespace MPL::WeatherPatcher
                 (void)WritePresetCatalog(a_profileName, originalCatalog, rollbackError);
                 return false;
             }
+        }
+        if (!SliderCreator::RenamePresetCategoryModules(
+                TuningUtil::ProfileDirectory(a_profileName) / "skseMenu.json", actualCategoryName, *newName, a_error))
+        {
+            std::string rollbackError;
+            if (!WritePresetCatalog(a_profileName, originalCatalog, rollbackError)) a_error += " | " + rollbackError;
+            if (!TuningUtil::SavePresetSelectionSnapshot(a_profileName, originalSelections, "{}", rollbackError, "preset-category-rename-rollback"))
+                a_error += " | " + rollbackError;
+            return false;
         }
         return true;
     }

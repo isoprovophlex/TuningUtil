@@ -10,6 +10,29 @@ namespace MPL::MenuControlGeometry
     using Point = MenuBoxGeometry::Point;
     using Rect = MenuBoxGeometry::BorderRect;
 
+    constexpr float ContractedWidth(const float a_preferredWidth, const float a_availableWidth, const float a_reservedWidth = 0.0f)
+    {
+        return std::min(a_preferredWidth, std::max(1.0f, a_availableWidth - a_reservedWidth));
+    }
+
+
+    struct HorizonButton
+    {
+        constexpr HorizonButton(const float a_height, const float a_paddingX) :
+            stripWidth(std::max(4.5f, a_height * 0.27f)),
+            framePaddingX(a_paddingX + stripWidth * 0.5f)
+        {}
+
+        constexpr float TextOffset(const float a_buttonWidth, const float a_textWidth) const
+        {
+            return stripWidth + (a_buttonWidth - stripWidth - a_textWidth) * 0.5f;
+        }
+
+        float stripWidth;
+        float framePaddingX;
+    };
+
+
     struct Vertex
     {
         Point position;
@@ -31,6 +54,12 @@ namespace MPL::MenuControlGeometry
             (a_rect.maximum.y - a_rect.minimum.y) * 0.5f }));
     }
 
+    constexpr float SquaredSliderValueWidth(const float a_originalWidth, const float a_frameHeight)
+    {
+        const Rect bounds{ { 0.0f, 0.0f }, { a_originalWidth, a_frameHeight } };
+        return std::max(1.0f, a_originalWidth - CornerDrop(bounds, a_frameHeight) * MenuBoxGeometry::SlopeRunPerRise);
+    }
+
     struct Corners
     {
         bool left;
@@ -38,8 +67,6 @@ namespace MPL::MenuControlGeometry
     };
 
     inline constexpr Corners SliderCorners{ true, false };
-    inline constexpr Corners SliderValueCorners{ false, true };
-
     inline Vertex Interpolate(const Vertex& a_first, const Vertex& a_second, const float a_amount)
     {
         const auto mix = [&](const float a_left, const float a_right)
