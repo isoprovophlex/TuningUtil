@@ -343,8 +343,10 @@ namespace MPL::PointLightPatcher
             auto* pointLight = netimmerse_cast<RE::NiPointLight*>(a_light);
             if (!pointLight) return;
             auto& runtime = pointLight->GetLightRuntimeData();
-            if (runtime.radius.x == a_radius && runtime.radius.y == a_radius && runtime.radius.z == a_radius) return;
-            runtime.radius = RE::NiPoint3{ a_radius, a_radius, a_radius };
+            // radius.z is not a radius: Community Shaders and Light Placer keep the inverse-square light size there.
+            if (runtime.radius.x == a_radius && runtime.radius.y == a_radius) return;
+            runtime.radius.x = a_radius;
+            runtime.radius.y = a_radius;
             // The engine takes an integer radius, not the float declared by CommonLib.
             using SetAttenuation = void (*)(RE::NiPointLight*, std::uint32_t);
             static REL::Relocation<SetAttenuation> setAttenuation{ RELOCATION_ID(17224, 17626) };
