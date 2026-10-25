@@ -126,6 +126,12 @@ namespace MPL::PointLightPatcher
             bool hasApplied = false;
         };
 
+        struct ReferenceFadeBaseline
+        {
+            float sourceFade;
+            float appliedFade;
+        };
+
         struct DocumentDeleter
         {
             void operator()(yyjson_doc* a_document) const { yyjson_doc_free(a_document); }
@@ -140,7 +146,7 @@ namespace MPL::PointLightPatcher
         using MutableDocument = std::unique_ptr<yyjson_mut_doc, MutableDocumentDeleter>;
 
         std::unordered_map<RE::TESObjectLIGH*, Baseline> baselines;
-        std::unordered_map<RE::TESObjectREFR*, float> referenceFadeBaselines;
+        std::unordered_map<RE::TESObjectREFR*, ReferenceFadeBaseline> referenceFadeBaselines;
         std::unordered_map<RE::TESObjectREFR*, ReferenceRuntimeFadeBaseline>
             referenceRuntimeFadeBaselines;
         std::unordered_map<RE::NiPointLight*, LightPlacerRuntimeBaseline> lightPlacerRuntimeBaselines;
@@ -1737,12 +1743,27 @@ namespace MPL::PointLightPatcher
                 baseline = referenceFadeBaselines
                                .emplace(
                                    a_reference,
-                                   extraLightData->data.fade)
+                                   ReferenceFadeBaseline{
+                                       .sourceFade = extraLightData->data.fade,
+                                       .appliedFade = extraLightData->data.fade,
+                                   })
                                .first;
             }
-            extraLightData->data.fade = baseline->second *
+            auto& captured = baseline->second;
+            if (!NearlyEqual(extraLightData->data.fade, captured.appliedFade))
+            {
+                // The fade changed since we last applied it (another plugin, or the reference was reloaded).
+                if (extraLightData->data.fade <= 0.0f)
+                {
+                    referenceFadeBaselines.erase(baseline);
+                    return false;
+                }
+                captured.sourceFade = extraLightData->data.fade;
+            }
+            extraLightData->data.fade = captured.sourceFade *
                                         static_cast<float>(
                                             std::max(0.0, multiplier));
+            captured.appliedFade = extraLightData->data.fade;
             return true;
         }
 
@@ -2160,7 +2181,7 @@ namespace MPL::PointLightPatcher
     void ReleaseRuntimeState()
     {
         ResetCellTracking();
-        // Loaded references still need resolved settings and original fade baselines.
+        // Loaded references still need resolved settings and fade baselines.
         lightPlacerState.reset();
         if (!brokerReloadPending.load(std::memory_order_acquire))
         {
