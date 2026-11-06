@@ -241,6 +241,7 @@ namespace MPL::TuningUtil
         std::string_view,
         std::string_view,
         std::string&);
+    PresetSelections GetDefaultPresetSelections(std::string&, std::string&);
     PresetSelections GetSavedPresetSelections(std::string&, std::string&);
     bool SavePresetSelectionSnapshot(
         std::string&,

@@ -1,8 +1,11 @@
+#ifndef TUNING_HELIOS
 #include <CSTonemapping.h>
+#endif
 #include <Config.h>
 #include <DetailedLogging.h>
 #include <HeliosphanClient.h>
 #include <ImageSpacePatcher.h>
+#include <ImageSpaceDiagnostics.h>
 #include <TuningUtil.h>
 #include <algorithm>
 #include <chrono>
@@ -177,11 +180,24 @@ namespace MPL::ImageSpacePatcher
             const auto currentBaseIsRecord = std::ranges::any_of(
                 stat->imageSpaceBaselines,
                 [&](const auto& a_entry) { return &a_entry.first->data == currentBaseData; });
+            if (DetailedLogging::IsEnabled())
+            {
+                logger::info(
+                    "[Image Space Diagnostic] phase=sync-before | cell={:08X} | record={:08X} | currentBaseIsRecord={}",
+                    cell->GetFormID(), imageSpace->GetFormID(), currentBaseIsRecord);
+                if (currentBaseData) ImageSpaceDiagnostics::LogData("sync-current-before", 0, *currentBaseData);
+                ImageSpaceDiagnostics::LogData("sync-effective-before", 0, manager->GetImageSpaceData().baseData);
+            }
             if (currentBaseData && !currentBaseIsRecord)
             {
                 CopyAdjustedFields(*currentBaseData, imageSpace->data);
             }
             CopyAdjustedFields(manager->GetImageSpaceData().baseData, imageSpace->data);
+            if (DetailedLogging::IsEnabled())
+            {
+                if (currentBaseData) ImageSpaceDiagnostics::LogData("sync-current-after", 0, *currentBaseData);
+                ImageSpaceDiagnostics::LogData("sync-effective-after", 0, manager->GetImageSpaceData().baseData);
+            }
         }
 
         const ImageSpaceSet& GetLightingImageSpaces()
@@ -232,6 +248,8 @@ namespace MPL::ImageSpacePatcher
 
     void ApplyFilmicCurveWhitePoint()
     {
+        DetailedLogging::Info("[Image Space Diagnostic] phase={}", "apply-begin");
+        if (DetailedLogging::IsEnabled()) spdlog::default_logger()->flush();
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
@@ -239,6 +257,7 @@ namespace MPL::ImageSpacePatcher
             return;
         }
 
+        const auto& lightImageSpaces = GetLightingImageSpaces();
         auto* stat = Config::StatData::GetSingleton();
         for (auto* imageSpace : dataHandler->GetFormArray<RE::TESImageSpace>())
         {
@@ -246,11 +265,15 @@ namespace MPL::ImageSpacePatcher
             {
                 continue;
             }
+#if defined(TUNING_ATLM)
+            if (!lightImageSpaces.contains(imageSpace)) continue;
+#elif defined(TUNING_HELIOS)
+            if (lightImageSpaces.contains(imageSpace)) continue;
+#endif
             const auto baseline = stat->imageSpaceBaselines.try_emplace(imageSpace, imageSpace->data).first;
             CopyAdjustedFields(imageSpace->data, baseline->second);
         }
 
-        const auto& lightImageSpaces = GetLightingImageSpaces();
         SettingsMap lightingSettings;
         SettingsMap exteriorSettings;
         ImageSpaceSet explicitWhiteTargets;
@@ -292,6 +315,7 @@ namespace MPL::ImageSpacePatcher
                 if (PluginNameMatches(origin->GetFilename(), candidate.plugins)) owner = &candidate;
             return owner;
         };
+#ifndef TUNING_HELIOS
         static constexpr std::array lightingRoots{ std::string_view{ "lightImageSpace" } };
         std::vector<std::string> activeLightingProfiles;
         for (auto profileName : TuningUtil::GetProfilesWithSettings(lightingRoots))
@@ -327,6 +351,9 @@ namespace MPL::ImageSpacePatcher
                 lightImageSpaces.size());
         }
 
+#endif
+
+#ifndef TUNING_ATLM
         struct ActiveWeatherProfile
         {
             std::string profileName;
@@ -340,6 +367,7 @@ namespace MPL::ImageSpacePatcher
         {
             const auto& settings = TuningUtil::GetSettings(profileName);
             const auto controlsExterior = controlledBy(exteriorController, profileName);
+#ifndef TUNING_HEADLESS
             if (auto* api = HeliosphanClient::Get())
             {
                 const auto force = settings.exteriorImageSpace.ForceCSTonemapping;
@@ -347,6 +375,7 @@ namespace MPL::ImageSpacePatcher
                     profileName.c_str(),
                     settings.EnableProfile && controlsExterior && force.has_value() && !*force);
             }
+#endif
             if (!settings.EnableProfile || !controlsExterior)
             {
                 continue;
@@ -404,19 +433,39 @@ namespace MPL::ImageSpacePatcher
                 profileTargetCounts[profile.profileName]);
         }
 
+#endif
+
         const auto applySettings = [&](const SettingsMap& a_settings)
         {
             for (const auto& [imageSpace, settings] : a_settings)
             {
+                if (DetailedLogging::IsEnabled())
+                {
+                    ImageSpaceDiagnostics::LogRecord("patch-before", imageSpace);
+                    if (const auto baseline = stat->imageSpaceBaselines.find(imageSpace);
+                        baseline != stat->imageSpaceBaselines.end())
+                        ImageSpaceDiagnostics::LogData("baseline", imageSpace->GetFormID(), baseline->second);
+                    logger::info(
+                        "[Image Space Diagnostic] phase=multipliers | record={:08X} | saturation={} | brightness={} | contrast={} | tint={} | sunlight={} | sky={} | forceCSTonemapping={}",
+                        imageSpace->GetFormID(), settings.saturationMultiplier, settings.brightnessMultiplier,
+                        settings.contrastMultiplier, settings.tintStrengthMultiplier,
+                        settings.sunlightScaleMultiplier, settings.skyScaleMultiplier,
+                        settings.ForceCSTonemapping.value_or(false));
+                }
                 ApplyMultipliers(imageSpace, settings);
+                if (DetailedLogging::IsEnabled())
+                    ImageSpaceDiagnostics::LogRecord("patch-after", imageSpace);
+#ifndef TUNING_HELIOS
                 if (settings.ForceCSTonemapping.value_or(false))
                 {
                     explicitWhiteTargets.insert(imageSpace);
                 }
+#endif
             }
         };
         applySettings(lightingSettings);
         applySettings(exteriorSettings);
+#ifndef TUNING_HELIOS
         SynchronizeCurrentLightingImageSpace(lightingSettings);
         auto& appliedLightingTargets = GetLightingImageSpaceCache().appliedTargets;
         appliedLightingTargets.clear();
@@ -424,14 +473,17 @@ namespace MPL::ImageSpacePatcher
             appliedLightingTargets.insert(imageSpace);
 
         CSTonemapping::SetForcedTargets(explicitWhiteTargets);
+#endif
 
         logger::info(
             "[Image Space] apply | lighting={} | exterior={} | forcedTonemapping={}",
             lightImageSpaces.size(),
             exteriorSettings.size(),
             explicitWhiteTargets.size());
+        ImageSpaceDiagnostics::QueueSnapshot("image-space-apply-complete", 0, DetailedLogging::IsEnabled);
     }
 
+#ifndef TUNING_HEADLESS
     std::optional<bool> IsAutoCSTonemappingApplied(const std::string_view a_profile)
     {
         auto* api = HeliosphanClient::Get();
@@ -498,4 +550,5 @@ namespace MPL::ImageSpacePatcher
         auto* stat = Config::StatData::GetSingleton();
         stat->imageSpaceBaselines = {};
     }
+#endif
 }  // namespace MPL::ImageSpacePatcher

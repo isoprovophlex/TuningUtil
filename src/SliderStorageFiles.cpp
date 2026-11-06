@@ -1,5 +1,6 @@
 #include <SliderStorageFiles.h>
 #include <SliderStorage.h>
+#include <ProfileSettings.h>
 #include <FileIO.h>
 #include <JsonFormatting.h>
 #include <chrono>
@@ -67,8 +68,11 @@ namespace MPL::SliderStorage
             if (formatted != *text) changes.push_back({ path, *text, formatted, {} });
             return true;
         };
-        if (!add(a_path.parent_path() / "profileSettings.json", false) ||
-            !add(a_path.parent_path() / "presets.json", true) || !add(a_userPath, false))
+        const auto defaults = ProfileSettings::Load(a_path.parent_path(), a_error);
+        if (!defaults) return false;
+        for (const auto& layer : defaults->layers)
+            if (!add(layer.path, false)) return false;
+        if (!add(a_path.parent_path() / "presets.json", true) || !add(a_userPath, false))
         {
             if (a_error.empty()) a_error = "Slider values or presets could not be prepared. No files were changed.";
             return false;

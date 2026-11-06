@@ -1,6 +1,6 @@
 z
 !/tests/PointLightFadeTests.cpp
-build*
+/build*/
 .vscode*
 .cache
 compile_commands.json

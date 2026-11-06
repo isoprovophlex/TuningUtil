@@ -26,6 +26,15 @@ namespace MPL::LightingPatcher
         double fogNear = 1.0;
     };
 
+    struct LightingLuminanceSettings
+    {
+        double ambient = 50.0;
+        double directional = 50.0;
+        double ambientColors = 50.0;
+        double fogFar = 50.0;
+        double fogNear = 50.0;
+    };
+
     struct LightingHueShiftSettings
     {
         WeatherPatcher::HueShiftBands ambient;

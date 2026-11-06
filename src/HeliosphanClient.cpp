@@ -1,4 +1,5 @@
 #include <HeliosphanClient.h>
+#include <HeliosphanModelServiceAPI.h>
 
 #include <atomic>
 
@@ -7,6 +8,7 @@ namespace MPL::HeliosphanClient
     namespace
     {
         std::atomic<API::Heliosphan::IHeliosphanService*> service{ nullptr };
+        std::atomic<API::HeliosphanModels::IService*> modelService{ nullptr };
     }
 
     bool Initialize(API::MMSF::Interface* a_registry)
@@ -40,6 +42,12 @@ namespace MPL::HeliosphanClient
         if (!failure)
         {
             service.store(static_cast<API::Heliosphan::IHeliosphanService*>(candidate), std::memory_order_release);
+            auto* models = a_registry->QueryService(API::HeliosphanModels::kServiceName);
+            const bool compatible = models && models->GetVersion() == API::HeliosphanModels::kVersion;
+            modelService.store(compatible ? static_cast<API::HeliosphanModels::IService*>(models) : nullptr,
+                std::memory_order_release);
+            logger::info("[Heliosphan Models] service=HELIOSPHAN_MODELS | accepted={} | prepareBeforeTracking={}",
+                compatible, compatible);
         }
         logger::info(
             "[Heliosphan Connection] method=MMSF | service=HELIOSPHAN | phase=DataLoaded | required={} | reported={} | accepted={} | reason={}",
@@ -53,5 +61,17 @@ namespace MPL::HeliosphanClient
     API::Heliosphan::IHeliosphanService* Get()
     {
         return service.load(std::memory_order_acquire);
+    }
+
+    void PrepareReferenceModels(RE::TESObjectREFR* a_reference)
+    {
+        if (auto* models = modelService.load(std::memory_order_acquire); models && a_reference)
+            models->PrepareReference(a_reference);
+    }
+
+    bool HasModelPatches(const char* a_mesh)
+    {
+        auto* models = modelService.load(std::memory_order_acquire);
+        return models && a_mesh && models->HasModelRules(a_mesh);
     }
 }

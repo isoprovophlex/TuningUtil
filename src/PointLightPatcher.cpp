@@ -2,6 +2,7 @@
 #include <PointLightPatcher.h>
 #include <ObjectLightingPatcher.h>
 #include <PointLightFade.h>
+#include <PointLightISL.h>
 #include <PointLightRadius.h>
 #include <RecordFilterLogic.h>
 #include <Config.h>
@@ -44,6 +45,7 @@ namespace MPL::PointLightPatcher
         constexpr std::string_view kLightPlacerNodePrefix = "LP_Light[";
         constexpr std::uint8_t kPostReloadRefreshAttempts = 12;
         constexpr std::chrono::milliseconds kPostReloadRefreshDelay{ 100 };
+        constexpr RE::FormID kDiagnosticCell = 0x000133C9;  // Riverwood Trader reproduction only.
 
         struct Baseline
         {
@@ -126,6 +128,18 @@ namespace MPL::PointLightPatcher
             bool hasApplied = false;
         };
 
+        struct InverseSquareBaseline
+        {
+            RE::FormID base = 0;
+            PointLightISL::FadeBaseline fade;
+            RE::NiLight* runtimeLight = nullptr;
+            float sourceSize = 0.0f;
+            float appliedSize = 0.0f;
+            float appliedIntensity = 0.0f;
+            float flicker = 1.0f;
+            bool hasRuntimeApplied = false;
+        };
+
         struct DocumentDeleter
         {
             void operator()(yyjson_doc* a_document) const { yyjson_doc_free(a_document); }
@@ -144,14 +158,18 @@ namespace MPL::PointLightPatcher
         std::unordered_map<RE::TESObjectREFR*, ReferenceRuntimeFadeBaseline>
             referenceRuntimeFadeBaselines;
         std::unordered_map<RE::NiPointLight*, LightPlacerRuntimeBaseline> lightPlacerRuntimeBaselines;
+        std::unordered_map<RE::FormID, InverseSquareBaseline> inverseSquareBaselines;
         std::unordered_set<RE::TESObjectLIGH*> externallyEmissiveLights;
         std::optional<AppliedState> appliedState;
         std::optional<AppliedState> directLightPlacerState;
         std::optional<AppliedState> lightPlacerState;
+        std::optional<AppliedState> pendingInitialState;
+        bool initialApplyQueued = false;
+        bool initialApplyCompleted = false;
+        bool initialCommitLightPlacer = false;
         std::atomic<std::uint64_t> reloadGeneration{ 0 };
         std::atomic<std::uint64_t> directRefreshGeneration{ 0 };
         std::atomic_bool loadedReferenceRefreshPending{ false };
-        std::atomic_uint32_t cellChangeThreadID{ 0 };
         std::atomic<RE::FormID> currentCell{ 0 };
         std::mutex referenceReconciliationLock;
         std::unordered_set<RE::FormID> pendingReferenceReconciliations;
@@ -331,6 +349,52 @@ namespace MPL::PointLightPatcher
                 { return RecordFilter::Matches(ExternalEmittanceSource(a_reference), filter); });
         }
 
+        void LogPointLightDiagnostic(
+            const std::string_view a_stage,
+            const RE::TESObjectREFR* a_reference,
+            const AppliedState& a_state,
+            const std::string_view a_trigger)
+        {
+            if (!DetailedLogging::IsEnabled() || !a_reference) return;
+            const auto* cell = a_reference->GetParentCell();
+            if (!cell || cell->GetFormID() != kDiagnosticCell) return;
+            const auto* light = GetBaseLight(a_reference);
+            if (!light) return;
+
+            const auto snapshot = CaptureLightSnapshot(a_reference);
+            const auto runtime = snapshot.runtime.value_or(std::array<float, 7>{});
+            const auto* extra = a_reference->extraList.GetByType<RE::ExtraLightData>();
+            const auto* source = ExternalEmittanceSource(a_reference);
+            const auto baseBaseline = baselines.find(const_cast<RE::TESObjectLIGH*>(light));
+            const auto refBaseline = referenceFadeBaselines.find(const_cast<RE::TESObjectREFR*>(a_reference));
+            const auto islBaseline = inverseSquareBaselines.find(a_reference->GetFormID());
+            const auto* converted = islBaseline != inverseSquareBaselines.end() ? &islBaseline->second : nullptr;
+            logger::info(
+                "[Point Light Diagnostic] trigger={} | stage={} | cell={:08X} | reference={:08X} | base={:08X} | "
+                "flags={:08X} | shadowCaster={} | XEMI={:08X} | baseFade={} | baseBaselineAvailable={} | baseBaselineFade={} | "
+                "referenceFadeAvailable={} | referenceFade={} | referenceBaselineAvailable={} | referenceBaselineFade={} | "
+                "referenceFOV={} | referenceEndCap={} | brightnessMultiplier={} | runtimePresent={} | runtimeFade={} | "
+                "diffuse={},{},{} | radius={},{},{} | cachedRadiusAvailable={} | cachedRadius={} | "
+                "islBaselineAvailable={} | islSourceOffset={} | islSourceSize={} | islAppliedSize={} | islAppliedIntensity={}",
+                a_trigger, a_stage, cell->GetFormID(), a_reference->GetFormID(), light->GetFormID(),
+                light->data.flags.underlying(),
+                light->data.flags.any(RE::TES_LIGHT_FLAGS::kSpotShadow, RE::TES_LIGHT_FLAGS::kHemiShadow,
+                    RE::TES_LIGHT_FLAGS::kOmniShadow),
+                source ? source->GetFormID() : 0, light->fade,
+                baseBaseline != baselines.end(), baseBaseline != baselines.end() ? baseBaseline->second.fade : 0.0f,
+                snapshot.referenceFade.has_value(), snapshot.referenceFade.value_or(0.0f),
+                refBaseline != referenceFadeBaselines.end(),
+                refBaseline != referenceFadeBaselines.end() ? refBaseline->second : 0.0f,
+                extra ? extra->data.fov : 0.0f, extra ? extra->data.endDistanceCap : 0.0f,
+                ReferenceFadeMultiplier(a_reference, a_state), snapshot.runtime.has_value(), runtime[0],
+                runtime[1], runtime[2], runtime[3], runtime[4], runtime[5], runtime[6],
+                snapshot.cachedRadius.has_value(), snapshot.cachedRadius.value_or(0.0f),
+                converted != nullptr, converted ? converted->fade.sourceOffset : 0.0f,
+                converted ? converted->sourceSize : 0.0f, converted ? converted->appliedSize : 0.0f,
+                converted ? converted->appliedIntensity : 0.0f);
+            spdlog::default_logger()->flush();
+        }
+
         double OriginalBaseRadius(const RE::TESObjectLIGH* a_light)
         {
             if (!a_light) return 0.0;
@@ -338,13 +402,37 @@ namespace MPL::PointLightPatcher
             return baseline != baselines.end() ? baseline->second.radius : a_light->data.radius;
         }
 
+        bool HasCSLightExtension()
+        {
+            static const bool loaded = GetModuleHandleW(L"CommunityShaders.dll") != nullptr;
+            return loaded;
+        }
+
+        bool IsInverseSquare(const RE::TESObjectLIGH* a_light)
+        {
+            return a_light && HasCSLightExtension() &&
+                   (a_light->data.flags.underlying() & PointLightISL::recordFlag) != 0;
+        }
+
         void UpdateRuntimeRadius(RE::NiLight* a_light, const float a_radius)
         {
             auto* pointLight = netimmerse_cast<RE::NiPointLight*>(a_light);
             if (!pointLight) return;
             auto& runtime = pointLight->GetLightRuntimeData();
-            if (runtime.radius.x == a_radius && runtime.radius.y == a_radius && runtime.radius.z == a_radius) return;
-            runtime.radius = RE::NiPoint3{ a_radius, a_radius, a_radius };
+            const bool hasExtension = HasCSLightExtension() && PointLightISL::HasExtension(runtime);
+            const auto metadata = runtime.ambient;
+            const auto padding = runtime.radius.y;
+            const auto sourceSize = runtime.radius.z;
+            if (hasExtension)
+            {
+                if (PointLightISL::IsInverseSquare(runtime) || runtime.radius.x == a_radius) return;
+                runtime.radius.x = a_radius;
+            }
+            else
+            {
+                if (runtime.radius.x == a_radius && runtime.radius.y == a_radius && runtime.radius.z == a_radius) return;
+                runtime.radius = RE::NiPoint3{ a_radius, a_radius, a_radius };
+            }
             // The engine takes an integer radius, not the float declared by CommonLib.
             using SetAttenuation = void (*)(RE::NiPointLight*, std::uint32_t);
             static REL::Relocation<SetAttenuation> setAttenuation{ RELOCATION_ID(17224, 17626) };
@@ -352,12 +440,19 @@ namespace MPL::PointLightPatcher
             RE::NiUpdateData update{};
             update.flags.set(RE::NiUpdateData::Flag::kDirty);
             pointLight->Update(update);
+            if (hasExtension)
+            {
+                runtime.ambient = metadata;
+                runtime.radius.y = padding;
+                runtime.radius.z = sourceSize;
+            }
         }
 
         void RefreshReferenceRadius(RE::TESObjectREFR* a_reference, const AppliedState& a_state)
         {
             const auto* light = GetBaseLight(a_reference);
             if (!light || !a_reference->Is3DLoaded()) return;
+            if (IsInverseSquare(light)) return;
             const auto multiplier = PointLightFade::ResolveRadius(
                 a_state.settings.radiusMultiplier,
                 light->GetFormID(), a_state.referenceRules, [&](const auto& filter)
@@ -385,7 +480,7 @@ namespace MPL::PointLightPatcher
             if (const auto baseline = baselines.find(light);
                 baseline != baselines.end())
             {
-                light->fade = baseline->second.fade * static_cast<float>(
+                if (!IsInverseSquare(light)) light->fade = baseline->second.fade * static_cast<float>(
                                                        a_state ?
                                                            BrightnessFadeMultiplier(SettingsForBaseLight(light, *a_state)) :
                                                            1.0);
@@ -1607,12 +1702,7 @@ namespace MPL::PointLightPatcher
                     std::memory_order_release);
                 FinishCellTracking(a_cell);
             };
-            if (cellChangeThreadID.load(std::memory_order_relaxed) ==
-                GetCurrentThreadId())
-            {
-                task();
-            }
-            else if (auto* taskInterface = SKSE::GetTaskInterface())
+            if (auto* taskInterface = SKSE::GetTaskInterface())
             {
                 taskInterface->AddTask(std::move(task));
             }
@@ -1683,8 +1773,7 @@ namespace MPL::PointLightPatcher
                 const RE::TESCellAttachDetachEvent* a_event,
                 RE::BSTEventSource<RE::TESCellAttachDetachEvent>*) override
             {
-                if (a_event && a_event->attached && a_event->reference &&
-                    a_event->reference->Is(RE::FormType::ActorCharacter))
+                if (a_event && a_event->attached && a_event->reference)
                     QueueReferenceReconciliation(a_event->reference.get());
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -1698,7 +1787,7 @@ namespace MPL::PointLightPatcher
         {
             auto* light = GetBaseLight(a_reference);
             auto* extraLightData = a_reference ? a_reference->extraList.GetByType<RE::ExtraLightData>() : nullptr;
-            if (!light || !extraLightData)
+            if (!light || !extraLightData || IsInverseSquare(light))
             {
                 return false;
             }
@@ -1719,9 +1808,10 @@ namespace MPL::PointLightPatcher
                                    extraLightData->data.fade)
                                .first;
             }
-            extraLightData->data.fade = baseline->second *
-                                        static_cast<float>(
-                                            std::max(0.0, multiplier));
+            const auto baseBaseline = baselines.find(light);
+            const auto sourceBase = baseBaseline != baselines.end() ? baseBaseline->second.fade : light->fade;
+            extraLightData->data.fade = PointLightFade::ReferenceOffset(sourceBase, baseline->second,
+                BrightnessFadeMultiplier(SettingsForBaseLight(light, a_state)), multiplier);
             return true;
         }
 
@@ -1761,6 +1851,95 @@ namespace MPL::PointLightPatcher
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
         }
 
+        void RefreshRuntimeColor(
+            RE::TESObjectREFR* a_reference, RE::TESObjectLIGH* a_light,
+            const AppliedState& a_state, RE::NiLight::LIGHT_RUNTIME_DATA& a_runtime)
+        {
+            if (HasExternalEmittance(a_reference)) return;
+            constexpr float colorChannelScale = 1.0f / 255.0f;
+            a_runtime.diffuse.red = static_cast<float>(a_light->data.color.red) * colorChannelScale;
+            a_runtime.diffuse.green = static_cast<float>(a_light->data.color.green) * colorChannelScale;
+            a_runtime.diffuse.blue = static_cast<float>(a_light->data.color.blue) * colorChannelScale;
+            if (externallyEmissiveLights.contains(a_light))
+                a_runtime.diffuse = TuneLightPlacerDiffuse(a_runtime.diffuse,
+                    SettingsForBaseLight(a_light, a_state), a_state.hueRanges);
+        }
+
+        bool RefreshInverseSquareLight(
+            RE::TESObjectREFR* a_reference, RE::TESObjectLIGH* a_light,
+            const AppliedState& a_state, const bool a_equipped = false)
+        {
+            const auto* extraLight = a_reference->extraList.GetByType<RE::ExtraLight>();
+            RE::NiPointer<RE::NiLight> runtimeLight = extraLight && extraLight->lightData ? extraLight->lightData->light : nullptr;
+            if (!runtimeLight || !PointLightISL::IsInverseSquare(runtimeLight->GetLightRuntimeData())) return false;
+            auto& captured = inverseSquareBaselines[a_reference->GetFormID()];
+            if (captured.base != a_light->GetFormID())
+                captured = InverseSquareBaseline{ .base = a_light->GetFormID() };
+            auto& runtimeBefore = runtimeLight->GetLightRuntimeData();
+            auto* extraData = a_equipped ? nullptr : a_reference->extraList.GetByType<RE::ExtraLightData>();
+            const auto offset = extraData ? extraData->data.fade : 0.0f;
+            captured.fade.Capture(offset);
+            if (captured.runtimeLight != runtimeLight.get())
+            {
+                captured.runtimeLight = runtimeLight.get();
+                captured.sourceSize = PointLightISL::SourceSize(runtimeBefore);
+                captured.hasRuntimeApplied = false;
+                captured.flicker = 1.0f;
+            }
+            else if (PointLightISL::SourceSize(runtimeBefore) != captured.appliedSize)
+            {
+                captured.sourceSize = PointLightISL::SourceSize(runtimeBefore);
+            }
+
+            const auto brightness = a_equipped ?
+                BrightnessFadeMultiplier(SettingsForBaseLight(a_light, a_state)) :
+                ReferenceFadeMultiplier(a_reference, a_state);
+            const auto radius = a_equipped ? SettingsForBaseLight(a_light, a_state).radiusMultiplier :
+                PointLightFade::ResolveRadius(a_state.settings.radiusMultiplier,
+                    a_light->GetFormID(), a_state.referenceRules, [&](const auto& filter)
+                    { return RecordFilter::Matches(ExternalEmittanceSource(a_reference), filter); });
+            const auto adjusted = PointLightISL::Scale(
+                captured.fade.Intensity(a_light->fade), captured.sourceSize, brightness, radius);
+            if (!adjusted) return false;
+            const auto previousIntensity = captured.hasRuntimeApplied ? captured.appliedIntensity :
+                std::max(0.0f, a_light->fade + offset);
+            const auto previousFade = runtimeBefore.fade;
+            const auto adjustedOffset = adjusted->intensity - a_light->fade;
+            if (!a_equipped && adjustedOffset != offset)
+            {
+                if (!extraData)
+                {
+                    extraData = new RE::ExtraLightData();
+                    extraData->data.fov = 90.0f;
+                    extraData->data.shadowDepthBias = 1.0f;
+                    a_reference->extraList.Add(extraData);
+                }
+                extraData->data.fade = adjustedOffset;
+            }
+            captured.fade.appliedOffset = adjustedOffset;
+            captured.fade.hasApplied = !a_equipped;
+            if (!a_equipped) a_reference->UpdateRefLight();
+            const auto* refreshedLight = a_reference->extraList.GetByType<RE::ExtraLight>();
+            if (!refreshedLight || !refreshedLight->lightData || !refreshedLight->lightData->light) return false;
+            if (refreshedLight->lightData->light.get() != runtimeLight.get())
+            {
+                captured.runtimeLight = nullptr;
+                captured.hasRuntimeApplied = false;
+                QueueReferenceReconciliation(a_reference);
+                return false;
+            }
+            auto& runtime = runtimeLight->GetLightRuntimeData();
+            if (runtime.fade == previousFade)
+                runtime.fade = PointLightISL::RuntimeFade(
+                    previousFade, previousIntensity, adjusted->intensity, captured.flicker);
+            PointLightISL::SourceSize(runtime) = adjusted->size;
+            RefreshRuntimeColor(a_reference, a_light, a_state, runtime);
+            captured.appliedSize = adjusted->size;
+            captured.appliedIntensity = adjusted->intensity;
+            captured.hasRuntimeApplied = true;
+            return true;
+        }
+
         bool RefreshEquippedLight(
             RE::Actor* a_actor,
             bool* a_hasLight = nullptr)
@@ -1787,6 +1966,9 @@ namespace MPL::PointLightPatcher
                 return false;
             }
 
+            if (IsInverseSquare(light) && appliedState)
+                return RefreshInverseSquareLight(a_actor, light, *appliedState, true);
+
             auto& runtime = extraLight->lightData->light->GetLightRuntimeData();
             // Base-record fade already includes the resolved brightness multiplier.
             runtime.fade = light->fade;
@@ -1796,7 +1978,8 @@ namespace MPL::PointLightPatcher
 
         bool RefreshLoadedLightReference(
             RE::TESObjectREFR* a_reference,
-            const AppliedState& a_state)
+            const AppliedState& a_state,
+            const std::string_view a_context = "reference-initialization")
         {
             auto* light = GetBaseLight(a_reference);
             if (!light || !a_reference->Is3DLoaded())
@@ -1804,10 +1987,18 @@ namespace MPL::PointLightPatcher
                 return false;
             }
 
-            RefreshReferenceRadius(a_reference, a_state);
+            if (IsInverseSquare(light))
+            {
+                LogPointLightDiagnostic("before-isl-refresh", a_reference, a_state, a_context);
+                const auto refreshed = RefreshInverseSquareLight(a_reference, light, a_state);
+                LogPointLightDiagnostic("after-isl-refresh", a_reference, a_state, a_context);
+                return refreshed;
+            }
 
-            const auto* emittanceSource =
-                ExternalEmittanceSource(a_reference);
+            LogPointLightDiagnostic("before-radius-refresh", a_reference, a_state, a_context);
+            RefreshReferenceRadius(a_reference, a_state);
+            LogPointLightDiagnostic("after-radius-refresh", a_reference, a_state, a_context);
+
             const bool sharedXEMIBase =
                 externallyEmissiveLights.contains(light);
             const auto baseline = baselines.find(light);
@@ -1818,29 +2009,14 @@ namespace MPL::PointLightPatcher
             const bool correctBaseFadeContribution =
                 sharedXEMIBase && baseline != baselines.end();
             a_reference->UpdateRefLight();
+            LogPointLightDiagnostic("after-update-ref-light", a_reference, a_state, a_context);
             if (auto* extraLight = a_reference->extraList.GetByType<RE::ExtraLight>();
                 extraLight && extraLight->lightData && extraLight->lightData->light)
             {
                 const auto* extraLightData =
                     a_reference->extraList.GetByType<RE::ExtraLightData>();
                 auto& runtime = extraLight->lightData->light->GetLightRuntimeData();
-                if (!emittanceSource)
-                {
-                    constexpr float colorChannelScale = 1.0f / 255.0f;
-                    runtime.diffuse.red =
-                        static_cast<float>(light->data.color.red) * colorChannelScale;
-                    runtime.diffuse.green =
-                        static_cast<float>(light->data.color.green) * colorChannelScale;
-                    runtime.diffuse.blue =
-                        static_cast<float>(light->data.color.blue) * colorChannelScale;
-                    if (sharedXEMIBase)
-                    {
-                        runtime.diffuse = TuneLightPlacerDiffuse(
-                            runtime.diffuse,
-                            SettingsForBaseLight(light, a_state),
-                            a_state.hueRanges);
-                    }
-                }
+                RefreshRuntimeColor(a_reference, light, a_state, runtime);
                 const bool hasReferenceFade =
                     extraLightData &&
                     (extraLightData->data.fade > 0.0f ||
@@ -1887,10 +2063,9 @@ namespace MPL::PointLightPatcher
                 else
                 {
                     referenceRuntimeFadeBaselines.erase(a_reference);
-                    runtime.fade = hasReferenceFade ?
-                                       extraLightData->data.fade :
-                                       light->fade;
+                    runtime.fade = light->fade + (hasReferenceFade ? extraLightData->data.fade : 0.0f);
                 }
+                LogPointLightDiagnostic("after-tuning", a_reference, a_state, a_context);
                 return true;
             }
             return false;
@@ -1914,6 +2089,7 @@ namespace MPL::PointLightPatcher
                 {
                 if (auto* light = GetBaseLight(a_reference))
                 {
+                    LogPointLightDiagnostic("before-tuning", a_reference, a_state, a_context);
                     const auto before = logResult ? CaptureLightSnapshot(a_reference) : LightSnapshot{};
                     if (a_reference->Is3DLoaded())
                     {
@@ -1921,7 +2097,8 @@ namespace MPL::PointLightPatcher
                     }
                     ReconcileExternalEmittanceBase(a_reference, std::addressof(a_state));
                     const bool fadeProcessed = ApplyReferenceFadeOverride(a_reference, a_state);
-                    const bool runtimeProcessed = RefreshLoadedLightReference(a_reference, a_state);
+                    LogPointLightDiagnostic("after-reference-fade", a_reference, a_state, a_context);
+                    const bool runtimeProcessed = RefreshLoadedLightReference(a_reference, a_state, a_context);
                     result.refreshed += runtimeProcessed ? 1 : 0;
                     if (logResult) result.counts.Record(fadeProcessed || runtimeProcessed,
                         before != CaptureLightSnapshot(a_reference));
@@ -1985,6 +2162,27 @@ namespace MPL::PointLightPatcher
             .referenceRules = a_referenceRules,
             .hueRanges = a_hueRanges,
         };
+        if (!initialApplyCompleted)
+        {
+            pendingInitialState = state;
+            initialCommitLightPlacer |= a_commitLightPlacer;
+            if (initialApplyQueued) return;
+            if (auto* tasks = SKSE::GetTaskInterface())
+            {
+                initialApplyQueued = true;
+                tasks->AddTask([]()
+                    {
+                        initialApplyCompleted = true;
+                        const auto pending = std::move(*pendingInitialState);
+                        pendingInitialState.reset();
+                        Apply(pending.settings, pending.baseLightSettings, pending.referenceRules,
+                            pending.hueRanges, initialCommitLightPlacer);
+                    });
+                logger::info("[Point Lights] initial apply=queued | phase=after-data-loaded");
+            }
+            else logger::warn("[Point Lights] initial apply failed | game thread unavailable");
+            return;
+        }
         const bool recordsChanged = !appliedState || *appliedState != state;
         if (kUseDirectLightPlacerNiLights)
         {
@@ -2011,6 +2209,7 @@ namespace MPL::PointLightPatcher
             std::size_t fadeCount = 0;
             std::size_t lightCount = 0;
             std::size_t externalEmittanceCount = 0;
+            std::size_t inverseSquareCount = 0;
             ApplyReferenceFadeOverrides(dataHandler, state);
             for (auto* light : dataHandler->GetFormArray<RE::TESObjectLIGH>())
             {
@@ -2020,11 +2219,14 @@ namespace MPL::PointLightPatcher
                 }
                 const auto& settings = SettingsForBaseLight(light, state);
                 const auto baseline = baselines.try_emplace(light, Baseline{ light->fade, light->data.color, light->data.radius }).first;
-                light->fade = baseline->second.fade;
                 light->data.color = baseline->second.color;
-                light->data.radius = PointLightRadius::Record(baseline->second.radius, settings.radiusMultiplier);
-                light->fade *= static_cast<float>(BrightnessFadeMultiplier(settings));
-                ++fadeCount;
+                if (!IsInverseSquare(light))
+                {
+                    light->fade = baseline->second.fade * static_cast<float>(BrightnessFadeMultiplier(settings));
+                    light->data.radius = PointLightRadius::Record(baseline->second.radius, settings.radiusMultiplier);
+                    ++fadeCount;
+                }
+                else ++inverseSquareCount;
                 if (externallyEmissiveLights.contains(light))
                 {
                     ++externalEmittanceCount;
@@ -2047,10 +2249,11 @@ namespace MPL::PointLightPatcher
                 "settings-apply");
             RefreshDirectLightPlacerLights();
             logger::info(
-                "[Point Lights] records | fade={} | color={} | perReference={}",
+                "[Point Lights] records | fade={} | color={} | perReference={} | ISL-runtime={}",
                 fadeCount,
                 lightCount,
-                externalEmittanceCount);
+                externalEmittanceCount,
+                inverseSquareCount);
         }
 
         if (a_commitLightPlacer)
@@ -2113,13 +2316,6 @@ namespace MPL::PointLightPatcher
         logger::info("[Point Lights] equipped lights | equip/load/attach events=registered");
     }
 
-    void RecordCellChangeThread()
-    {
-        cellChangeThreadID.store(
-            GetCurrentThreadId(),
-            std::memory_order_relaxed);
-    }
-
     void BeginCell(RE::TESObjectCELL* a_cell)
     {
         currentCell.store(
@@ -2130,6 +2326,16 @@ namespace MPL::PointLightPatcher
     void ResetCellTracking()
     {
         currentCell.store(0, std::memory_order_release);
+        for (const auto& [formID, captured] : inverseSquareBaselines)
+        {
+            auto* reference = RE::TESForm::LookupByID<RE::TESObjectREFR>(formID);
+            const auto* light = GetBaseLight(reference);
+            if (!light || light->GetFormID() != captured.base || !captured.fade.hasApplied) continue;
+            if (auto* extra = reference->extraList.GetByType<RE::ExtraLightData>();
+                extra && extra->data.fade == captured.fade.appliedOffset)
+                extra->data.fade = captured.fade.sourceOffset;
+        }
+        inverseSquareBaselines.clear();
         std::scoped_lock lock(referenceReconciliationLock);
         ++referenceReconciliationGeneration;
         pendingReferenceReconciliations.clear();
@@ -2215,6 +2421,8 @@ namespace MPL::PointLightPatcher
             if (appliedState) RefreshEquippedLight(actor);
             return;
         }
+        if (appliedState)
+            LogPointLightDiagnostic("initialize-before", a_reference, *appliedState, "reference-initialization");
         if (HasExternalEmittance(a_reference))
         {
             if (auto* light = GetBaseLight(a_reference);
@@ -2235,14 +2443,22 @@ namespace MPL::PointLightPatcher
                         *appliedState);
                 }
             }
+            if (appliedState)
+                LogPointLightDiagnostic("initialize-after", a_reference, *appliedState, "reference-initialization");
             return;
         }
         if (appliedState)
         {
+            if (IsInverseSquare(GetBaseLight(a_reference)))
+            {
+                RefreshLoadedLightReference(a_reference, *appliedState);
+                return;
+            }
             ApplyReferenceFadeOverride(
                 a_reference,
                 *appliedState);
             RefreshReferenceRadius(a_reference, *appliedState);
+            LogPointLightDiagnostic("initialize-after", a_reference, *appliedState, "reference-initialization");
         }
     }
 }  // namespace MPL::PointLightPatcher

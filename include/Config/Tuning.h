@@ -41,7 +41,7 @@ namespace MPL::TuningUtil
     struct Settings
     {
         int profilePriority = 0;
-        bool EnableProfile = false;
+        bool EnableProfile = true;
         bool ShowAdvanced = false;
         ExclusiveControl exclusiveControl;
         Links links;
@@ -65,6 +65,11 @@ namespace MPL::TuningUtil
         WeatherPatcher::ImageSpaceSettings exteriorImageSpace;
 
         LightingPatcher::LightingColorSettings lightBrightnessMultiplier;
+#ifdef TUNING_ATLM
+        std::optional<LightingPatcher::LightingLuminanceSettings> normalizeLuminance{ std::in_place };
+#else
+        std::optional<LightingPatcher::LightingLuminanceSettings> normalizeLuminance;
+#endif
         LightingPatcher::LightingColorSettings lightSaturationMultiplier;
         LightingPatcher::LightingHueShiftSettings lightHueShift;
         WeatherPatcher::HueRanges lightHueRanges;

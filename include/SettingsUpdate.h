@@ -35,7 +35,7 @@ namespace MPL::SettingsUpdate
             root == "volumetricLightingIntensityMultiplier" || root == "withinWeatherCompression" ||
             root == "betweenWeatherCompression" || root == "compressionAnchor" || root == "hueScales" ||
             root == "hueRanges" || root == "filteredWeatherAdjustments") return Targets::weather;
-        if (root == "lightBrightnessMultiplier" || root == "lightSaturationMultiplier" ||
+        if (root == "normalizeLuminance" || root == "lightBrightnessMultiplier" || root == "lightSaturationMultiplier" ||
             root == "lightHueShift" || root == "lightFogPowerMultiplier" || root == "lightFogMaxMultiplier" ||
             root == "filteredLightingTemplateAdjustments") return Targets::lighting;
         if (root == "pointLights" || root == "filteredBaseLightAdjustments") return Targets::pointLights;

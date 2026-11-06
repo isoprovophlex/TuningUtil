@@ -2,6 +2,8 @@
 
 #include <JsonOverlay.h>
 #include <ProfileSetup.h>
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <rfl/json.hpp>
 #include <vector>
@@ -42,6 +44,13 @@ namespace MPL::UserSettings
             std::string& a_error)
         {
             return JsonOverlay::RemovePaths(a_json, kMetadataPaths, a_error);
+        }
+
+        bool HasPresetSelections(const std::string_view a_json)
+        {
+            const auto document = Parse(a_json);
+            auto* root = document ? yyjson_doc_get_root(document.get()) : nullptr;
+            return yyjson_is_obj(root) && yyjson_obj_get(root, kPresetSelectionsMember.data());
         }
     }  // namespace
 
@@ -112,6 +121,27 @@ namespace MPL::UserSettings
         return rfl::json::write(Metadata{ a_selections }, rfl::json::pretty);
     }
 
+    std::optional<PresetSelections> ResolvePresetSelections(
+        const std::string_view a_defaults,
+        const std::optional<std::string_view> a_user,
+        std::string& a_error)
+    {
+        auto selections = ParsePresetSelections(a_defaults, a_error);
+        if (!selections || !a_user) return selections;
+        const auto overrides = ParsePresetSelections(*a_user, a_error);
+        if (!overrides) return std::nullopt;
+        for (const auto& [category, preset] : *overrides)
+        {
+            const auto existing = std::ranges::find_if(*selections, [&](const auto& a_selection)
+                { return std::ranges::equal(a_selection.first, category,
+                    [](const unsigned char a_left, const unsigned char a_right)
+                    { return std::tolower(a_left) == std::tolower(a_right); }); });
+            if (existing != selections->end()) existing->second = preset;
+            else selections->insert_or_assign(category, preset);
+        }
+        return selections;
+    }
+
     std::optional<SanitizeResult> Sanitize(
         const std::string_view a_json,
         const std::string_view a_settingsSchema,
@@ -149,12 +179,12 @@ namespace MPL::UserSettings
         }
 
         const auto settingsEquivalent = JsonOverlay::Equivalent(*originalValues, *sanitizedValues, a_error);
-        const auto output = settingsEquivalent ?
+        const auto output = settingsEquivalent && HasPresetSelections(a_json) ?
                                 JsonOverlay::Overlay(
                                     *sanitizedValues,
                                     PresetSelectionsText(sanitizedSelections),
                                     a_error) :
-                                std::nullopt;
+                                sanitizedValues;
         if (!settingsEquivalent || !output) return std::nullopt;
 
         return SanitizeResult{

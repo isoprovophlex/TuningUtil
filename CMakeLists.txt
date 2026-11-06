@@ -33,6 +33,7 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG OFF)
 
 include(CMake/headerlist.cmake)
 include(CMake/sourcelist.cmake)
+list(FILTER sources EXCLUDE REGEX "/Headless(Main|Profile)\\.cpp$")
 
 source_group(
   TREE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -46,217 +47,85 @@ add_library(
   ${sources}
 )
 
-target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
-
-target_include_directories(
-  ${PROJECT_NAME}
-  PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern/LumaUtil/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern/Heliosphan/include
-)
-
 find_package(CommonLibSSE CONFIG REQUIRED)
 find_package(DirectXTK CONFIG REQUIRED)
 find_package(reflectcpp CONFIG REQUIRED)
 
-target_link_libraries(
-  ${PROJECT_NAME}
-  PRIVATE
-    CommonLibSSE::CommonLibSSE
-    reflectcpp::reflectcpp
+set(headless_common_sources
+  src/HeadlessMain.cpp
+  src/HeadlessProfile.cpp
+  src/ProfileParsing.cpp
+  src/ProfileSettings.cpp
+  src/JsonOverlay.cpp
+  src/SliderStorage.cpp
+  src/SliderSettingCatalog.cpp
+  src/SettingLinks.cpp
+  src/ImageSpacePatcher.cpp
+  src/DetailedLogging.cpp
 )
 
-target_precompile_headers(${PROJECT_NAME} PRIVATE include/PCH.h)
+add_library(ATLMTuning SHARED EXCLUDE_FROM_ALL
+  ${headless_common_sources}
+  src/LightingPatcher.cpp
+  src/RecordFilter.cpp
+  src/CSTonemapping.cpp
+  src/HeliosphanClient.cpp
+)
+add_library(HeliosTuning SHARED EXCLUDE_FROM_ALL
+  ${headless_common_sources}
+  src/WeatherPatcher.cpp
+  src/WeatherRuntime.cpp
+)
+target_compile_definitions(ATLMTuning PRIVATE TUNING_HEADLESS TUNING_ATLM TUNING_PLUGIN_NAME="ATLMTuning")
+target_compile_definitions(HeliosTuning PRIVATE TUNING_HEADLESS TUNING_HELIOS TUNING_PLUGIN_NAME="HeliosTuning")
 
-if(MSVC)
-  target_compile_options(
-    ${PROJECT_NAME}
+foreach(target IN ITEMS ${PROJECT_NAME} ATLMTuning HeliosTuning)
+  target_compile_features(${target} PRIVATE cxx_std_23)
+
+  target_include_directories(
+    ${target}
     PRIVATE
-      /sdl
-      /utf-8
-      /Zi
-      /MD
-      /permissive-
-      /Zc:preprocessor
-      /wd4099
-      /wd4100
-      /wd4200
-      /wd4456
-      /wd4505
-      /wd4702
-      /wd5054
-      "$<$<CONFIG:RELEASE>:/Zc:inline;/JMC-;/Ob3>"
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/extern/LumaUtil/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/extern/Heliosphan/include
   )
 
-  target_link_options(
-    ${PROJECT_NAME}
+  target_link_libraries(
+    ${target}
     PRIVATE
-      "$<$<CONFIG:DEBUG>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF>"
-      "$<$<CONFIG:RELEASE>:/INCREMENTAL:NO;/OPT:REF;/OPT:ICF;/DEBUG:FULL>"
-  )
-endif()
-
-option(TUNINGUTIL_BUILD_TESTS "Build TuningUtil tests" ON)
-
-if(TUNINGUTIL_BUILD_TESTS)
-  enable_testing()
-
-  add_executable(MenuBoxGeometryTests tests/MenuBoxGeometryTests.cpp)
-  target_compile_features(MenuBoxGeometryTests PRIVATE cxx_std_23)
-  target_include_directories(MenuBoxGeometryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(MenuStatusMessageTests tests/MenuStatusMessageTests.cpp)
-  target_compile_features(MenuStatusMessageTests PRIVATE cxx_std_23)
-  target_include_directories(MenuStatusMessageTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(SliderLinkMathTests tests/SliderLinkMathTests.cpp)
-  target_compile_features(SliderLinkMathTests PRIVATE cxx_std_23)
-  target_include_directories(SliderLinkMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(ObjectLightingTrackingTests tests/ObjectLightingTrackingTests.cpp)
-  target_compile_features(ObjectLightingTrackingTests PRIVATE cxx_std_23)
-  target_include_directories(ObjectLightingTrackingTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(PointLightFadeTests tests/PointLightFadeTests.cpp)
-  target_compile_features(PointLightFadeTests PRIVATE cxx_std_23)
-  target_include_directories(PointLightFadeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(SettingsUpdateTests tests/SettingsUpdateTests.cpp src/SliderSettingCatalog.cpp)
-  target_compile_features(SettingsUpdateTests PRIVATE cxx_std_23)
-  target_include_directories(SettingsUpdateTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(HueFilterTests tests/HueFilterTests.cpp)
-  target_compile_features(HueFilterTests PRIVATE cxx_std_23)
-  target_include_directories(HueFilterTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(
-    JsonOverlayTests
-    tests/JsonOverlayTests.cpp
-    src/JsonOverlay.cpp
-    src/PresetCatalog.cpp
-    src/UserSettings.cpp
-  )
-  target_compile_features(JsonOverlayTests PRIVATE cxx_std_23)
-  target_include_directories(JsonOverlayTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(JsonOverlayTests PRIVATE reflectcpp::reflectcpp)
-
-  add_executable(
-    SliderCreatorTests
-    tests/SliderCreatorTests.cpp
-    src/PresetCatalog.cpp
-    src/SliderCreator.cpp
-    src/SliderSettingCatalog.cpp
-  )
-  target_compile_features(SliderCreatorTests PRIVATE cxx_std_23)
-  target_include_directories(SliderCreatorTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(SliderCreatorTests PRIVATE reflectcpp::reflectcpp)
-
-  add_executable(
-    PointLightRadiusTests
-    tests/PointLightRadiusTests.cpp
-    src/PresetCatalog.cpp
-    src/SliderCreator.cpp
-    src/SliderSettingCatalog.cpp
-  )
-  target_compile_features(PointLightRadiusTests PRIVATE cxx_std_23)
-  target_include_directories(PointLightRadiusTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(PointLightRadiusTests PRIVATE reflectcpp::reflectcpp)
-
-  add_executable(SliderIdentityTests tests/SliderIdentityTests.cpp src/SliderCreator.cpp src/SliderSettingCatalog.cpp src/PresetCatalog.cpp)
-  target_compile_features(SliderIdentityTests PRIVATE cxx_std_23)
-  target_include_directories(SliderIdentityTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(SliderIdentityTests PRIVATE reflectcpp::reflectcpp)
-  foreach(test_target IN ITEMS SliderCreatorTests PointLightRadiusTests SliderIdentityTests)
-    target_sources(${test_target} PRIVATE src/SliderStorage.cpp src/SliderStorageFiles.cpp src/JsonOverlay.cpp)
-  endforeach()
-
-  add_executable(SliderStorageTests tests/SliderStorageTests.cpp src/SliderStorage.cpp src/SliderStorageFiles.cpp src/SliderSettingCatalog.cpp src/JsonOverlay.cpp)
-  target_compile_features(SliderStorageTests PRIVATE cxx_std_23)
-  target_include_directories(SliderStorageTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(SliderStorageTests PRIVATE reflectcpp::reflectcpp)
-
-  foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests PointLightRadiusTests SliderIdentityTests SliderStorageTests)
-    target_sources(${test_target} PRIVATE src/FileIO.cpp)
-  endforeach()
-
-  set(
-    TUNINGUTIL_ADDRESS_LIBRARY_1_7_99
-    ""
-    CACHE FILEPATH
-    "Path to the exact Skyrim 1.7.99 Address Library binary"
+      CommonLibSSE::CommonLibSSE
+      reflectcpp::reflectcpp
   )
 
-  if(NOT TUNINGUTIL_ADDRESS_LIBRARY_1_7_99 AND DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
-    find_file(
-      TUNINGUTIL_PACKAGED_ADDRESS_LIBRARY_1_7_99
-      NAMES versionlib-1-7-99-0.bin
-      PATHS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/commonlibsse-ng/test-data"
-      NO_DEFAULT_PATH
-    )
-    if(TUNINGUTIL_PACKAGED_ADDRESS_LIBRARY_1_7_99)
-      set(
-        TUNINGUTIL_ADDRESS_LIBRARY_1_7_99
-        "${TUNINGUTIL_PACKAGED_ADDRESS_LIBRARY_1_7_99}"
-        CACHE FILEPATH
-        "Path to the exact Skyrim 1.7.99 Address Library binary"
-        FORCE
-      )
-    endif()
-  endif()
-
-  if(TUNINGUTIL_ADDRESS_LIBRARY_1_7_99)
-    add_executable(
-      TuningUtilAddressLibraryTests
-      tests/AddressLibrary1799Tests.cpp
-    )
-    target_compile_features(TuningUtilAddressLibraryTests PRIVATE cxx_std_23)
-    target_include_directories(TuningUtilAddressLibraryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_compile_definitions(TuningUtilAddressLibraryTests PRIVATE ENABLE_COMMONLIBSSE_TESTING=1)
-    target_link_libraries(TuningUtilAddressLibraryTests PRIVATE CommonLibSSE::CommonLibSSE)
-    target_precompile_headers(TuningUtilAddressLibraryTests PRIVATE include/PCH.h)
-  else()
-    message(WARNING "The exact Skyrim 1.7.99 Address Library loader test is unavailable.")
-  endif()
+  target_precompile_headers(${target} PRIVATE include/PCH.h)
 
   if(MSVC)
-    foreach(test_target IN ITEMS JsonOverlayTests SliderCreatorTests MenuBoxGeometryTests SliderLinkMathTests ObjectLightingTrackingTests HueFilterTests PointLightFadeTests PointLightRadiusTests SliderIdentityTests)
-      target_compile_options(
-        ${test_target}
-        PRIVATE
-          /utf-8
-          /permissive-
-          /Zc:preprocessor
-      )
-    endforeach()
-    if(TARGET TuningUtilAddressLibraryTests)
-      target_compile_options(
-        TuningUtilAddressLibraryTests
-        PRIVATE
-          /utf-8
-          /permissive-
-          /Zc:preprocessor
-      )
-    endif()
-  endif()
+    target_compile_options(
+      ${target}
+      PRIVATE
+        /sdl
+        /utf-8
+        /Zi
+        /MD
+        /permissive-
+        /Zc:preprocessor
+        /wd4099
+        /wd4100
+        /wd4200
+        /wd4456
+        /wd4505
+        /wd4702
+        /wd5054
+        "$<$<CONFIG:RELEASE>:/Zc:inline;/JMC-;/Ob3>"
+    )
 
-  add_test(NAME JsonOverlayTests COMMAND JsonOverlayTests)
-  add_test(NAME MenuBoxGeometryTests COMMAND MenuBoxGeometryTests)
-  add_test(NAME MenuStatusMessageTests COMMAND MenuStatusMessageTests)
-  add_test(NAME SliderLinkMathTests COMMAND SliderLinkMathTests)
-  add_test(NAME ObjectLightingTrackingTests COMMAND ObjectLightingTrackingTests)
-  add_test(NAME PointLightFadeTests COMMAND PointLightFadeTests)
-  add_test(NAME SettingsUpdateTests COMMAND SettingsUpdateTests)
-  add_test(NAME PointLightRadiusTests COMMAND PointLightRadiusTests)
-  add_test(NAME HueFilterTests COMMAND HueFilterTests)
-  add_test(NAME SliderCreatorTests COMMAND SliderCreatorTests)
-  add_test(NAME SliderIdentityTests COMMAND SliderIdentityTests)
-  add_test(NAME SliderStorageTests COMMAND SliderStorageTests)
-  if(TARGET TuningUtilAddressLibraryTests)
-    add_test(
-      NAME TuningUtilAddressLibrary1799
-      COMMAND TuningUtilAddressLibraryTests "${TUNINGUTIL_ADDRESS_LIBRARY_1_7_99}"
+    target_link_options(
+      ${target}
+      PRIVATE
+        "$<$<CONFIG:DEBUG>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF>"
+        "$<$<CONFIG:RELEASE>:/INCREMENTAL:NO;/OPT:REF;/OPT:ICF;/DEBUG:FULL>"
     )
   endif()
-endif()
+
+endforeach()

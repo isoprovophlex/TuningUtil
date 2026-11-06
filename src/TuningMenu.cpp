@@ -1,10 +1,12 @@
 #include <Config.h>
+#include <DetailedLogging.h>
 #include <ImageSpacePatcher.h>
 #include <JsonOverlay.h>
 #include <LightingPatcher.h>
 #include <MenuBoxGeometry.h>
 #include <MenuControlCorners.h>
 #include <MenuControlGeometry.h>
+#include <MenuEffectRecovery.h>
 #include <MenuStatusMessage.h>
 #include <ObjectShaderCatalog.h>
 #include <PresetCatalog.h>
@@ -98,8 +100,9 @@ namespace MPL::TuningMenu
             bool backgroundBlurEnabled = true;
             bool lumaRenderedThisFrame = false;
             bool active = false;
-            bool freezeTimeWasEnabled = false;
             bool blurContributionRemoved = false;
+            bool restoreOnOtherPage = false;
+            MenuEffects::RecoveryWindow recovery;
             std::atomic_bool openInitializationPending{ false };
             std::atomic_bool closeCleanupPending{ false };
         };
@@ -1800,21 +1803,40 @@ namespace MPL::TuningMenu
             menuEffectOverride.backgroundBlurEnabled = ReadFrameworkBoolean("BlurBackgroundOnMenu", true);
         }
 
+        bool IsFrameworkMainWindowOpen()
+        {
+            const auto* window = SKSEMenuFramework::GetMainWindow();
+            return window ? window->IsOpen.load(std::memory_order_acquire) :
+                            menuFrameworkOpen.load(std::memory_order_acquire);
+        }
+
+        void LogFrameworkEffectState(const std::string_view a_action)
+        {
+            if (!DetailedLogging::IsEnabled()) return;
+            const auto* window = SKSEMenuFramework::GetMainWindow();
+            auto* main = RE::Main::GetSingleton();
+            const auto* blur = RE::UIBlurManager::GetSingleton();
+            logger::info(
+                "[Tuning Menu Effects] action={} | session={} | windowOpen={} | blockingWindow={} | "
+                "freezeTime={} | blurCount={} | overrideActive={} | blurRemoved={} | restoreOnOtherPage={}",
+                a_action, menuViewGeneration,
+                window ? static_cast<int>(window->IsOpen.load(std::memory_order_acquire)) : -1,
+                SKSEMenuFramework::IsAnyBlockingWindowOpened(),
+                main ? static_cast<int>(main->GetRuntimeData().freezeTime) : -1,
+                blur ? static_cast<int>(blur->blurCount) : -1, menuEffectOverride.active,
+                menuEffectOverride.blurContributionRemoved, menuEffectOverride.restoreOnOtherPage);
+        }
+
         void DisableFrameworkEffectsForLuma()
         {
+            if (!IsFrameworkMainWindowOpen()) return;
             menuEffectOverride.lumaRenderedThisFrame = true;
 
             if (!menuEffectOverride.active)
             {
                 ReloadFrameworkEffectSettings();
                 menuEffectOverride.active = true;
-                if (menuEffectOverride.freezeTimeEnabled)
-                {
-                    if (auto* main = RE::Main::GetSingleton())
-                    {
-                        menuEffectOverride.freezeTimeWasEnabled = main->GetRuntimeData().freezeTime;
-                    }
-                }
+                menuEffectOverride.restoreOnOtherPage = false;
                 if (menuEffectOverride.backgroundBlurEnabled)
                 {
                     if (auto* blur = RE::UIBlurManager::GetSingleton())
@@ -1826,6 +1848,7 @@ namespace MPL::TuningMenu
                         }
                     }
                 }
+                LogFrameworkEffectState("suppress");
             }
 
             if (menuEffectOverride.freezeTimeEnabled)
@@ -1839,7 +1862,10 @@ namespace MPL::TuningMenu
 
         void RestoreFrameworkEffects()
         {
-            if (!menuEffectOverride.active)
+            if ((!menuEffectOverride.active && !menuEffectOverride.restoreOnOtherPage) ||
+                !IsFrameworkMainWindowOpen() ||
+                menuEffectOverride.openInitializationPending.load(std::memory_order_acquire) ||
+                !SKSEMenuFramework::IsAnyBlockingWindowOpened())
             {
                 return;
             }
@@ -1848,39 +1874,94 @@ namespace MPL::TuningMenu
             {
                 if (auto* main = RE::Main::GetSingleton())
                 {
-                    main->GetRuntimeData().freezeTime = menuEffectOverride.freezeTimeWasEnabled;
+                    main->GetRuntimeData().freezeTime = true;
                 }
             }
 
-            if (menuEffectOverride.blurContributionRemoved)
+            if (menuEffectOverride.backgroundBlurEnabled)
             {
                 if (auto* blur = RE::UIBlurManager::GetSingleton())
                 {
-                    blur->IncrementBlurCount();
+                    if (menuEffectOverride.blurContributionRemoved || blur->blurCount == 0)
+                    {
+                        blur->IncrementBlurCount();
+                    }
                 }
             }
 
             menuEffectOverride.active = false;
-            menuEffectOverride.freezeTimeWasEnabled = false;
             menuEffectOverride.blurContributionRemoved = false;
+            menuEffectOverride.restoreOnOtherPage = false;
+            LogFrameworkEffectState("restore-other-page");
         }
 
         void ReleaseFrameworkEffectsAfterClose()
         {
-            if (!menuEffectOverride.active)
+            const auto hadOverride = menuEffectOverride.active || menuEffectOverride.restoreOnOtherPage;
+            menuEffectOverride.active = false;
+            menuEffectOverride.blurContributionRemoved = false;
+            // A rapid reopen can keep Framework locked without restoring its suppressed effects.
+            menuEffectOverride.restoreOnOtherPage = hadOverride;
+            LogFrameworkEffectState("release-close");
+        }
+
+        bool HasGameMenuEffects()
+        {
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui || ui->GameIsPaused() || ui->IsItemMenuOpen() || ui->IsModalMenuOpen() ||
+                ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || ui->IsMenuOpen(RE::MainMenu::MENU_NAME))
             {
+                return true;
+            }
+            const auto fader = ui->GetMenu<RE::FaderMenu>();
+            if (fader && fader->GetRuntimeData().isActive) return true;
+            return std::ranges::any_of(ui->menuStack, [](const auto& a_menu)
+                {
+                    return a_menu && (a_menu->UsesBlurredBackground() ||
+                        a_menu->FreezeFrameBackground() || a_menu->FreezeFramePause());
+                });
+        }
+
+        void RecoverClosedMenuEffects()
+        {
+            auto& recovery = menuEffectOverride.recovery;
+            if (!recovery.IsPending()) return;
+            const auto* window = SKSEMenuFramework::GetMainWindow();
+            if (!window)
+            {
+                recovery.Cancel();
+                return;
+            }
+            if (!recovery.ShouldRecover(MenuEffects::RecoveryWindow::Clock::now(),
+                window->IsOpen.load(std::memory_order_acquire),
+                SKSEMenuFramework::IsAnyBlockingWindowOpened(), HasGameMenuEffects()))
+            {
+                if (!recovery.IsPending()) LogFrameworkEffectState("recovery-finished");
                 return;
             }
 
-            // Menu Framework owns the final release for the now-closed window later in this render cycle.
-            menuEffectOverride.active = false;
-            menuEffectOverride.freezeTimeWasEnabled = false;
-            menuEffectOverride.blurContributionRemoved = false;
+            auto* main = RE::Main::GetSingleton();
+            auto* blur = RE::UIBlurManager::GetSingleton();
+            const auto frozen = main && main->GetRuntimeData().freezeTime;
+            const auto blurCount = blur ? blur->blurCount : 0;
+            if ((!frozen && blurCount == 0) || window->IsOpen.load(std::memory_order_acquire)) return;
+            if (frozen) main->GetRuntimeData().freezeTime = false;
+            if (blur) MenuEffects::ClearOrphanedBlur(*blur);
+            logger::warn(
+                "[Tuning Menu Effects] recovered after close | session={} | freezeTime={}->{} | blurCount={}->{}",
+                menuViewGeneration, frozen, main && main->GetRuntimeData().freezeTime,
+                blurCount, blur ? static_cast<int>(blur->blurCount) : -1);
         }
 
         void InitializeOpenedMenuState()
         {
+            if (menuEffectOverride.recovery.IsPending())
+            {
+                menuEffectOverride.recovery.Cancel();
+                LogFrameworkEffectState("recovery-cancel-reopen");
+            }
             ++menuViewGeneration;
+            LogFrameworkEffectState("open");
             if (WeatherLock::IsEnabled())
             {
                 WeatherLock::SetEnabled(false);
@@ -1907,6 +1988,13 @@ namespace MPL::TuningMenu
 
         void FinalizeClosedMenuState(const bool a_menuReopened)
         {
+            ReleaseFrameworkEffectsAfterClose();
+            menuEffectOverride.lumaRenderedThisFrame = false;
+            if (!a_menuReopened)
+            {
+                menuEffectOverride.recovery.Schedule();
+                LogFrameworkEffectState("recovery-scheduled");
+            }
             ClearSliderCreatorFunctionalPreview("menu-close");
             if (lightPlacerCommitPending)
             {
@@ -1918,15 +2006,31 @@ namespace MPL::TuningMenu
             activeWeatherLockProfile.clear();
             statusMessage.clear();
             settingsStatusMessage.clear();
-            if (a_menuReopened)
+        }
+
+        bool PrepareFrameworkMenuRender(const bool a_allowClosedCleanup)
+        {
+            const auto open = IsFrameworkMainWindowOpen();
+            // Only the before-render callback can confirm closure before Framework updates its effects.
+            if (!open && !a_allowClosedCleanup) return false;
+            const auto previouslyOpen = menuFrameworkOpen.exchange(open, std::memory_order_acq_rel);
+            if (open && !previouslyOpen)
             {
-                RestoreFrameworkEffects();
+                menuEffectOverride.openInitializationPending.store(true, std::memory_order_release);
             }
-            else
+            else if (!open && previouslyOpen)
             {
-                ReleaseFrameworkEffectsAfterClose();
+                menuEffectOverride.closeCleanupPending.store(true, std::memory_order_release);
             }
-            menuEffectOverride.lumaRenderedThisFrame = false;
+            if (menuEffectOverride.closeCleanupPending.exchange(false, std::memory_order_acq_rel))
+            {
+                FinalizeClosedMenuState(open);
+            }
+            if (menuEffectOverride.openInitializationPending.exchange(false, std::memory_order_acq_rel) && open)
+            {
+                InitializeOpenedMenuState();
+            }
+            return open;
         }
 
         void __stdcall HandleMenuFrameworkEvent(const SKSEMenuFramework::Model::EventType a_event)
@@ -1938,14 +2042,7 @@ namespace MPL::TuningMenu
                 menuEffectOverride.openInitializationPending.store(true, std::memory_order_release);
                 break;
             case SKSEMenuFramework::Model::kBeforeRender:
-                if (menuEffectOverride.closeCleanupPending.exchange(false, std::memory_order_acq_rel))
-                {
-                    FinalizeClosedMenuState(menuFrameworkOpen.load(std::memory_order_acquire));
-                }
-                if (menuEffectOverride.openInitializationPending.exchange(false, std::memory_order_acq_rel))
-                {
-                    InitializeOpenedMenuState();
-                }
+                PrepareFrameworkMenuRender(true);
                 menuEffectOverride.lumaRenderedThisFrame = false;
                 if (menuFrameworkOpen.load(std::memory_order_acquire))
                 {
@@ -1956,14 +2053,17 @@ namespace MPL::TuningMenu
                 if (menuFrameworkOpen.load(std::memory_order_acquire) &&
                     !menuEffectOverride.lumaRenderedThisFrame)
                 {
-                    ClearSliderCreatorFunctionalPreview("other-menu-rendered");
                     RestoreFrameworkEffects();
+                    ClearSliderCreatorFunctionalPreview("other-menu-rendered");
                 }
+                RecoverClosedMenuEffects();
                 break;
             case SKSEMenuFramework::Model::kCloseMenu:
-                menuFrameworkOpen.store(false, std::memory_order_release);
-                menuEffectOverride.openInitializationPending.store(false, std::memory_order_release);
-                menuEffectOverride.closeCleanupPending.store(true, std::memory_order_release);
+                if (menuFrameworkOpen.exchange(false, std::memory_order_acq_rel))
+                {
+                    menuEffectOverride.openInitializationPending.store(false, std::memory_order_release);
+                    menuEffectOverride.closeCleanupPending.store(true, std::memory_order_release);
+                }
                 break;
             default:
                 break;
@@ -2361,10 +2461,7 @@ namespace MPL::TuningMenu
                 return std::nullopt;
             }
             definition.profile = a_profile;
-            if (definition.title.empty())
-            {
-                definition.title = definition.profile;
-            }
+            definition.title = definition.profile;
             definition.profilePage.title = "Profile";
             definition.profilePage.order = definition.pages.size();
             std::erase_if(
@@ -6076,6 +6173,29 @@ namespace MPL::TuningMenu
             }
         }
 
+        void DrawResetPresetSelection(
+            const MenuDefinition& a_menu,
+            const MenuControl& a_control,
+            const std::string& a_id)
+        {
+            const auto label = ControlLabel(a_control, "resetPresets", "Reset Presets to Default") + "##" + a_id;
+            if (ActionButton(label.c_str(), SKSEMenuSettings::ButtonKind::reset))
+            {
+                auto profile = a_menu.profile;
+                std::string error;
+                const auto reset = WeatherPatcher::PreviewPresetDefaults(profile, error);
+                if (reset)
+                {
+                    RefreshAfterPresetChange(a_menu);
+                }
+                else if (!error.empty())
+                {
+                    logger::warn("[Tuning Menu] preset defaults preview failed | profile={} | {}", profile, error);
+                }
+                statusMessage = StatusText(reset ? "presetDefaultsPreview" : "presetDefaultsFailure");
+            }
+        }
+
         bool SavePresetControl(const MenuDefinition& a_menu)
         {
             auto profile = a_menu.profile;
@@ -6230,67 +6350,15 @@ namespace MPL::TuningMenu
                 const auto panelId = category + "##" + profile + "PresetCategory";
                 if (sections.Start(category, panelId))
                 {
-                    {
-                        const auto presetSelected = std::ranges::any_of(
-                            activePresets,
-                            [&](const WeatherPatcher::ActivePreset& a_preset)
-                            { return Config::IEquals(a_preset.category, category); });
-                        const auto label = SKSEMenuSettings::Label("presetDefault", "Default") +
-                                           "##" + profile + category + "PresetDefault";
-                        auto selected = false;
-                        if (presetSelected)
-                        {
-                            const ButtonColorStyle color(
-                                SKSEMenuSettings::GetButtonColor(SKSEMenuSettings::ButtonKind::ordinary));
-                            selected = StyledButton(label.c_str());
-                        }
-                        else
-                        {
-                            const auto presetColor = [&](const SKSEMenuSettings::InteractionState a_interaction)
-                            {
-                                const auto color = SKSEMenuSettings::GetPresetColor(
-                                    SKSEMenuSettings::PresetState::active,
-                                    a_interaction);
-                                return ImGuiMCP::ImVec4(color[0], color[1], color[2], color[3]);
-                            };
-                            ImGuiMCP::PushStyleColor(
-                                ImGuiMCP::ImGuiCol_Button,
-                                presetColor(SKSEMenuSettings::InteractionState::normal));
-                            ImGuiMCP::PushStyleColor(
-                                ImGuiMCP::ImGuiCol_ButtonHovered,
-                                presetColor(SKSEMenuSettings::InteractionState::hovered));
-                            ImGuiMCP::PushStyleColor(
-                                ImGuiMCP::ImGuiCol_ButtonActive,
-                                presetColor(SKSEMenuSettings::InteractionState::pressed));
-                            selected = StyledButton(label.c_str());
-                            ImGuiMCP::PopStyleColor(3);
-                        }
-                        if (selected)
-                        {
-                            std::string error;
-                            if (WeatherPatcher::PreviewPresetDefault(profile, category, error))
-                            {
-                                ClearWeatherCatalogs();
-                                activeWeatherLockProfile.clear();
-                                ActivateWeatherLockPreference(a_menu);
-                                statusMessage = StatusText(
-                                    "presetDefaultPreview",
-                                    { { "category", category } });
-                            }
-                            else
-                            {
-                                if (!error.empty()) logger::warn("[Tuning Menu] preset default preview failed | profile={} | category={} | {}", profile, category, error);
-                                statusMessage = StatusText("presetLoadFailure");
-                            }
-                        }
-                    }
                     if (presets.empty())
                     {
                         DrawDisplayText("noPresets", true);
                     }
+                    auto firstPreset = true;
                     for (const auto& preset : presets)
                     {
-                        SameActionLine();
+                        if (!firstPreset) SameActionLine();
+                        firstPreset = false;
 
                         const auto label = preset + "##" + profile + category + "Preset";
                         const auto active = std::ranges::any_of(activePresets, [&](const WeatherPatcher::ActivePreset& a_preset)
@@ -9062,7 +9130,6 @@ namespace MPL::TuningMenu
                 const auto reset = TuningUtil::ResetAllSettingsToDefault(profile);
                 if (reset)
                 {
-                    WeatherPatcher::DiscardPresetPreview(profile);
                     profilePriorityInputs[profile] = TuningUtil::GetSettings(profile).profilePriority;
                     RefreshProfileMenuState(a_menu);
                 }
@@ -9556,6 +9623,11 @@ namespace MPL::TuningMenu
                             a_menu,
                             a_module,
                             a_menu.profile + "PresetCommit" + std::to_string(a_index));
+                        SameActionLine();
+                        DrawResetPresetSelection(
+                            a_menu,
+                            a_module,
+                            a_menu.profile + "PresetReset" + std::to_string(a_index));
                     });
                 return;
             }
@@ -11253,12 +11325,8 @@ namespace MPL::TuningMenu
         }
         void RenderProfilePage(const std::size_t a_index)
         {
+            if (!PrepareFrameworkMenuRender(false)) return;
             sliderCreatorFunctionalPreviewDrawn = false;
-            if (!menuFrameworkOpen.exchange(true, std::memory_order_acq_rel))
-            {
-                menuEffectOverride.openInitializationPending.store(false, std::memory_order_release);
-                InitializeOpenedMenuState();
-            }
 
             SKSEMenuSettings::ReloadIfChanged();
             const MenuControlCorners::Scope controlCorners;
@@ -11293,11 +11361,7 @@ namespace MPL::TuningMenu
 
         void __stdcall RenderSettingsPage()
         {
-            if (!menuFrameworkOpen.exchange(true, std::memory_order_acq_rel))
-            {
-                menuEffectOverride.openInitializationPending.store(false, std::memory_order_release);
-                InitializeOpenedMenuState();
-            }
+            if (!PrepareFrameworkMenuRender(false)) return;
             ClearSliderCreatorFunctionalPreview("settings-page-rendered");
             SKSEMenuSettings::ReloadIfChanged();
             const MenuControlCorners::Scope controlCorners;

@@ -33,7 +33,6 @@ namespace MPL::PointLightPatcher
     void InstallRuntimeEvents();
     void BeginCell(RE::TESObjectCELL*);
     void ResetCellTracking();
-    void RecordCellChangeThread();
     void QueueReferenceReconciliation(RE::TESObjectREFR*);
     void InitializeReference(RE::TESObjectREFR*);
     void ReleaseRuntimeState();

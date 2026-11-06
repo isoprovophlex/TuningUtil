@@ -4,6 +4,7 @@
 #include <SliderStorage.h>
 #include <SliderStorageFiles.h>
 #include <PresetCatalog.h>
+#include <ProfileSettings.h>
 #include <FileIO.h>
 #include <JsonFormatting.h>
 
@@ -1067,13 +1068,22 @@ namespace MPL::SliderCreator
             return FileIO::WriteAtomically(a_path, JsonFormatting::Pretty(output) + '\n', a_error);
         }
 
+        std::optional<std::string> ReadProfileSettingsText(const std::filesystem::path& a_path, std::string& a_error)
+        {
+            if (a_path.filename() != "profileSettings.json") return ReadText(a_path);
+            auto defaults = ProfileSettings::Load(a_path.parent_path(), a_error);
+            return defaults ? std::optional{ std::move(defaults->text) } : std::nullopt;
+        }
+
         bool ReplaceRootStringMember(
             const std::filesystem::path& a_path,
             const std::string_view a_key,
             const std::string_view a_value,
             std::string& a_error)
         {
-            const auto text = ReadText(a_path);
+            auto text = ReadText(a_path);
+            if (!text && a_path.filename() == "profileSettings.json" && !std::filesystem::exists(a_path))
+                text = std::string(ProfileSettings::kNewBaseSettings);
             Document source(text ?
                                 yyjson_read(
                                     const_cast<char*>(text->data()),
@@ -1157,7 +1167,8 @@ namespace MPL::SliderCreator
         std::string& a_error)
     {
         a_error.clear();
-        const auto text = ReadText(a_path);
+        const auto text = ReadProfileSettingsText(a_path, a_error);
+        if (!text) return std::nullopt;
         Document document(text ?
                               yyjson_read(
                                   const_cast<char*>(text->data()),
@@ -1188,7 +1199,7 @@ namespace MPL::SliderCreator
         std::string& a_error)
     {
         a_error.clear();
-        const auto text = ReadText(a_path);
+        const auto text = std::optional{ ReadText(a_path).value_or(std::string(ProfileSettings::kNewBaseSettings)) };
         Document source(text ?
                             yyjson_read(
                                 const_cast<char*>(text->data()),
@@ -1224,7 +1235,8 @@ namespace MPL::SliderCreator
         std::string& a_error)
     {
         a_error.clear();
-        const auto text = ReadText(a_path);
+        const auto text = ReadProfileSettingsText(a_path, a_error);
+        if (!text) return std::nullopt;
         Document document(text ?
                               yyjson_read(
                                   const_cast<char*>(text->data()),
@@ -1363,7 +1375,8 @@ namespace MPL::SliderCreator
                 a_error = "The source profile folder is unavailable.";
                 return false;
             }
-            const auto settingsText = ReadText(a_sourceProfile / "profileSettings.json");
+            const auto defaults = ProfileSettings::Load(a_sourceProfile, a_error);
+            const auto settingsText = defaults ? std::optional{ defaults->text } : std::nullopt;
             Document settingsDocument(settingsText ?
                                           yyjson_read(
                                               const_cast<char*>(settingsText->data()),
@@ -1467,7 +1480,7 @@ namespace MPL::SliderCreator
             if (!ReplaceRootStringMember(profileDirectory / "profileSettings.json", "profile", profileName, a_error) ||
                 !ReplaceRootStringMember(
                     profileDirectory / "skseMenu.json",
-                    "title",
+                    "profile",
                     profileName,
                     a_error))
             {
@@ -1491,7 +1504,7 @@ namespace MPL::SliderCreator
         }
         if (!ReplaceRootStringMember(
                 profileDirectory / "skseMenu.json",
-                "title",
+                "profile",
                 profileName,
                 a_error))
         {
@@ -1503,7 +1516,7 @@ namespace MPL::SliderCreator
         {
             std::ofstream settingsFile(profileDirectory / "profileSettings.json", std::ios::binary | std::ios::trunc);
             settingsFile << std::format(
-                "{{\n  \"profile\": \"{}\",\n  \"EnableProfile\": true\n}}\n",
+                "{{\n  \"tuningProfileSettings\": true,\n  \"profileSettingsPriority\": 0,\n  \"profile\": \"{}\",\n  \"EnableProfile\": true\n}}\n",
                 profileName);
             settingsFile.close();
             if (!settingsFile)

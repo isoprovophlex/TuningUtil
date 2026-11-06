@@ -1,4 +1,5 @@
 #pragma once
+#include <ColorMath.h>
 #include <SliderStorage.h>
 #include <Config/Weathers.h>
 #include <SettingLinks.h>
@@ -47,6 +48,7 @@ namespace MPL::WeatherPatcher
     std::vector<ActivePreset> GetActivePresets(std::string&, std::string&);
     std::optional<std::string> GetActivePresetSettings(std::string&, std::string&);
     void DiscardPresetPreview(std::string&);
+    void InvalidatePresetSelections(std::string&);
     void DiscardPresetCatalogChanges(std::string&);
     bool StagePresetCategory(std::string&, const std::string&, std::string&);
     bool StagePreset(std::string&, const std::string&, const std::string&, std::string&);
@@ -64,7 +66,7 @@ namespace MPL::WeatherPatcher
         const std::string&,
         std::string&);
     bool PreviewPreset(std::string&, const std::string&, const std::string&, std::string&);
-    bool PreviewPresetDefault(std::string&, const std::string&, std::string&);
+    bool PreviewPresetDefaults(std::string&, std::string&);
     bool CommitPresetPreviews(std::string&, std::string&);
     bool RemovePresets(
         std::string&,

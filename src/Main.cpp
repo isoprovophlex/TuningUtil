@@ -8,21 +8,17 @@
 #include <TuningMenu.h>
 #include <TuningSettings.h>
 #include <TuningUtil.h>
-#include <WeatherLock.h>
 
 namespace
 {
     bool runtimeInitialized = false;
+    bool pluginLoaded = false;
 
     void InitializeRuntime()
     {
         if (runtimeInitialized || !MPL::LumaClient::Load()) return;
 
         MPL::TuningSettings::Load();
-        if (MPL::TuningSettings::IsTuningMenuEnabledForSession())
-        {
-            MPL::WeatherLock::InstallHooks();
-        }
         MPL::LumaClient::SetRuntimeReady(true);
         runtimeInitialized = true;
     }
@@ -90,13 +86,32 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     SKSE::Init(a_skse);
     logger::info("[TuningUtil] startup | game={}", a_skse->RuntimeVersion().string());
     const auto* messaging = SKSE::GetMessagingInterface();
-    return messaging && messaging->RegisterListener(OnSKSEMessage);
+    pluginLoaded = messaging && messaging->RegisterListener(OnSKSEMessage);
+    return pluginLoaded;
 }
 
-SKSEPluginInfo(
-        .Version = REL::Version{ 0, 1, 0, 0 },
-    .Name = "TuningUtil"sv,
-    .Author = "isoprovophlex"sv,
-    .SupportEmail = ""sv,
-    .StructCompatibility = SKSE::StructCompatibility::Independent,
-    .RuntimeCompatibility = SKSE::VersionIndependence::AddressLibrary)
+SKSE_EXPORT bool TuningUtil_IsLoaded()
+{
+    return pluginLoaded;
+}
+
+SKSEPluginVersion = []() constexpr
+{
+    SKSE::PluginVersionData version;
+    version.PluginVersion(REL::Version{ 0, 1, 0, 0 });
+    version.PluginName("TuningUtil"sv);
+    version.AuthorName("isoprovophlex"sv);
+    version.UsesNoStructs();
+    version.UsesAddressLibrary();
+    static_assert((SKSE::PluginVersionData{}.versionIndependenceEx &
+        SKSE::PluginVersionData::kVersionIndependentEx_AddressLibraryV5) != 0);
+    return version;
+}();
+
+SKSE_EXPORT bool SKSEPlugin_Query(SKSE::QueryInterface*, SKSE::PluginInfo* a_info)
+{
+    a_info->infoVersion = SKSE::PluginInfo::kVersion;
+    a_info->name = SKSEPlugin_Version.GetPluginName().data();
+    a_info->version = SKSEPlugin_Version.GetPluginVersion().pack();
+    return true;
+}

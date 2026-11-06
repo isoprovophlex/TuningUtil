@@ -1,10 +1,20 @@
 #pragma once
 
 #include <RulePriority.h>
+#include <algorithm>
 #include <cstdint>
 
 namespace MPL::PointLightFade
 {
+    inline float ReferenceOffset(
+        const float a_sourceBase, const float a_sourceOffset,
+        const double a_baseMultiplier, const double a_referenceMultiplier)
+    {
+        const auto intensity = std::max(0.0, static_cast<double>(a_sourceBase) + a_sourceOffset);
+        return static_cast<float>(intensity * std::max(0.0, a_referenceMultiplier) -
+                                  a_sourceBase * std::max(0.0, a_baseMultiplier));
+    }
+
     template <class Rules, class MatchesSource, class Multiplier>
     double ResolveMultiplier(
         const double a_baseMultiplier, const std::uint32_t a_baseID,

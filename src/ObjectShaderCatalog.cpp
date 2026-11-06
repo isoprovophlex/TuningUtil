@@ -1,4 +1,5 @@
 #include <ObjectShaderCatalog.h>
+#include <HeliosphanClient.h>
 #include <algorithm>
 #include <cctype>
 #include <mutex>
@@ -14,11 +15,12 @@ namespace MPL::ObjectShaderCatalog
         std::ranges::replace(path, '/', '\\');
         std::ranges::transform(path, path.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (!path.starts_with("meshes\\")) path.insert(0, "meshes\\");
+        const auto configured = HeliosphanClient::HasModelPatches(path.c_str()) ? Capability::lighting : Capability::none;
 
         static std::mutex lock;
         static std::unordered_map<std::string, Capability> cache;
         const std::scoped_lock guard(lock);
-        if (const auto found = cache.find(path); found != cache.end()) return found->second;
+        if (const auto found = cache.find(path); found != cache.end()) return found->second | configured;
 
         RE::NiPointer<RE::NiNode> root;
         const RE::BSModelDB::DBTraits::ArgsType arguments;
@@ -37,6 +39,6 @@ namespace MPL::ObjectShaderCatalog
             });
         }
         cache.emplace(std::move(path), capabilities);
-        return capabilities;
+        return capabilities | configured;
     }
 }

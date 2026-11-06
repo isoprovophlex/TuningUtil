@@ -1,5 +1,6 @@
 #include <DetailedLogging.h>
 #include <Config.h>
+#include <HeliosphanClient.h>
 #include <ObjectLightingPatcher.h>
 #include <ObjectLightingTracking.h>
 #include <RecordFilter.h>
@@ -339,6 +340,7 @@ namespace MPL::ObjectLightingPatcher
         void TrackReference(RE::TESObjectREFR* a_reference)
         {
             if (!a_reference) return;
+            HeliosphanClient::PrepareReferenceModels(a_reference);
             const auto formID = a_reference->GetFormID();
             const auto& baseRules = MatchingRules(a_reference->GetBaseObject());
             const auto* emittance = baseRules.empty() ? nullptr :

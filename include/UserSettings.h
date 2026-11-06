@@ -23,6 +23,8 @@ namespace MPL::UserSettings
 
     std::optional<std::string> ValuesOnly(std::string_view, std::string&);
     std::optional<PresetSelections> ParsePresetSelections(std::string_view, std::string&);
+    std::optional<PresetSelections> ResolvePresetSelections(
+        std::string_view, std::optional<std::string_view>, std::string&);
     std::string PresetSelectionsText(const PresetSelections&);
     std::optional<SanitizeResult> Sanitize(
         std::string_view,

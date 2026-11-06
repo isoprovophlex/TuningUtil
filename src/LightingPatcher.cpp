@@ -1,7 +1,9 @@
 #include <Config.h>
 #include <DetailedLogging.h>
 #include <LightingPatcher.h>
+#ifndef TUNING_HEADLESS
 #include <PointLightPatcher.h>
+#endif
 #include <RecordFilter.h>
 #include <SettingLinks.h>
 #include <SliderLinkMath.h>
@@ -482,20 +484,6 @@ namespace MPL::LightingPatcher
             }
         }
 
-        std::array<bool, kFieldCount> CellActiveFields(const RE::INTERIOR_DATA& a_data)
-        {
-            const auto& inherit = a_data.lightingTemplateInheritanceFlags;
-            const auto ambientActive =
-                (inherit & RE::INTERIOR_DATA::Inherit::kAmbientColor).underlying() == 0;
-            return {
-                ambientActive,
-                (inherit & RE::INTERIOR_DATA::Inherit::kDirectionalColor).underlying() == 0,
-                ambientActive,
-                (inherit & RE::INTERIOR_DATA::Inherit::kFogColor).underlying() == 0,
-                (inherit & RE::INTERIOR_DATA::Inherit::kFogColor).underlying() == 0,
-            };
-        }
-
         bool CellFogMaxActive(const RE::INTERIOR_DATA& a_data)
         {
             return (a_data.lightingTemplateInheritanceFlags & RE::INTERIOR_DATA::Inherit::kFogMax).underlying() == 0;
@@ -504,6 +492,38 @@ namespace MPL::LightingPatcher
         bool CellFogPowerActive(const RE::INTERIOR_DATA& a_data)
         {
             return (a_data.lightingTemplateInheritanceFlags & RE::INTERIOR_DATA::Inherit::kFogPower).underlying() == 0;
+        }
+
+        void NormalizeLightingFields(
+            RE::INTERIOR_DATA& a_data,
+            RE::BGSDirectionalAmbientLightingColors& a_ambientColors,
+            const LightingLuminanceSettings& a_targets,
+            const std::array<bool, kFieldCount>& a_active)
+        {
+            const std::array targets{ a_targets.ambient, a_targets.directional, a_targets.ambientColors,
+                a_targets.fogFar, a_targets.fogNear };
+            for (std::size_t field = 0; field < kFieldCount; ++field)
+            {
+                if (!a_active[field]) continue;
+                if (field == 2)
+                {
+                    WeatherPatcher::NormalizeDirectionalAmbientLuminance(a_ambientColors, targets[field]);
+                    continue;
+                }
+                ForEachFieldColor(a_data, a_ambientColors, field, [&](RE::Color& a_color)
+                    { WeatherPatcher::NormalizeLuminanceColor(a_color, targets[field]); });
+            }
+        }
+
+        void LogLightingNormalization(const std::string_view a_scope, const Settings& a_settings, const std::size_t a_count)
+        {
+            if (!a_settings.normalizeLuminance) return;
+            const auto& targets = *a_settings.normalizeLuminance;
+            DetailedLogging::Info(
+                "[Lighting] luminance normalization | scope={} | targets={} | ambient={} | ambientColors={} | "
+                "directional={} | fogNear={} | fogFar={}",
+                a_scope, a_count, targets.ambient, targets.ambientColors,
+                targets.directional, targets.fogNear, targets.fogFar);
         }
 
         void ApplyStartupCellSettings();
@@ -543,7 +563,9 @@ namespace MPL::LightingPatcher
         stat->cellLightingBaselines = {};
         startupTemplateDrivenProfiles.clear();
         filteredLightingTemplateLocationFilters.clear();
+#ifndef TUNING_HEADLESS
         PointLightPatcher::ReleaseRuntimeState();
+#endif
     }
 
     namespace
@@ -784,6 +806,9 @@ namespace MPL::LightingPatcher
                 }
                 stat->lightingTemplateBaselines.try_emplace(lightingTemplate,
                     MakeBaseline(lightingTemplate->data, lightingTemplate->directionalAmbientLightingColors));
+                if (a_settings.normalizeLuminance)
+                    NormalizeLightingFields(lightingTemplate->data, lightingTemplate->directionalAmbientLightingColors,
+                        *a_settings.normalizeLuminance, allFields);
                 ApplyBrightness(
                     lightingTemplate->data,
                     lightingTemplate->directionalAmbientLightingColors,
@@ -824,6 +849,7 @@ namespace MPL::LightingPatcher
                     allFields);
                 ++count;
             }
+            LogLightingNormalization("templates", a_settings, count);
             return count;
         }
 
@@ -853,7 +879,11 @@ namespace MPL::LightingPatcher
                     continue;
                 }
 
-                const auto activeFields = CellActiveFields(*lightingData);
+                const auto* lightingTemplate = cell->GetRuntimeData().lightingTemplate;
+                const auto activeFields = CellActiveFields(*lightingData, lightingTemplate != nullptr);
+                if (a_settings.normalizeLuminance)
+                    NormalizeLightingFields(*lightingData, lightingData->directionalAmbientLightingColors,
+                        *a_settings.normalizeLuminance, activeFields);
                 ApplyBrightness(*lightingData, lightingData->directionalAmbientLightingColors,
                     brightness.linked, activeFields, std::addressof(brightness.direct));
                 ApplyFogMax(*lightingData, a_settings.lightFogMaxMultiplier, CellFogMaxActive(*lightingData));
@@ -871,6 +901,7 @@ namespace MPL::LightingPatcher
                     activeFields);
                 ++count;
             }
+            LogLightingNormalization("cells", a_settings, count);
             return count;
         }
 
@@ -978,6 +1009,7 @@ namespace MPL::LightingPatcher
         std::vector<std::string> GetActiveDirectCellProfiles()
         {
             static constexpr std::array roots{
+                std::string_view{ "normalizeLuminance" },
                 std::string_view{ "lightBrightnessMultiplier" },
                 std::string_view{ "lightSaturationMultiplier" },
                 std::string_view{ "lightHueShift" },
@@ -991,9 +1023,10 @@ namespace MPL::LightingPatcher
             for (auto profile : TuningUtil::GetProfilesWithSettings(roots))
             {
                 const auto controlled = controller && Config::IEquals(*controller, profile);
-                if (TuningUtil::GetSettings(profile).EnableProfile &&
+                const auto& settings = TuningUtil::GetSettings(profile);
+                if (settings.EnableProfile &&
                     (!controller || controlled) &&
-                    (!UsesTemplateInheritance(profile) || controlled))
+                    (!UsesTemplateInheritance(profile) || controlled || settings.normalizeLuminance.has_value()))
                 {
                     result.push_back(std::move(profile));
                 }
@@ -1171,6 +1204,7 @@ namespace MPL::LightingPatcher
         std::vector<ActiveTemplateProfile> GetActiveTemplateProfiles()
         {
             static constexpr std::array roots{
+                std::string_view{ "normalizeLuminance" },
                 std::string_view{ "lightBrightnessMultiplier" },
                 std::string_view{ "lightSaturationMultiplier" },
                 std::string_view{ "lightHueShift" },
@@ -1279,6 +1313,7 @@ namespace MPL::LightingPatcher
             return hasInclusions || rule.ignoreProfileFilters || a_matchesProfileFilter;
         }
 
+#ifndef TUNING_HEADLESS
         RecordFilter::Resolved ResolveFilteredBaseLightFilter(
             const TuningUtil::FilteredBaseLightRule& a_rule)
         {
@@ -1518,12 +1553,16 @@ namespace MPL::LightingPatcher
                 result.settings.size());
             return result;
         }
+#endif
+
     }  // namespace
 
     void ApplyAllSettings(const bool a_commitLightPlacer)
     {
         ApplyTemplateSettings();
+#ifndef TUNING_HEADLESS
         ApplyPointLightSettings(a_commitLightPlacer);
+#endif
     }
 
     void ApplyTemplateSettings()
@@ -1630,6 +1669,7 @@ namespace MPL::LightingPatcher
             templateCount);
     }
 
+#ifndef TUNING_HEADLESS
     void ApplyPointLightSettings(const bool a_commitLightPlacer)
     {
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
@@ -1773,5 +1813,7 @@ namespace MPL::LightingPatcher
         return std::ranges::any_of(rightTargets, [&](const auto a_formID)
             { return leftTargets.contains(a_formID); });
     }
+
+#endif
 
 }  // namespace MPL::LightingPatcher
